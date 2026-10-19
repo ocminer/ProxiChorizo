@@ -18,7 +18,7 @@ PATTERNS=(
   'hp0[0-9]\b' 'rig0[0-9]\b' 'us-rig' 'hay-rig' 'sprdlm' 'gadtr' 'haynau' 'bri4-' 'server[1-6]\b'
   # credentials and key material
   # credential VALUES (field names like private_key in parsing code are fine)
-  '(password|passphrase|secret|token|dsn|seed)[a-z_]* *[:=] *["'"'"'][^"'"'"' ]{8,}' 'PRIVATE KEY' 'Bearer [A-Za-z0-9+/=_-]{20,}'
+  '(password|passphrase|secret|token|dsn|seed)[a-z_]* *[:=] *["'"'"'][^"'"'"' $]{8,}' 'PRIVATE KEY' 'Bearer [A-Za-z0-9+/=_-]{20,}'
   'wg set' 'PublicKey *=' 'AllowedIPs' 'ssh-ed25519 ' 'ssh-rsa '
   # anything that looks like a 64-hex key or a 32+ char base64 blob assigned to something
   '"(private|secret|seed|token)[a-z_]*" *: *"[0-9a-fA-F]{32,}'

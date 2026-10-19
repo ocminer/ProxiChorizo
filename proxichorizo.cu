@@ -14,11 +14,38 @@
 #include <random>
 #include <fstream>
 #include <sstream>
+#define PX_VERSION "0.4.0"
+// sockets: POSIX or Winsock behind four helpers
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <process.h>
+#pragma comment(lib, "ws2_32.lib")
+typedef SOCKET sock_t;
+typedef long long ssize_t;
+#define SOCK_INVALID INVALID_SOCKET
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
+#endif
+#define getpid _getpid
+static void sock_init() { WSADATA w; WSAStartup(MAKEWORD(2, 2), &w); }
+static void sock_close(sock_t s) { closesocket(s); }
+static void sock_timeout(sock_t s, int secs) { DWORD ms = (DWORD)secs * 1000; setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char *)&ms, sizeof ms); setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, (const char *)&ms, sizeof ms); }
+#else
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <netdb.h>
 #include <unistd.h>
+#include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <arpa/inet.h>
+typedef int sock_t;
+#define SOCK_INVALID (-1)
+static void sock_init() {}
+static void sock_close(sock_t s) { close(s); }
+static void sock_timeout(sock_t s, int secs) { struct timeval tv = { secs, 0 }; setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv); setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv); }
+#endif
 
 #define CUDA_CHECK(x) do { cudaError_t e = (x); if (e != cudaSuccess) { fprintf(stderr, "CUDA error %s at %s:%d\n", cudaGetErrorString(e), __FILE__, __LINE__); exit(2);} } while (0)
 
@@ -269,28 +296,26 @@ static HttpResp http_do(const Url &u, const std::string &method, const std::stri
     hints.ai_family = AF_UNSPEC; hints.ai_socktype = SOCK_STREAM;
     char portstr[16]; snprintf(portstr, sizeof portstr, "%d", u.port);
     if (getaddrinfo(u.host.c_str(), portstr, &hints, &res) != 0) { r.err = "dns failure for " + u.host; return r; }
-    int fd = -1;
+    sock_t fd = SOCK_INVALID;
     for (auto *ai = res; ai; ai = ai->ai_next) {
         fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
-        if (fd < 0) continue;
-        struct timeval tv = { timeout_s, 0 };
-        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
-        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
-        int one = 1; setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
-        if (connect(fd, ai->ai_addr, ai->ai_addrlen) == 0) break;
-        close(fd); fd = -1;
+        if (fd == SOCK_INVALID) continue;
+        sock_timeout(fd, timeout_s);
+        int one = 1; setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (const char *)&one, sizeof one);
+        if (connect(fd, ai->ai_addr, (int)ai->ai_addrlen) == 0) break;
+        sock_close(fd); fd = SOCK_INVALID;
     }
     freeaddrinfo(res);
-    if (fd < 0) { r.err = "cannot connect to " + u.host + ":" + portstr; return r; }
-    std::string req = method + " " + path + " HTTP/1.1\r\nHost: " + u.host + "\r\nConnection: close\r\nUser-Agent: ProxiChorizo/0.3\r\n";
+    if (fd == SOCK_INVALID) { r.err = "cannot connect to " + u.host + ":" + portstr; return r; }
+    std::string req = method + " " + path + " HTTP/1.1\r\nHost: " + u.host + "\r\nConnection: close\r\nUser-Agent: ProxiChorizo/" PX_VERSION "\r\n";
     if (!token.empty()) req += "Authorization: Bearer " + token + "\r\n";
     if (!body.empty() || method == "POST") req += "Content-Type: application/json\r\nContent-Length: " + std::to_string(body.size()) + "\r\n";
     req += "\r\n" + body;
     size_t sent = 0;
-    while (sent < req.size()) { ssize_t n = send(fd, req.data() + sent, req.size() - sent, MSG_NOSIGNAL); if (n <= 0) { close(fd); r.err = "send failed"; return r; } sent += n; }
+    while (sent < req.size()) { ssize_t n = send(fd, req.data() + sent, (int)(req.size() - sent), MSG_NOSIGNAL); if (n <= 0) { sock_close(fd); r.err = "send failed"; return r; } sent += n; }
     std::string resp; char buf[8192];
-    for (;;) { ssize_t n = recv(fd, buf, sizeof buf, 0); if (n < 0) { close(fd); r.err = "recv failed/timeout"; return r; } if (n == 0) break; resp.append(buf, n); }
-    close(fd);
+    for (;;) { ssize_t n = recv(fd, buf, (int)sizeof buf, 0); if (n < 0) { sock_close(fd); r.err = "recv failed/timeout"; return r; } if (n == 0) break; resp.append(buf, n); }
+    sock_close(fd);
     size_t hdr_end = resp.find("\r\n\r\n");
     if (hdr_end == std::string::npos) { r.err = "malformed response"; return r; }
     std::string head = resp.substr(0, hdr_end);
@@ -335,6 +360,11 @@ struct Shared {
     std::string base_url; Url url; std::string token; std::string name;
     uint8_t pk[32];
     uint8_t scalar[32];
+    // for the stats API (--api-bind): one entry per mining GPU, rate in H/s
+    struct GpuStat { int dev; int ordinal; std::string name; std::string bus; int bus_num; double rate; };
+    std::vector<GpuStat> gpus;
+    std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+    std::string api_bind;
 };
 
 static void install_job(Shared &sh, const std::string &body) {
@@ -509,9 +539,69 @@ static void gpu_worker(Shared &sh, GpuCfg cfg) {
             char line[300]; snprintf(line, sizeof line, "GPU %d: %.2f MH/s avg over %.0fs | in kernel %.0f%% (%d launches, %.1f ms each, %.2f MH/s in-kernel) | idle: no job %.0f%%, stale %.0f%%",
                 cfg.dev, local_attempts / s / 1e6, s, kernel_ms / 10 / s, launches, launches ? gpu_ms / launches : 0,
                 gpu_ms > 0 ? (double)launches * stride * cfg.iters / (gpu_ms / 1000.0) / 1e6 : 0, idle_nojob / 10 / s, idle_stale / 10 / s);
-            logln(line); t_last = now; local_attempts = 0; idle_nojob = idle_stale = kernel_ms = gpu_ms = 0; launches = 0;
+            logln(line);
+            { std::lock_guard<std::mutex> l(sh.mu); if ((size_t)cfg.ordinal < sh.gpus.size()) sh.gpus[cfg.ordinal].rate = local_attempts / s; }
+            t_last = now; local_attempts = 0; idle_nojob = idle_stale = kernel_ms = gpu_ms = 0; launches = 0;
         }
     }
+}
+
+// ----------------------------------------------------------------------------
+// stats API: GET / (or /stats) -> JSON for dashboards, GET /mmpos -> the mmpOS
+// custom-miner line. Read-only, meant for 127.0.0.1 (HiveOS h-stats.sh, mmp-stats.sh).
+// ----------------------------------------------------------------------------
+static std::string json_escape(const std::string &v) {
+    std::string o;
+    for (char c : v) { if (c == '"' || c == '\\') o += '\\'; if ((unsigned char)c >= 0x20) o += c; }
+    return o;
+}
+static std::string stats_json(Shared &sh, bool mmpos) {
+    std::lock_guard<std::mutex> l(sh.mu);
+    uint64_t up = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - sh.started).count();
+    uint64_t acc = sh.shares.load() + sh.solutions.load(), rej = sh.rejected.load();
+    double total = 0; std::string hs, bus, gpus;
+    for (auto &g : sh.gpus) {
+        total += g.rate;
+        char r[64]; snprintf(r, sizeof r, "%.0f", g.rate);
+        if (!hs.empty()) { hs += ","; bus += ","; gpus += ","; }
+        hs += r; bus += std::to_string(g.bus_num);
+        gpus += "{\"id\":" + std::to_string(g.ordinal) + ",\"cuda_device\":" + std::to_string(g.dev) + ",\"name\":\"" + json_escape(g.name) +
+                "\",\"bus_id\":\"" + g.bus + "\",\"bus_number\":" + std::to_string(g.bus_num) + ",\"hashrate\":" + r + "}";
+    }
+    if (mmpos)
+        return "{\"busid\":[" + bus + "],\"hash\":[" + hs + "],\"units\":\"hs\",\"air\":[\"" + std::to_string(acc) + "\",\"0\",\"" + std::to_string(rej) +
+               "\"],\"miner_name\":\"ProxiChorizo\",\"miner_version\":\"" PX_VERSION "\"}";
+    char t[64]; snprintf(t, sizeof t, "%.0f", total);
+    return "{\"miner\":\"ProxiChorizo\",\"version\":\"" PX_VERSION "\",\"uptime\":" + std::to_string(up) + ",\"hashrate\":" + t +
+           ",\"hashrate_units\":\"hs\",\"shares\":{\"accepted\":" + std::to_string(acc) + ",\"rejected\":" + std::to_string(rej) + "},\"solutions\":" +
+           std::to_string(sh.solutions.load()) + ",\"job_server\":\"" + json_escape(sh.url.host) + ":" + std::to_string(sh.url.port) + "\",\"worker\":\"" +
+           json_escape(sh.name) + "\",\"job_k\":" + std::to_string(sh.job.k) + ",\"gpus\":[" + gpus + "]}";
+}
+static void api_server(Shared &sh) {
+    std::string host = "127.0.0.1"; int port = 0;
+    size_t c = sh.api_bind.rfind(':');
+    if (c == std::string::npos) port = atoi(sh.api_bind.c_str()); else { host = sh.api_bind.substr(0, c); port = atoi(sh.api_bind.c_str() + c + 1); }
+    if (host.empty()) host = "0.0.0.0";
+    sock_t ls = socket(AF_INET, SOCK_STREAM, 0);
+    if (ls == SOCK_INVALID) { logln("stats API: cannot create a socket"); return; }
+    int one = 1; setsockopt(ls, SOL_SOCKET, SO_REUSEADDR, (const char *)&one, sizeof one);
+    sockaddr_in a; memset(&a, 0, sizeof a); a.sin_family = AF_INET; a.sin_port = htons((unsigned short)port);
+    if (inet_pton(AF_INET, host.c_str(), &a.sin_addr) != 1) { logln("stats API: bad bind address " + host); sock_close(ls); return; }
+    if (bind(ls, (sockaddr *)&a, sizeof a) != 0 || listen(ls, 8) != 0) { logln("stats API: cannot listen on " + sh.api_bind); sock_close(ls); return; }
+    logln("stats API on http://" + host + ":" + std::to_string(port) + "/  (/mmpos for the mmpOS line)");
+    while (!sh.stop) {
+        sock_t fd = accept(ls, nullptr, nullptr);
+        if (fd == SOCK_INVALID) continue;
+        sock_timeout(fd, 3);
+        char buf[2048]; ssize_t n = recv(fd, buf, (int)sizeof buf - 1, 0);
+        std::string path = "/";
+        if (n > 0) { buf[n] = 0; std::string req(buf); size_t sp = req.find(' '), sp2 = req.find(' ', sp + 1); if (sp != std::string::npos && sp2 != std::string::npos) path = req.substr(sp + 1, sp2 - sp - 1); }
+        std::string body = stats_json(sh, path.rfind("/mmpos", 0) == 0);
+        std::string resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: " + std::to_string(body.size()) + "\r\nConnection: close\r\n\r\n" + body;
+        send(fd, resp.data(), (int)resp.size(), MSG_NOSIGNAL);
+        sock_close(fd);
+    }
+    sock_close(ls);
 }
 
 static bool load_seed(const std::string &seedhex, const std::string &keyfile, uint8_t seed[32]) {
@@ -657,12 +747,13 @@ static int run_verify(const uint8_t pk[32], int dev) {
 
 static void usage() {
     fprintf(stderr,
-        "ProxiChorizo — CUDA nonce seeker for Proxima (suprnova.cc)\n"
+        "ProxiChorizo " PX_VERSION " — CUDA nonce seeker for Proxima (suprnova.cc)\n"
         "  --proxi URL        job server of the pool or of `proxi node mine` (e.g. http://proxi.suprnova.cc:8100)\n"
         "  --token T          bearer token (pool registration / mine.seeker.token)\n"
         "  --key-file FILE    unencrypted proxima.key (or --seed-hex HEX / NONCE_SEEKER_SEED)\n"
         "  --seed-hex HEX     32-byte seed\n"
         "  --name NAME        seeker name in the pool's statistics (default ProxiChorizo-<pid>)\n"
+        "  --api-bind [H:]P   stats API, JSON at http://H:P/ and the mmpOS line at /mmpos (default off; H defaults to 127.0.0.1)\n"
         "  --gpus 0,1         devices to use (default all; indices as CUDA orders them, see CUDA_DEVICE_ORDER)\n"
         "  --variant NAME     kernel variant for all GPUs (default: per-platform table; --list-variants)\n"
         "  --autotune [SECS]  measure every variant on each GPU first and use the fastest (default 6s per trial)\n"
@@ -674,7 +765,8 @@ static void usage() {
 }
 
 int main(int argc, char **argv) {
-    std::string proxi, token, keyfile, seedhex, name, selftest, gpus, variant;
+    std::string proxi, token, keyfile, seedhex, name, selftest, gpus, variant, apiBind;
+    sock_init();
     int blocks = 0, threads = 0, iters = 0; double bench = 0, autotuneSecs = 0; bool fetest = false, listVariants = false, verify = false;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
@@ -685,6 +777,7 @@ int main(int argc, char **argv) {
         else if (a == "--key-file") next(keyfile);
         else if (a == "--seed-hex") next(seedhex);
         else if (a == "--name") next(name);
+        else if (a == "--api-bind" || a == "--api-port") next(apiBind);
         else if (a == "--gpus") next(gpus);
         else if (a == "--variant") next(variant);
         else if (a == "--selftest") next(selftest);
@@ -745,9 +838,12 @@ int main(int argc, char **argv) {
 
     // per device: variant and geometry from the platform table, --variant, or autotune; constants derived and the key checked
     std::vector<GpuCfg> cfgs;
+    std::vector<Shared::GpuStat> gstats;
     for (int d : devs) {
         CUDA_CHECK(cudaSetDevice(d));
         cudaDeviceProp prop; CUDA_CHECK(cudaGetDeviceProperties(&prop, d));
+        { char busid[32] = "?"; cudaDeviceGetPCIBusId(busid, sizeof busid, d); int bn = (int)strtol(busid + 5, nullptr, 16);
+          gstats.push_back(Shared::GpuStat{d, (int)cfgs.size(), prop.name, busid, bn, 0.0}); }
         const Platform &pl = platformFor(prop);
         GpuCfg cfg{d, blocks, threads > 0 ? threads : pl.threads, iters > 0 ? iters : pl.iters, forced ? forced : variantByName(pl.variant)};
         cfg.ordinal = (int)cfgs.size();
@@ -766,10 +862,12 @@ int main(int argc, char **argv) {
     sh.base_url = proxi; if (!parse_url(proxi, sh.url)) return 1;
     sh.token = token; sh.name = name.empty() ? "proxichorizo-" + std::to_string(getpid()) : name;
     memcpy(sh.pk, pk, 32); memcpy(sh.scalar, scalar, 32);
-    logln("ProxiChorizo: key " + hexs(pk, 32) + ", job server " + sh.url.host + ":" + std::to_string(sh.url.port) + ", " + std::to_string(devs.size()) + " GPU(s), name " + sh.name);
+    sh.gpus = gstats; sh.api_bind = apiBind;
+    logln("ProxiChorizo " PX_VERSION ": key " + hexs(pk, 32) + ", job server " + sh.url.host + ":" + std::to_string(sh.url.port) + ", " + std::to_string(devs.size()) + " GPU(s), name " + sh.name);
     std::vector<std::thread> th;
     th.emplace_back(poller, std::ref(sh));
     th.emplace_back(reporter, std::ref(sh));
+    if (!apiBind.empty()) th.emplace_back(api_server, std::ref(sh));
     for (auto &c : cfgs) th.emplace_back(gpu_worker, std::ref(sh), c);
     for (auto &t : th) t.join();
     return 0;

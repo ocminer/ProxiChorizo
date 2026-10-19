@@ -1,0 +1,112 @@
+name: release
+# Builds ProxiChorizo for Linux (glibc 2.31, runs on HiveOS/mmpOS/any distro), Windows (MSVC),
+# packages HiveOS/mmpOS/plain archives, pushes the Docker image, and attaches everything to the
+# GitHub release of the tag. Trigger: push a tag v<version> (must match PX_VERSION in proxichorizo.cu).
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: version label for a manual (non-release) build
+        default: dev
+permissions:
+  contents: write
+  packages: write
+env:
+  ARCHS: -gencode arch=compute_75,code=sm_75 -gencode arch=compute_80,code=sm_80 -gencode arch=compute_86,code=sm_86 -gencode arch=compute_89,code=sm_89 -gencode arch=compute_120,code=sm_120 -gencode arch=compute_120,code=compute_120
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      ver: ${{ steps.v.outputs.ver }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then VER=${GITHUB_REF#refs/tags/v}; else VER="${{ inputs.version }}"; fi
+          SRC=$(grep -oP '#define PX_VERSION "\K[^"]+' proxichorizo.cu)
+          if [[ "$GITHUB_REF" == refs/tags/v* && "$VER" != "$SRC" ]]; then echo "tag $VER != PX_VERSION $SRC"; exit 1; fi
+          echo "ver=$VER" >> "$GITHUB_OUTPUT"
+      - name: exposure check
+        run: scripts/check-secrets.sh --all
+
+  linux:
+    needs: version
+    runs-on: ubuntu-latest
+    container: nvidia/cuda:12.9.1-devel-ubuntu20.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: build (glibc 2.31, all GPU generations)
+        run: |
+          nvcc --version | tail -2
+          nvcc -O3 -std=c++17 $ARCHS -Xcompiler -static-libstdc++ -Xcompiler -static-libgcc -o proxichorizo proxichorizo.cu -lpthread
+          ./proxichorizo --list-variants | head -3 || true
+          objdump -T proxichorizo | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
+      - name: package
+        run: packaging/package.sh "${{ needs.version.outputs.ver }}" ./proxichorizo dist
+      - uses: actions/upload-artifact@v4
+        with: { name: linux, path: dist/* }
+
+  windows:
+    needs: version
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Jimver/cuda-toolkit@v0.2.24
+        with:
+          cuda: '12.9.0'
+          sub-packages: '["nvcc", "cudart", "visual_studio_integration"]'
+          method: network
+      - uses: ilammy/msvc-dev-cmd@v1
+        with: { arch: x64 }
+      - name: build
+        shell: cmd
+        run: nvcc -O3 -std=c++17 %ARCHS% -Xcompiler /MT -o proxichorizo.exe proxichorizo.cu
+      - name: package
+        shell: pwsh
+        run: |
+          $v = "${{ needs.version.outputs.ver }}"
+          New-Item -ItemType Directory -Force dist, stage | Out-Null
+          Copy-Item proxichorizo.exe, README.md, LICENSE, PLATFORMS.md, vectors.json stage/
+          "proxichorizo.exe --proxi http://proxi.suprnova.cc:8100 --token YOUR_TOKEN --key-file proxima.key --name rig1`r`npause" | Out-File -Encoding ascii stage/run-example.bat
+          Compress-Archive -Path stage/* -DestinationPath "dist/proxichorizo-$v-windows-x64.zip"
+          Get-FileHash "dist/proxichorizo-$v-windows-x64.zip" -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  proxichorizo-$v-windows-x64.zip" } | Out-File -Encoding ascii dist/SHA256SUMS-windows.txt
+      - uses: actions/upload-artifact@v4
+        with: { name: windows, path: dist/* }
+
+  docker:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: packaging/docker/Dockerfile
+          push: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/proxichorizo:${{ needs.version.outputs.ver }}
+            ghcr.io/${{ github.repository_owner }}/proxichorizo:latest
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [version, linux, windows, docker]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: dist, merge-multiple: true }
+      - run: ls -la dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          body: |
+            ProxiChorizo ${{ needs.version.outputs.ver }} — CUDA nonce seeker for Proxima (pool or solo).
+            - `proxichorizo-<ver>-linux-x64.tar.gz` — any Linux x64 with an NVIDIA driver 550+ (glibc ≥ 2.31)
+            - `proxichorizo-<ver>.tar.gz` — HiveOS custom miner (flight sheet: see README)
+            - `proxichorizo-mmpos_<ver>.tar.gz` — mmpOS custom miner
+            - `proxichorizo-<ver>-windows-x64.zip` — Windows 10/11 x64
+            - Docker: `docker run --rm --gpus all ghcr.io/ocminer/proxichorizo:${{ needs.version.outputs.ver }} --proxi ... --token ... --seed-hex ...`
