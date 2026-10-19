@@ -28,6 +28,7 @@ notes/
 # --- build outputs (not the sources proxichorizo.cu / proxichorizo_device.cuh) ---
 /proxichorizo
 /proxichorizo_*
+/proxichorizo-*
 /pxminer
 /pxminer_*
 /dist/
