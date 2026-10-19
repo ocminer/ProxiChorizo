@@ -315,6 +315,8 @@ static HttpResp http_do(const Url &u, const std::string &method, const std::stri
 struct Job {
     uint64_t id = 0;
     uint64_t slot = 0;
+    uint64_t nonce_base = 0;  // start of this worker's nonce range, if the job server assigns one
+    bool has_base = false;
     std::vector<uint8_t> prefix;
     int k = 0;
     bool has_beat = false;
@@ -347,6 +349,13 @@ static void install_job(Shared &sh, const std::string &body) {
     json_u64(body, "k", k); json_u64(body, "ttl_ms", ttl); json_u64(body, "slot", slot);
     if (pkh != hexs(sh.pk, 32)) { logln("the miner mines under key " + pkh + " but this seeker holds " + hexs(sh.pk, 32) + " — refusing the job"); sh.job = Job(); return; }
     Job j; j.id = id; j.slot = slot; j.k = (int)k;
+    // a pool hands every worker its own nonce range (top 16 bits); without one
+    // (proxi node mine) each GPU starts at a random nonce
+    std::string nbh; std::vector<uint8_t> nbv;
+    if (json_str(body, "nonce_base", nbh) && unhex(nbh, nbv) && nbv.size() == 8) {
+        for (int i = 0; i < 8; i++) j.nonce_base = (j.nonce_base << 8) | nbv[i];
+        j.has_base = true;
+    }
     if (!unhex(prefixh, j.prefix) || j.prefix.empty() || j.prefix.size() > 64) { logln("bad alpha_prefix in job"); sh.job = Job(); return; }
     std::vector<uint8_t> b;
     if (!beath.empty() && unhex(beath, b) && b.size() == 64) { j.has_beat = true; memcpy(j.beat, b.data(), 64); }
@@ -357,10 +366,19 @@ static void install_job(Shared &sh, const std::string &body) {
     if (changed) logln("job " + std::to_string(id) + ": slot " + std::to_string(slot) + ", k=" + std::to_string(k) + ", ttl " + std::to_string(ttl) + " ms" + (j.has_beat ? ", beat " + beath.substr(0, 16) + "…" : ""));
 }
 
+static std::string urlencode(const std::string &s) {
+    std::string o; char b[4];
+    for (unsigned char c : s) {
+        if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') o += (char)c;
+        else { snprintf(b, sizeof b, "%%%02X", c); o += b; }
+    }
+    return o;
+}
+
 static void poller(Shared &sh) {
     uint64_t after = 0; int backoff = 1;
     while (!sh.stop) {
-        std::string path = "/seeker/job?after=" + std::to_string(after) + "&wait=5000";
+        std::string path = "/seeker/job?after=" + std::to_string(after) + "&wait=5000&worker=" + urlencode(sh.name);
         HttpResp r = http_do(sh.url, "GET", path, "", sh.token, 30);
         if (!r.err.empty() || r.status != 200) {
             logln("cannot fetch the job: " + (r.err.empty() ? "HTTP " + std::to_string(r.status) + " " + r.body.substr(0, 120) : r.err) + " (retry in " + std::to_string(backoff) + "s)");
@@ -423,7 +441,7 @@ static void submit(Shared &sh, const Job &j, uint64_t nonce, const uint8_t beta[
     } else logln("job " + std::to_string(j.id) + ": result answered HTTP " + std::to_string(r.status) + " " + r.body.substr(0, 120));
 }
 
-struct GpuCfg { int dev; int blocks; int threads; int iters; const VariantOps *ops; };
+struct GpuCfg { int dev; int blocks; int threads; int iters; const VariantOps *ops; int ordinal = 0; };
 
 static void gpu_worker(Shared &sh, GpuCfg cfg) {
     CUDA_CHECK(cudaSetDevice(cfg.dev));
@@ -453,7 +471,10 @@ static void gpu_worker(Shared &sh, GpuCfg cfg) {
             if (j.id == 0) idle_nojob += 10; else idle_stale += 10;
             std::this_thread::sleep_for(std::chrono::milliseconds(10)); continue;
         }
-        if (j.id != working) { working = j.id; nonce = rng(); }
+        // a new job: this GPU's own range of the worker's nonce space (8 bits of GPU
+        // ordinal under the pool's 16-bit worker index, 2^40 nonces per GPU per job),
+        // or a random start when the job server assigns no range
+        if (j.id != working) { working = j.id; nonce = j.has_base ? (j.nonce_base | ((uint64_t)(cfg.ordinal & 0xff) << 40)) : rng(); }
         auto k0 = std::chrono::steady_clock::now();
         JobDev jd; memset(&jd, 0, sizeof jd);
         memcpy(jd.pk, sh.pk, 32); memcpy(jd.prefix, j.prefix.data(), j.prefix.size()); jd.prefix_len = (int)j.prefix.size();
@@ -729,6 +750,7 @@ int main(int argc, char **argv) {
         cudaDeviceProp prop; CUDA_CHECK(cudaGetDeviceProperties(&prop, d));
         const Platform &pl = platformFor(prop);
         GpuCfg cfg{d, blocks, threads > 0 ? threads : pl.threads, iters > 0 ? iters : pl.iters, forced ? forced : variantByName(pl.variant)};
+        cfg.ordinal = (int)cfgs.size();
         if (!cfg.ops) cfg.ops = VARIANTS[0];
         uint8_t pk2[32]; int ok = cfg.ops->init(scalar, pk2);
         if (ok != 1) { fprintf(stderr, "device %d: constant derivation failed on %s\n", d, cfg.ops->name); return 2; }
