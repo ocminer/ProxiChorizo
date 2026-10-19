@@ -123,7 +123,7 @@ vendor ICD on HiveOS/mmpOS). Usage is identical: `./proxichorizo-cl --proxi ... 
 The first start compiles the kernels (about a minute per variant) and verifies them against the
 built-in test vectors; a variant that does not pass on your driver is disabled automatically.
 Expect roughly 10.5 MH/s on an RX 7900 XTX, 3.6 MH/s on an RX 7600 XT and 4.5 MH/s on an MI50
-with the 9×29-bit field layout (`fe29_wnaf_c`, the default since 0.4.1; the 0.4.0 numbers were
+with the 9×29-bit field layout (`fe29_wnaf_c`, the default since 0.5.0; the 0.4.0 numbers were
 about half of that). `--iters 8` is the best launch geometry on every AMD card measured so far.
 
 ## 6. Options

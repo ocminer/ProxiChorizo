@@ -48,7 +48,7 @@ jobs:
     container: nvidia/cuda:12.9.1-devel-ubuntu20.04
     steps:
       - name: tools
-        run: apt-get update -qq && apt-get install -y -qq git binutils >/dev/null
+        run: apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git binutils python3 ocl-icd-opencl-dev opencl-headers >/dev/null
       - uses: actions/checkout@v4
       - name: build (glibc 2.31, Turing to Blackwell)
         run: |
@@ -56,8 +56,13 @@ jobs:
           nvcc --version | tail -2
           nvcc -O3 -std=c++17 $ARCHS -Xcompiler -static-libstdc++ -Xcompiler -static-libgcc -o proxichorizo proxichorizo.cu -lpthread
           objdump -T proxichorizo | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
+      - name: build the OpenCL miner (AMD)
+        run: |
+          make -C opencl proxichorizo-cl CL_INC=/usr/include CL_LIB=/usr/lib/x86_64-linux-gnu CXXFLAGS="-O2 -std=c++17 -Wall -Wno-unused-function -I/usr/include -static-libstdc++ -static-libgcc"
+          objdump -T opencl/proxichorizo-cl | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
+          ldd opencl/proxichorizo-cl | grep -i opencl
       - name: package
-        run: scripts/package.sh "${{ needs.version.outputs.ver }}" ./proxichorizo 12.9
+        run: scripts/package.sh "${{ needs.version.outputs.ver }}" ./proxichorizo 12.9 opencl/proxichorizo-cl
       - uses: actions/upload-artifact@v4
         with: { name: linux, path: dist/*, if-no-files-found: error }
       - name: attach to the release
