@@ -13,11 +13,25 @@ Built for and used by the Suprnova Proxima pool: https://proxi.suprnova.cc
 mining with `proxi node mine`, HiveOS, mmpOS, Docker, Windows, options, troubleshooting.
 It is included in every release archive.
 
-## Releases
+## Download
+[GitHub Releases](https://github.com/ocminer/ProxiChorizo/releases) (Linux binary mirrored at https://proxi.suprnova.cc/downloads/):
 
-Prebuilt binaries for Linux, Windows, HiveOS, mmpOS and a Docker image are on the
-[releases page](https://github.com/ocminer/ProxiChorizo/releases); every tag `v<version>`
-is built by GitHub Actions (`.github/workflows/release.yml`).
+* `proxichorizo-<ver>.tar.gz` — Linux x86-64, built on glibc 2.31. One tarball serves plain Linux, **HiveOS** (`h-run.sh`), **MMPOS** (`mmpos-run.sh`) and **SMOS** (`smos-run.sh`) — pick the launcher for your OS and set the job server, your pool token and your key seed in the flight sheet.
+* `proxichorizo-hiveos.tar.gz` — the same package under the directory name HiveOS's custom-miner installer requires (miner name `proxichorizo`).
+* `proxichorizo-<ver>-windows-x86_64.zip` — native **Windows** x64. Put the pool's `proxima.key` next to it, set your token in `start.cmd` and run it.
+* Docker: `ocminersupr/proxichorizo:<ver>` (`docker/README.md`).
+* `SHA256SUMS` and one `.sha256` per asset; every archive carries its own `SHA256SUMS.txt` and `BUILD-INFO.json`.
+
+## Usage
+```
+./proxichorizo --proxi http://proxi.suprnova.cc:8100 --token YOUR_TOKEN --key-file proxima.key --name rig1     # pool
+./proxichorizo --proxi http://your-node:8200 --token SEEKER_TOKEN --key-file proxima.key                        # solo, see USAGE.md
+./proxichorizo --autotune --bench 10        # fastest kernel variant per GPU, then its hashrate
+./proxichorizo --selftest vectors.json      # the math against the Proxima node's VRF vectors
+./proxichorizo ... --api-bind 127.0.0.1:4078   # JSON statistics at /, mmpOS line at /mmpos
+```
+Measured: RTX 5080 ≈ 17 MH/s, RTX 3070 ≈ 6.9 MH/s, CMP 170HX ≈ 5–6 MH/s; one CPU core of the reference seeker ≈ 37 kH/s.
+**[USAGE.md](USAGE.md)** has the full guide: registering at the pool, solo mining with `proxi node mine`, HiveOS / MMPOS / SMOS flight sheets, Docker, Windows, every option, troubleshooting.
 
 ## Build
 
@@ -30,71 +44,6 @@ make test            # self-test against the Go reference vectors, random field 
 Requires CUDA 12.8+ (13 recommended) and a driver that supports it. The binary links the
 CUDA runtime statically; the release builds also link libstdc++ statically and are made on
 glibc 2.31 so they run on HiveOS and mmpOS images.
-
-## Run (pool)
-
-```bash
-./proxichorizo --proxi http://proxi.suprnova.cc:8100 --token YOUR_TOKEN --key-file proxima.key --name rig1
-```
-
-- `--proxi` is the job server, `--token` its bearer token, `--key-file` the Ed25519 key
-  the jobs are to be solved under (an unencrypted `proxima.key`; or `--seed-hex` with the
-  first 64 hex characters of the key file's `private_key`, or `NONCE_SEEKER_SEED`). With a
-  pool, use the key file the pool gave you at registration, never your own wallet key.
-- `--autotune [secs]` measures every kernel variant on each GPU and uses the fastest.
-  The built-in platform table already picks good defaults per GPU generation.
-- `--gpus 0,1`, `--variant NAME` (`--list-variants`), `--threads N --iters N --blocks N`.
-- `--api-bind [host:]port` serves JSON statistics (`/`) and the mmpOS stats line (`/mmpos`).
-- Several GPUs in one box: one process per GPU with `CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=<n>`
-  gives the steadiest rates; the pool hands every worker its own nonce range either way.
-
-## Run (solo, your own node and `proxi node mine`)
-
-ProxiChorizo speaks the seeker protocol of `proxi node mine`, so it replaces the CPU search
-of the reference miner one to one. In the wallet profile (`proxi.yaml`) set
-
-```yaml
-mine:
-    seeker:
-        listen: 0.0.0.0:8200        # where seekers fetch jobs
-        token: some-long-random-string
-```
-
-start `proxi node mine --workers 0` (the whole search goes to seekers; `--workers N` adds
-CPU workers beside them) and point ProxiChorizo at it with the same key file as the wallet:
-
-```bash
-./proxichorizo --proxi http://your-node:8200 --token some-long-random-string --key-file proxima.key
-```
-
-The miner builds, proves and submits the transit itself; ProxiChorizo only finds nonces.
-
-## HiveOS
-
-Add a custom miner with the installation URL of `proxichorizo-<ver>.tar.gz` from the
-[releases](https://github.com/ocminer/ProxiChorizo/releases), miner name `proxichorizo`.
-Flight sheet: **Pool URL** = the job server (`proxi.suprnova.cc:8100`), **Wallet** = your
-pool token, **Pass** = the first 64 hex characters of `private_key` in the pool's
-`proxima.key` (the seed), extra arguments as needed (e.g. `--variant fe32_w4_lb2_c`).
-Hashrate, shares and per-GPU figures come from the stats API on `127.0.0.1:4078`.
-
-## mmpOS
-
-Custom miner package `proxichorizo-mmpos_<ver>.tar.gz`. The launcher maps the mmpOS
-profile fields: pool = job server, user = pool token, password = the seed as above.
-
-## Docker
-
-```bash
-docker run --rm --gpus all ghcr.io/ocminer/proxichorizo:latest \
-  --proxi http://proxi.suprnova.cc:8100 --token YOUR_TOKEN --seed-hex SEED --name docker1
-```
-
-## Windows
-
-`proxichorizo-<ver>-windows-x64.zip` (needs an NVIDIA driver 550 or newer). Edit
-`run-example.bat` with your token and key file, or run `proxichorizo.exe` from a terminal with
-the same arguments as on Linux.
 
 ## What it does, how fast
 
@@ -111,7 +60,7 @@ Reference points (the same binary, platform defaults): RTX 5080 ≈ 17 MH/s, RTX
   the VRF attempt, the kernels. Included once per variant from `proxichorizo.cu`.
 - `vectors.json`, `tools/vrfvec/` — test vectors generated with the Proxima node's own
   `util/vrf` package (build the tool inside a proxima checkout: `go run ./cmd/vrfvec`).
-- `packaging/` — HiveOS and mmpOS integration scripts, Dockerfile, `package.sh`.
+- `hiveos/`, `mmpos/`, `smos/`, `docker/`, `windows/` — launchers and container files shipped in the archives; `scripts/package.sh`, `scripts/package-windows.ps1` build them; `RELEASE-v<ver>.md` are the release notes.
 - `scripts/check-secrets.sh`, `.githooks/pre-commit` — exposure check, see below.
 
 ## Contributing / committing

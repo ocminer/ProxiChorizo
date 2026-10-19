@@ -1,0 +1,11 @@
+ProxiChorizo
+Copyright (c) 2026 ocminer / suprnova.cc
+
+The miner is MIT-licensed with a commercial-inclusion clause (see LICENSE). It contains no
+third-party source code: the Ed25519 field arithmetic, the ECVRF construction (RFC 9381,
+ECVRF-EDWARDS25519-SHA512-TAI) and SHA-512 are implemented in this repository. Test vectors
+in vectors.json were generated with the Proxima node's own util/vrf package
+(https://github.com/lunfardo314/proxima, Apache-2.0); no Proxima code is distributed here.
+
+Binaries link the NVIDIA CUDA runtime statically under the CUDA Toolkit EULA
+(https://docs.nvidia.com/cuda/eula/); the NVIDIA driver on the host is required.

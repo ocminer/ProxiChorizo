@@ -86,7 +86,7 @@ rarely but exactly in proportion to its hashrate.
 
 ## 3. HiveOS
 
-Custom miner, installation URL = the `proxichorizo-<version>.tar.gz` asset of the
+Custom miner, installation URL = the `proxichorizo-hiveos.tar.gz` asset of the
 release, miner name `proxichorizo`. Flight sheet:
 
 | Field | Value |
@@ -94,22 +94,26 @@ release, miner name `proxichorizo`. Flight sheet:
 | Pool URL | `proxi.suprnova.cc:8100` (or your own `proxi node mine` seeker address) |
 | Wallet / template | your pool **token** (or the mine.seeker.token) |
 | Pass | the **seed**: first 64 hex characters of `private_key` in your key file |
-| Extra config arguments | optional, e.g. `--variant fe32_w4_lb2_c --threads 256 --iters 2` |
+| Extra config | optional `KEY=VALUE` lines: `DEVICES=0,1`, `VARIANT=fe32_w4_lb2_c`, `THREADS=256`, `ITERS=2`, `EXTRA_ARGS=...` |
 
 Hashrate, shares and per-GPU figures come from the miner's stats API on `127.0.0.1:4078`.
 
-## 4. mmpOS
+## 4. MMPOS and SMOS
 
-Custom miner package `proxichorizo-mmpos_<version>.tar.gz`. In the miner profile:
-pool = job server address, user = pool token, password = the seed (as above).
+The Linux tarball `proxichorizo-<version>.tar.gz` contains `mmpos-run.sh` and `smos-run.sh`:
+set `POOL_URL` (job server), `TOKEN` (pool token) and `SEED` (as above) in the miner config
+(`WALLET`/`PASSWORD` are accepted as aliases), optionally `DEVICES`, `VARIANT`, `EXTRA_ARGS`.
+MMPOS's API-based "external miner" format is served by `mmp-launch.sh` / `mmp-stats.sh` /
+`mmp-external.conf` from the same tarball (pool = job server, user = token, password = seed).
 
 ## 5. Docker
 
 ```bash
-docker run --rm --gpus all ghcr.io/ocminer/proxichorizo:latest \
-  --proxi http://proxi.suprnova.cc:8100 --token YOUR_TOKEN --seed-hex SEED --name docker1
+docker run -d --name proxichorizo --gpus all --restart unless-stopped -p 4078:4078 \
+  -e TOKEN=YOUR_TOKEN -e SEED=FIRST_64_HEX_OF_private_key -e WORKER=docker1 ocminersupr/proxichorizo:latest
 ```
-Add `-p 4078:4078 … --api-bind 0.0.0.0:4078` for statistics from outside the container.
+`POOL_URL` defaults to `proxi.suprnova.cc:8100`; `KEY_FILE` (a mounted key) replaces `SEED`;
+arguments after the image name go straight to the miner. Statistics at `http://localhost:4078/`.
 
 ## 6. Options
 
@@ -139,6 +143,6 @@ work is pure integer ALU; memory, PCIe link width and risers do not matter.
   the URL and the pool status page.
 - Low in-kernel percentage — too little work per launch: raise `--iters` (4 on most GPUs,
   2 on a CMP 170HX), or run one process per GPU.
-- Windows: run from `cmd`/PowerShell in the unpacked folder so `proxima.key` is found.
+- Windows: `start.cmd` expects `proxima.key` in the unpacked folder; `start.ps1 -KeyFile` points elsewhere.
 
 The source and issue tracker: https://github.com/ocminer/ProxiChorizo

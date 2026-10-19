@@ -1,0 +1,19 @@
+services:
+  miner:
+    image: ocminersupr/proxichorizo:0.4.0
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]
+              capabilities: [gpu]
+    environment:
+      TOKEN: "YOUR_POOL_TOKEN"
+      SEED: "FIRST_64_HEX_CHARS_OF_private_key"
+      WORKER: "rig1"
+      # POOL_URL defaults to proxi.suprnova.cc:8100
+      # DEVICES: "0"
+    ports:
+      - "4078:4078"   # statistics JSON (/) and the mmpOS line (/mmpos)
