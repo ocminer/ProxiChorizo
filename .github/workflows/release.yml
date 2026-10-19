@@ -35,6 +35,12 @@ jobs:
           echo "ver=$VER" >> "$GITHUB_OUTPUT"
       - name: exposure check
         run: scripts/check-secrets.sh --all
+      - name: draft release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          VER=${GITHUB_REF#refs/tags/v}
+          gh release view "v$VER" >/dev/null 2>&1 || gh release create "v$VER" --draft --title "ProxiChorizo $VER" --notes-file "RELEASE-v$VER.md"
 
   linux:
     needs: version
@@ -54,6 +60,12 @@ jobs:
         run: scripts/package.sh "${{ needs.version.outputs.ver }}" ./proxichorizo 12.9
       - uses: actions/upload-artifact@v4
         with: { name: linux, path: dist/*, if-no-files-found: error }
+      - name: attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          apt-get install -y -qq curl >/dev/null; curl -sL https://github.com/cli/cli/releases/download/v2.67.0/gh_2.67.0_linux_amd64.tar.gz | tar xz --strip-components=2 -C /usr/local/bin gh_2.67.0_linux_amd64/bin/gh
+          gh release upload "v${{ needs.version.outputs.ver }}" dist/* --clobber
 
   windows:
     needs: version
@@ -76,6 +88,11 @@ jobs:
         run: scripts/package-windows.ps1 -Version "${{ needs.version.outputs.ver }}" -Exe proxichorizo.exe -Cuda 12.9
       - uses: actions/upload-artifact@v4
         with: { name: windows, path: dist/*, if-no-files-found: error }
+      - name: attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: gh release upload "v${{ needs.version.outputs.ver }}" (Get-ChildItem dist/* | ForEach-Object FullName) --clobber
 
   docker:
     needs: version
@@ -104,18 +121,13 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [version, linux, windows, docker]
     runs-on: ubuntu-latest
+    env: { GH_TOKEN: "${{ github.token }}" }
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with: { path: dist, merge-multiple: true }
-      - name: checksums
-        run: cd dist && cat *.sha256 > SHA256SUMS && ls -la
-      - uses: softprops/action-gh-release@v2
-        with:
-          name: ProxiChorizo ${{ needs.version.outputs.ver }}
-          body_path: RELEASE-v${{ needs.version.outputs.ver }}.md
-          files: |
-            dist/*.tar.gz
-            dist/*.zip
-            dist/*.sha256
-            dist/SHA256SUMS
+      - name: checksums and publish
+        run: |
+          VER="${{ needs.version.outputs.ver }}"
+          mkdir dist && gh release download "v$VER" --repo "$GITHUB_REPOSITORY" --pattern '*.sha256' --dir dist
+          cat dist/*.sha256 > dist/SHA256SUMS && cat dist/SHA256SUMS
+          gh release upload "v$VER" --repo "$GITHUB_REPOSITORY" dist/SHA256SUMS --clobber
+          gh release edit "v$VER" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+          gh release view "v$VER" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name'
