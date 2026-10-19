@@ -55,3 +55,8 @@ dist/
 .idea/
 *.swp
 .DS_Store
+# OpenCL build: generated files and the binary
+/opencl/host_common.inc
+/opencl/kernel_blob.h
+/opencl/proxichorizo-cl
+/opencl/isa/

@@ -151,3 +151,29 @@ each GPU and takes the best; `--list-variants`, `--selftest` and `--fetest` run 
 Distribution build: `-gencode` for sm_75, sm_80, sm_86, sm_89, sm_120 plus
 compute_120 PTX for newer cards. Adding a platform = a row in `PLATFORMS[]`;
 adding a kernel idea = a macro in proxichorizo_device.cuh and a namespace block.
+
+## AMD / OpenCL port (2026-10-19, `opencl/`)
+
+Same algorithm in OpenCL C 1.2 (`opencl/proxichorizo.cl`), compiled per GPU and variant by the
+installed driver at start-up (45–50 s per variant on ROCm; cached in the process). The host
+(`opencl/proxichorizo_cl.cpp`) shares the HTTP/job/submit/stats code with the CUDA miner
+through `host_common.inc`, generated from `proxichorizo.cu` by `gen_host.py`. Variants:
+`fe32_*` = 8×32-bit limbs with 64-bit accumulators (comba), `fe51_*` = 5×51 with `mul_hi`;
+`_c` = compacted pipeline; `wnaf`/`w4`/`w0` as on CUDA. Every selected variant must reproduce
+the 16 embedded test vectors on the device before it is used (`prog_validated`): ROCm 6.4's
+compiler miscompiles the fe51 layout (last byte of the compressed point wrong), ROCm 7.14 does
+not; fe32 is correct on both and is the default.
+
+| GPU | driver | best variant | MH/s |
+|---|---|---|---:|
+| RX 7900 XTX (gfx1100, 48 WGP) | ROCm 7.14 OpenCL | fe51_wnaf_c ×8 5.49 / fe32_wnaf_c ×8 5.36 | ≈ 5.4 |
+| RX 7600 XT (gfx1102) | ROCm 6.4 | fe32_wnaf_c ×8 | 1.9 |
+| MI50 (gfx906, 60 CU) | ROCm 6.4 | fe32_wnaf_c ×8 | 1.9 |
+
+ISA (gfx1100, fe32_wnaf_c): mult_kernel 248 VGPRs, 1.4 KB scratch/lane (the cached wNAF table
+and byte arrays), occupancy 5/16, the field multiply compiles to `v_mad_u64_u32` (4127 of them).
+RDNA executes 32×32→64 multiply-adds at a quarter of the ALU rate, so the realistic ceiling of a
+7900 XTX is well below a comparable NVIDIA part; `-O3` changes nothing. Next ideas, in order:
+word-based SHA-512 message assembly (removes the byte arrays from scratch), occupancy via fewer
+live registers in `mult_kernel`, LDS for a width-4 wNAF table with a 32-lane work-group.
+Verified live on the pool from the XTX (shares accepted, 4.9–5.2 MH/s reported).

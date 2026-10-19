@@ -115,6 +115,15 @@ docker run -d --name proxichorizo --gpus all --restart unless-stopped -p 4078:40
 `POOL_URL` defaults to `proxi.suprnova.cc:8100`; `KEY_FILE` (a mounted key) replaces `SEED`;
 arguments after the image name go straight to the miner. Statistics at `http://localhost:4078/`.
 
+## 5b. AMD GPUs (OpenCL)
+
+Build `opencl/proxichorizo-cl` (see README) on a machine with an OpenCL driver (ROCm, or the
+vendor ICD on HiveOS/mmpOS). Usage is identical: `./proxichorizo-cl --proxi ... --token ... --key-file proxima.key --name rig1`;
+`--list-devices` shows the GPUs, `--gpus 0,1` selects them, `--autotune` picks the fastest kernel variant.
+The first start compiles the kernels (about a minute per variant) and verifies them against the
+built-in test vectors; a variant that does not pass on your driver is disabled automatically.
+Expect roughly 5.4 MH/s on an RX 7900 XTX and 1.9 MH/s on an RX 7600 XT or MI50 (0.4.0).
+
 ## 6. Options
 
 ```
