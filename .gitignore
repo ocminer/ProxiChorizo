@@ -1,0 +1,55 @@
+# --- secrets: never commit keys, tokens, seeds, wallets, passphrases ---
+*.key
+*.pub
+*.pem
+*.p12
+*.token
+*token*
+*secret*
+!scripts/check-secrets.sh
+*passphrase*
+*password*
+*.seed
+seed*
+proxima.key
+proxi.yaml
+proxima.yaml
+*.env
+.env*
+# --- internal notes, handoffs, memory, progress logs (may name hosts/networks) ---
+*HANDOFF*
+*handoff*
+*memory*
+MEMORY.md
+PROGRESS.md
+NOTES*.md
+notes/
+*.log
+# --- build outputs (not the sources proxichorizo.cu / proxichorizo_device.cuh) ---
+/proxichorizo
+/proxichorizo_*
+/pxminer
+/pxminer_*
+/px_fe*
+/px_w*
+/px_sq*
+/px_51*
+/px_iso*
+/px_ev*
+/px_new*
+/px_old*
+/px_sha*
+/px32_*
+!proxichorizo_device.cuh
+*.o
+*.ptx
+*.cubin
+*.fatbin
+build/
+dist/
+/tools/vrfvec/vrfvec
+# --- editor / OS ---
+.vscode/
+.idea/
+*.swp
+.DS_Store
