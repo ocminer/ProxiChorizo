@@ -9,6 +9,10 @@ and post the nonces they find. ProxiChorizo is such a seeker, written for NVIDIA
 
 Built for and used by the Suprnova Proxima pool: https://proxi.suprnova.cc
 
+**Miners: read [USAGE.md](USAGE.md)** — pool mining with suprnova as the example, solo
+mining with `proxi node mine`, HiveOS, mmpOS, Docker, Windows, options, troubleshooting.
+It is included in every release archive.
+
 ## Releases
 
 Prebuilt binaries for Linux, Windows, HiveOS, mmpOS and a Docker image are on the

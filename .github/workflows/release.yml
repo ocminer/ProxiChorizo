@@ -68,7 +68,7 @@ jobs:
         run: |
           $v = "${{ needs.version.outputs.ver }}"
           New-Item -ItemType Directory -Force dist, stage | Out-Null
-          Copy-Item proxichorizo.exe, README.md, LICENSE, PLATFORMS.md, vectors.json stage/
+          Copy-Item proxichorizo.exe, README.md, USAGE.md, LICENSE, PLATFORMS.md, vectors.json stage/
           "proxichorizo.exe --proxi http://proxi.suprnova.cc:8100 --token YOUR_TOKEN --key-file proxima.key --name rig1`r`npause" | Out-File -Encoding ascii stage/run-example.bat
           Compress-Archive -Path stage/* -DestinationPath "dist/proxichorizo-$v-windows-x64.zip"
           Get-FileHash "dist/proxichorizo-$v-windows-x64.zip" -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  proxichorizo-$v-windows-x64.zip" } | Out-File -Encoding ascii dist/SHA256SUMS-windows.txt

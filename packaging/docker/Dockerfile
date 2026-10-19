@@ -9,7 +9,7 @@ RUN nvcc -O3 -std=c++17 $ARCHS -Xcompiler -static-libstdc++ -Xcompiler -static-l
 
 FROM nvidia/cuda:12.9.1-base-ubuntu20.04
 COPY --from=build /src/proxichorizo /usr/local/bin/proxichorizo
-COPY vectors.json /opt/proxichorizo/vectors.json
+COPY vectors.json USAGE.md /opt/proxichorizo/
 ENV CUDA_DEVICE_ORDER=PCI_BUS_ID NVIDIA_DRIVER_CAPABILITIES=compute,utility
 EXPOSE 4078
 ENTRYPOINT ["/usr/local/bin/proxichorizo"]
