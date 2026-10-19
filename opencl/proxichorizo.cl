@@ -545,7 +545,12 @@ static inline bool mult_point(ge *G, __global const HPoint *pt, const Cfe *C, __
     ge_mul8(G, G);
     return true;
 }
-__kernel __attribute__((reqd_work_group_size(PX_WG, 1, 1)))
+#ifdef PX_WAVES
+#define PX_OCC __attribute__((amdgpu_waves_per_eu(PX_WAVES, PX_WAVES)))
+#else
+#define PX_OCC
+#endif
+__kernel __attribute__((reqd_work_group_size(PX_WG, 1, 1))) PX_OCC
 void mult_kernel(__global const JobDev *job, __global const HPoint *pts, __global const uint *cnt, __global Hit *hits, __global uint *nhits, __global const Consts *K) {
     uint n = cnt[0];
     uint gid = get_global_id(0), total = get_global_size(0);

@@ -177,3 +177,21 @@ RDNA executes 32×32→64 multiply-adds at a quarter of the ALU rate, so the rea
 word-based SHA-512 message assembly (removes the byte arrays from scratch), occupancy via fewer
 live registers in `mult_kernel`, LDS for a width-4 wNAF table with a 32-lane work-group.
 Verified live on the pool from the XTX (shares accepted, 4.9–5.2 MH/s reported).
+
+Measured instruction throughput on the RX 7900 XTX (`tools/clmulbench.cpp`, 8 independent
+accumulators, the loop also carries 8 cheap updates per 8 multiplies):
+
+| op | Gop/s |
+|---|---:|
+| 32-bit add/xor | 3681 |
+| `mad24` (24×24+32) | 4489 |
+| `mul_lo` 32×32→32 | 2834 |
+| `mul_hi` 32×32→32 | 2453 |
+| `(ulong)a*b + acc` (`v_mad_u64_u32`) | 2310 |
+
+An attempt costs ≈ 3,600 field multiplications × 64 `v_mad_u64_u32` ≈ 230k of them plus
+adds/carries/SHA, so 5.4 MH/s is ≈ 1.25 T mad64/s = 55 % of the measured peak before the other
+work is counted — the ceiling is ≈ 10 MH/s theoretical, 7–7.5 MH/s realistic. Radix 2^24 limbs
+(11 limbs, 121 lo + 121 hi products at the faster `mad24` rate) cost about twice as many
+cycle-equivalents as the 8×32 schoolbook and were not pursued. For comparison an RTX 5080 does
+~8 T IMAD32/s in the CUDA kernel: the hardware ratio, not the port, explains most of the gap.
