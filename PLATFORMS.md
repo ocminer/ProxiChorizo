@@ -110,6 +110,26 @@ wNAF, the opposite of GA10x/Blackwell; the platform table has its own row for 8.
 HBM2 bandwidth plays no role — the work is pure integer ALU; the x1 link does not
 matter either (a job is 200 bytes).
 
+## Round 4: fewer multiplications per doubling (2026-10-19 14:30 UTC)
+
+A doubling reads X, Y, Z only; T is needed solely as the input of the next
+addition. In the wNAF loop the digit is known (constant memory, uniform), so a
+doubling followed by another doubling skips T (3M + 4S instead of 4M + 4S); the
+same in the 4-bit and plain variants and in the cofactor ×8. RTX 3070:
+`fe32_wnaf_lb2_c` 6.55 → **6.87 MH/s** (+4.9 %), hits identical under `--verify`.
+
+Tried and dropped the same day (RTX 3070, `fe32_wnaf_lb2_c` 256×4):
+- two points per thread sharing one inversion (Montgomery's trick): 6.83 vs 6.86 —
+  the first point parked in local memory while the second is multiplied costs what
+  the saved ~265-operation inversion brings;
+- the multiply kernel at 1 block/SM (`PX_LB_MULT_BLOCKS 1`, 148 registers, no
+  spills): 5.54 at 256 threads, 6.38 at 128 — occupancy beats registers here.
+  The macro stays for other platforms.
+
+ptxas, sm_120, `fe32_wnaf_lb2_c`: h2c_kernel 118 registers, 128 B stack; mult_kernel
+128 registers (the cap of 2 blocks/SM), 1 KB stack = the 8 cached odd multiples, 12 B
+spills. The table in local memory is the remaining structural cost of wNAF.
+
 ## One binary, all variants (since 2026-10-19 11:00 UTC)
 
 `proxichorizo.cu` is the host; `proxichorizo_device.cuh` is the whole device side and is included

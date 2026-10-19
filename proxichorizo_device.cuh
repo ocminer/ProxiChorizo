@@ -470,6 +470,10 @@ __device__ void ge_tobytes(uint8_t s[32], const ge &p) {
 }
 __device__ bool ge_is_identity(const ge &p) { return fe_iszero(p.X) && fe_eq(p.Y, p.Z); }
 
+// Doubling reads X, Y, Z only (4M + 4S). The T coordinate is needed solely as an
+// input to the next addition, so a doubling that is followed by another doubling
+// may skip it (ge_dbl_noT, 3M + 4S): in the scalar multiplication most doublings
+// are, which saves about a tenth of its multiplications.
 __device__ void ge_dbl(ge &r, const ge &p) {
     fe A, B, C, D, E, F, G, H, t;
     fe_sq(A, p.X);
@@ -482,6 +486,18 @@ __device__ void ge_dbl(ge &r, const ge &p) {
     fe_sub(H, D, B);
     fe_mul(r.X, E, F); fe_mul(r.Y, G, H); fe_mul(r.T, E, H); fe_mul(r.Z, F, G);
 }
+__device__ void ge_dbl_noT(ge &r, const ge &p) {
+    fe A, B, C, D, E, F, G, H, t;
+    fe_sq(A, p.X);
+    fe_sq(B, p.Y);
+    fe_sq(C, p.Z); fe_add(C, C, C);
+    fe_neg(D, A);
+    fe_add(t, p.X, p.Y); fe_sq(t, t); fe_sub(t, t, A); fe_sub(E, t, B);
+    fe_add(G, D, B);
+    fe_sub(F, G, C);
+    fe_sub(H, D, B);
+    fe_mul(r.X, E, F); fe_mul(r.Y, G, H); fe_mul(r.Z, F, G);
+}
 __device__ void ge_add(ge &r, const ge &p, const ge &q) {
     fe A, B, C, D, E, F, G, H, t1, t2;
     fe_sub(t1, p.Y, p.X); fe_sub(t2, q.Y, q.X); fe_mul(A, t1, t2);
@@ -491,7 +507,8 @@ __device__ void ge_add(ge &r, const ge &p, const ge &q) {
     fe_sub(E, B, A); fe_sub(F, D, C); fe_add(G, D, C); fe_add(H, B, A);
     fe_mul(r.X, E, F); fe_mul(r.Y, G, H); fe_mul(r.T, E, H); fe_mul(r.Z, F, G);
 }
-__device__ __forceinline__ void ge_mul8(ge &r, const ge &p) { ge_dbl(r, p); ge_dbl(r, r); ge_dbl(r, r); }
+// only the last doubling needs T (the result may feed an addition)
+__device__ __forceinline__ void ge_mul8(ge &r, const ge &p) { ge_dbl_noT(r, p); ge_dbl_noT(r, r); ge_dbl(r, r); }
 
 // r = scalar * p, scalar bits in constant memory (uniform across the grid)
 __constant__ uint8_t c_scalar[32];
@@ -542,8 +559,9 @@ __device__ void ge_scalarmult_const(ge &r, const ge &p) {
     for (int i = 1; i < 8; i++) { ge_add(acc, acc, P2); ge_cache(T[i], acc); }
     ge_identity(r);
     for (int i = c_wnaf_len - 1; i >= 0; i--) {
-        ge_dbl(r, r);
         int d = c_wnaf[i];
+        // the digit is uniform across the grid: no divergence
+        if (d) ge_dbl(r, r); else ge_dbl_noT(r, r);
         if (d > 0) ge_add_cached(r, r, T[d >> 1], false);
         else if (d < 0) ge_add_cached(r, r, T[(-d) >> 1], true);
     }
@@ -553,8 +571,7 @@ __device__ void ge_scalarmult_const(ge &r, const ge &p) {
 __device__ void ge_scalarmult_const(ge &r, const ge &p) {
     ge_copy(r, p);
     for (int i = 253; i >= 0; i--) {
-        ge_dbl(r, r);
-        if ((c_scalar[i >> 3] >> (i & 7)) & 1) ge_add(r, r, p);
+        if ((c_scalar[i >> 3] >> (i & 7)) & 1) { ge_dbl(r, r); ge_add(r, r, p); } else ge_dbl_noT(r, r);
     }
 }
 #elif PX_WINDOW == 2
@@ -583,9 +600,9 @@ __device__ void ge_scalarmult_const(ge &r, const ge &p) {
     int w = (c_scalar[31] >> 4) & 0xF;
     ge_copy(r, T[w]);
     for (int i = 62; i >= 0; i--) {
-        ge_dbl(r, r); ge_dbl(r, r); ge_dbl(r, r); ge_dbl(r, r);
         w = (c_scalar[i >> 1] >> ((i & 1) * 4)) & 0xF;
-        if (w) ge_add(r, r, T[w]);
+        ge_dbl_noT(r, r); ge_dbl_noT(r, r); ge_dbl_noT(r, r);
+        if (w) { ge_dbl(r, r); ge_add(r, r, T[w]); } else ge_dbl_noT(r, r);
     }
 }
 #endif
@@ -795,27 +812,47 @@ __global__ void __launch_bounds__(256) h2c_kernel(const JobDev *job, uint64_t no
     }
 }
 
-__global__ void __launch_bounds__(PX_LB_THREADS, PX_LB_BLOCKS) mult_kernel(const JobDev *job, const HPoint *pts, const unsigned *n_ptr, Hit *hits, unsigned *nhits) {
+// one point: cofactor, scalar multiplication, cofactor; false for the identity
+__device__ __forceinline__ bool mult_point(ge &G, const HPoint &pt) {
+    ge H;
+    fe_copy(H.X, pt.X); fe_copy(H.Y, pt.Y); fe_1(H.Z); // T is not read by the doublings
+    ge_mul8(H, H);
+    if (ge_is_identity(H)) return false;
+    ge_scalarmult_const(G, H);
+    ge_mul8(G, G);
+    return true;
+}
+// compress with a precomputed 1/Z, hash, test
+__device__ __forceinline__ void finish_point(const JobDev *job, const ge &G, const fe &zi, uint64_t nonce, Hit *hits, unsigned *nhits) {
+    fe x, y;
+    fe_mul(x, G.X, zi); fe_mul(y, G.Y, zi);
+    uint8_t m2[35];
+    m2[0] = 0x03; m2[1] = 0x03;
+    fe_tobytes(m2 + 2, y);
+    m2[33] ^= (fe_isnegative(x) ? 0x80 : 0);
+    m2[34] = 0x00;
+    uint8_t beta[64];
+    sha512_single(m2, 35, beta);
+    if (trailing_zero_bits(beta) >= job->k && below(beta, job->beat)) {
+        unsigned idx = atomicAdd(nhits, 1u);
+        if (idx < MAX_HITS) { hits[idx].nonce = nonce; for (int k = 0; k < 64; k++) hits[idx].beta[k] = beta[k]; }
+    }
+}
+// One point per step. Sharing one inversion between two points (Montgomery's
+// trick) was measured at no gain: the point parked in local memory while the
+// second is multiplied costs what the saved inversion brings (RTX 3070, 2026-10-19).
+#ifndef PX_LB_MULT_BLOCKS
+#define PX_LB_MULT_BLOCKS PX_LB_BLOCKS
+#endif
+__global__ void __launch_bounds__(PX_LB_THREADS, PX_LB_MULT_BLOCKS) mult_kernel(const JobDev *job, const HPoint *pts, const unsigned *n_ptr, Hit *hits, unsigned *nhits) {
     unsigned n = *n_ptr;
     unsigned gid = blockIdx.x * blockDim.x + threadIdx.x, total = gridDim.x * blockDim.x;
     for (unsigned i = gid; i < n; i += total) {
-        ge H;
-        fe_copy(H.X, pts[i].X); fe_copy(H.Y, pts[i].Y); fe_1(H.Z); fe_mul(H.T, H.X, H.Y);
-        ge_mul8(H, H);
-        if (ge_is_identity(H)) continue;
         ge G;
-        ge_scalarmult_const(G, H);
-        ge_mul8(G, G);
-        uint8_t m2[35];
-        m2[0] = 0x03; m2[1] = 0x03;
-        ge_tobytes(m2 + 2, G);
-        m2[34] = 0x00;
-        uint8_t beta[64];
-        sha512_single(m2, 35, beta);
-        if (trailing_zero_bits(beta) >= job->k && below(beta, job->beat)) {
-            unsigned idx = atomicAdd(nhits, 1u);
-            if (idx < MAX_HITS) { hits[idx].nonce = pts[i].nonce; for (int k = 0; k < 64; k++) hits[idx].beta[k] = beta[k]; }
-        }
+        if (!mult_point(G, pts[i])) continue;
+        fe zi;
+        fe_invert(zi, G.Z);
+        finish_point(job, G, zi, pts[i].nonce, hits, nhits);
     }
 }
 // self-test: beta for a complete alpha (= prefix 37 + nonce 8) plus intermediates
