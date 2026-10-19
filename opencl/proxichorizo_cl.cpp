@@ -26,7 +26,14 @@
 #include "kernel_blob.h"
 
 // must match proxichorizo.cl
-struct JobDev { uint8_t pk[32]; uint8_t prefix[64]; int prefix_len; int k; uint8_t beat[64]; };
+struct JobDev { uint8_t pk[32]; uint8_t prefix[64]; int prefix_len; int k; uint8_t beat[64]; uint64_t mw[9]; uint64_t beat_w[8]; };
+// the kernels hash on 64-bit words: precompute the fixed part of the hash-to-curve message
+// (03 01 pk prefix = 71 bytes -> words 0..7 and the top 56 bits of word 8) and the beat as words
+static void prepare_job(JobDev &jd) {
+    uint8_t m[72]; memset(m, 0, sizeof m); m[0] = 0x03; m[1] = 0x01; memcpy(m + 2, jd.pk, 32); memcpy(m + 34, jd.prefix, 37);
+    for (int i = 0; i < 9; i++) { uint64_t w = 0; for (int j = 0; j < 8; j++) w = (w << 8) | (uint64_t)(i * 8 + j < 71 ? m[i * 8 + j] : 0); jd.mw[i] = w; }
+    for (int i = 0; i < 8; i++) { uint64_t w = 0; for (int j = 0; j < 8; j++) w = (w << 8) | jd.beat[8 * i + j]; jd.beat_w[i] = w; }
+}
 struct Hit { uint64_t nonce; uint8_t beta[64]; };
 #define MAX_HITS 256
 #define PX_MAX_PASSES 12
@@ -63,25 +70,26 @@ static void enumerate_devices() {
 static std::string dev_label(const ClDev &d) { return d.board.empty() ? d.name : d.board + " (" + d.name + ")"; }
 
 // ---- variants: one kernel source, several build configurations --------------------
-struct Variant { const char *name; int fe32, window, compact, wg; };
+struct Variant { const char *name; int fe, window, compact, wg; };
 static const Variant VARIANTS[] = {
-    { "fe32_wnaf_c", 1, 5, 1, 256 },
-    { "fe32_w4_c",   1, 4, 1, 256 },
-    { "fe32_w0_c",   1, 0, 1, 256 },
-    { "fe51_wnaf_c", 0, 5, 1, 256 },
-    { "fe51_w4_c",   0, 4, 1, 256 },
-    { "fe32_wnaf",   1, 5, 0, 256 },
-    { "fe51_wnaf",   0, 5, 0, 256 },
+    { "fe29_wnaf_c", 29, 5, 1, 256 },
+    { "fe29_w4_c",   29, 4, 1, 256 },
+    { "fe29_w0_c",   29, 0, 1, 256 },
+    { "fe32_wnaf_c", 32, 5, 1, 256 },
+    { "fe32_w4_c",   32, 4, 1, 256 },
+    { "fe51_wnaf_c", 51, 5, 1, 256 },
+    { "fe29_wnaf",   29, 5, 0, 256 },
+    { "fe32_wnaf",   32, 5, 0, 256 },
 };
 static const int NVARIANTS = (int)(sizeof VARIANTS / sizeof VARIANTS[0]);
 static const Variant *variantByName(const std::string &n) { for (int i = 0; i < NVARIANTS; i++) if (n == VARIANTS[i].name) return &VARIANTS[i]; return nullptr; }
 struct Platform { const char *prefix; const char *variant; int iters; const char *note; };
 static const Platform PLATFORMS[] = {
-    { "gfx11", "fe32_wnaf_c", 4, "RDNA3: 8x32 limbs with 64-bit accumulators, wNAF, compacted pipeline" },
-    { "gfx12", "fe32_wnaf_c", 4, "RDNA4: as RDNA3" },
-    { "gfx10", "fe32_wnaf_c", 4, "RDNA2/1" },
-    { "gfx9",  "fe32_wnaf_c", 4, "Vega/CDNA: start here, run --autotune (fe51 may win)" },
-    { "",      "fe32_wnaf_c", 4, "default" },
+    { "gfx11", "fe29_wnaf_c", 8, "RDNA3: 9x29 limbs straight into v_mad_u64_u32, wNAF, compacted pipeline" },
+    { "gfx12", "fe29_wnaf_c", 8, "RDNA4: as RDNA3" },
+    { "gfx10", "fe29_wnaf_c", 8, "RDNA2/1" },
+    { "gfx9",  "fe29_wnaf_c", 8, "Vega/CDNA" },
+    { "",      "fe29_wnaf_c", 8, "default; run --autotune" },
 };
 static const Platform &platformFor(const ClDev &d) { for (auto &p : PLATFORMS) if (d.name.rfind(p.prefix, 0) == 0) return p; return PLATFORMS[sizeof PLATFORMS / sizeof PLATFORMS[0] - 1]; }
 
@@ -104,7 +112,7 @@ static Prog *get_prog(ClDev &dev, const Variant *v) {
     Prog *pr = new Prog(); pr->v = v; pr->dev = &dev;
     const char *src = g_kernel_src.c_str(); size_t len = g_kernel_src.size(); cl_int err;
     pr->p = clCreateProgramWithSource(dev.ctx, 1, &src, &len, &err); CL_CHECK(err);
-    std::string opts = "-DPX_FE32=" + std::to_string(v->fe32) + " -DPX_WINDOW=" + std::to_string(v->window) + " -DPX_COMPACT=" + std::to_string(v->compact) + " -DPX_WG=" + std::to_string(v->wg) + " " + g_extra_build;
+    std::string opts = "-DPX_FE=" + std::to_string(v->fe) + " -DPX_WINDOW=" + std::to_string(v->window) + " -DPX_COMPACT=" + std::to_string(v->compact) + " -DPX_WG=" + std::to_string(v->wg) + " " + g_extra_build;
     auto t0 = std::chrono::steady_clock::now();
     err = clBuildProgram(pr->p, 1, &dev.id, opts.c_str(), nullptr, nullptr);
     if (err != CL_SUCCESS) {
@@ -119,7 +127,7 @@ static Prog *get_prog(ClDev &dev, const Variant *v) {
     pr->k_test = clCreateKernel(pr->p, "test_kernel", &err); CL_CHECK(err);
     pr->k_fetest = clCreateKernel(pr->p, "fe_test_kernel", &err); CL_CHECK(err);
     pr->k_init = clCreateKernel(pr->p, "init_kernel", &err); CL_CHECK(err);
-    pr->fe_size = v->fe32 ? 32 : 40;
+    pr->fe_size = v->fe == 32 ? 32 : v->fe == 51 ? 40 : 36;
     pr->consts_size = 3 * pr->fe_size + 32 + 260 + 8;
     pr->consts = clCreateBuffer(dev.ctx, CL_MEM_READ_WRITE, pr->consts_size, nullptr, &err); CL_CHECK(err);
     logln("[" + std::string(v->name) + "] built for " + dev.name + " in " + std::to_string((int)(bs * 1000)) + " ms");
@@ -250,7 +258,7 @@ static int prog_fetest(Prog *pr, uint32_t seed, int n, uint8_t dump[128]) {
     clReleaseMemObject(b_f); clReleaseMemObject(b_d);
     return fail;
 }
-static cl_mem make_job(ClDev &d, const JobDev &jd) { cl_int err; cl_mem m = clCreateBuffer(d.ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof jd, (void *)&jd, &err); CL_CHECK(err); return m; }
+static cl_mem make_job(ClDev &d, JobDev jd) { prepare_job(jd); cl_int err; cl_mem m = clCreateBuffer(d.ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof jd, (void *)&jd, &err); CL_CHECK(err); return m; }
 
 // ---- the per-GPU worker ----------------------------------------------------------
 struct GpuCfg { int dev; int groups; int iters; const Variant *v; int ordinal = 0; };
@@ -281,6 +289,8 @@ static void gpu_worker(Shared &sh, GpuCfg cfg) {
         memcpy(jd.pk, sh.pk, 32); memcpy(jd.prefix, j.prefix.data(), j.prefix.size()); jd.prefix_len = (int)j.prefix.size();
         if (j.has_beat) memcpy(jd.beat, j.beat, 64); else memset(jd.beat, 0xff, 64);
         jd.k = j.k;
+        if (jd.prefix_len != 37) { logln("job with alpha_prefix of " + std::to_string(jd.prefix_len) + " bytes; this miner expects 37"); std::this_thread::sleep_for(std::chrono::seconds(5)); continue; }
+        prepare_job(jd);
         CL_CHECK(clEnqueueWriteBuffer(d.q, d_job, CL_FALSE, 0, sizeof jd, &jd, 0, nullptr, nullptr));
         cl_uint zero = 0; CL_CHECK(clEnqueueFillBuffer(d.q, d_n, &zero, 4, 0, 4, 0, nullptr, nullptr));
         prog_mine(pr, d_job, nonce, stride, cfg.iters, d_hits, d_n, sc);
@@ -507,11 +517,11 @@ int main(int argc, char **argv) {
             if (forced && &VARIANTS[v] != forced) continue;
             Prog *pr = get_prog(d, &VARIANTS[v]);
             uint8_t pk2[32]; int ok = prog_init(pr, scalar, pk2);
-            if (ok != 1) { fprintf(stderr, "[%s] constant derivation FAILED (%s)\n", VARIANTS[v].name, ok == -2 ? "fe_sq != fe_mul" : "sqrt(-1)/basepoint check"); rc = 1; continue; }
-            if (!selftest.empty()) rc |= run_selftest(pr, selftest);
+            if (ok != 1) { fprintf(stderr, "[%s] constant derivation FAILED (%s) %s\n", VARIANTS[v].name, ok == -2 ? "fe_sq != fe_mul" : ok == -3 ? "sqrt(-1)^2 != -1, got" : ok == -4 ? "basepoint decode, y =" : "?", hexs(pk2, 32).c_str()); rc = 1; }
+            if (ok == 1 && !selftest.empty()) rc |= run_selftest(pr, selftest);
             if (fetest) {
                 int worst = 0;
-                for (int sd = 1; sd <= 16 && !worst; sd++) { uint8_t dump[128]; int fail = prog_fetest(pr, sd, 2000, dump); if (fail) { worst = fail; fprintf(stderr, "[%s] fetest FAIL code %d at iter %d\n x %s\n", VARIANTS[v].name, fail / 1000000, fail % 1000000, hexs(dump, 32).c_str()); } }
+                for (int sd = 1; sd <= 16 && !worst; sd++) { uint8_t dump[128]; int fail = prog_fetest(pr, sd, 2000, dump); if (fail) { worst = fail; fprintf(stderr, "[%s] fetest FAIL code %d at iter %d\n x %s\n y %s\n a %s\n b %s\n", VARIANTS[v].name, fail / 1000000, fail % 1000000, hexs(dump, 32).c_str(), hexs(dump + 32, 32).c_str(), hexs(dump + 64, 32).c_str(), hexs(dump + 96, 32).c_str()); } }
                 if (!worst) fprintf(stderr, "[%s] fetest: 32000 random values ok\n", VARIANTS[v].name); else rc = 1;
             }
         }
@@ -528,7 +538,7 @@ int main(int argc, char **argv) {
         Prog *pr = get_prog(d, cfg.v);
         if (!prog_validated(pr)) {
             if (forced) { fprintf(stderr, "device %d: the forced variant %s is wrong on this driver; refusing to mine with it\n", dv, cfg.v->name); return 2; }
-            cfg.v = variantByName("fe32_wnaf_c"); pr = get_prog(d, cfg.v);
+            cfg.v = variantByName("fe32_wnaf_c"); pr = get_prog(d, cfg.v);  // the layout known to be right on every driver so far
             if (!prog_validated(pr)) { fprintf(stderr, "device %d: no variant reproduces the test vectors\n", dv); return 2; }
         }
         uint8_t pk2[32]; int ok = prog_init(pr, scalar, pk2);

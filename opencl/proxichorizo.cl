@@ -6,8 +6,22 @@
 //   -DPX_COMPACT=0|1    fused kernel / h2c passes + mult kernel
 //   -DPX_WG=256         work-group size the kernels are compiled for
 typedef uchar u8; typedef uint u32; typedef ulong u64;
-#ifndef PX_FE32
+#ifndef PX_FE
+#ifdef PX_FE32
+#if PX_FE32
+#define PX_FE 32
+#else
+#define PX_FE 51
+#endif
+#else
+#define PX_FE 32
+#endif
+#endif
+#undef PX_FE32
+#if PX_FE == 32
 #define PX_FE32 1
+#else
+#define PX_FE32 0
 #endif
 #ifndef PX_WINDOW
 #define PX_WINDOW 5
@@ -20,13 +34,144 @@ typedef uchar u8; typedef uint u32; typedef ulong u64;
 #endif
 #define MAX_HITS 256
 
-typedef struct { u8 pk[32]; u8 prefix[64]; int prefix_len; int k; u8 beat[64]; } JobDev;
+// mw[0..7] = the first 64 bytes of the hash-to-curve message (03 01 pk prefix...) as big-endian
+// words, mw[8] = bytes 64..70 (the prefix tail) in the top 56 bits; beat_w = beat as 8 big-endian
+// words. Both are filled by the host so the kernels never touch byte arrays.
+typedef struct { u8 pk[32]; u8 prefix[64]; int prefix_len; int k; u8 beat[64]; u64 mw[9]; u64 beat_w[8]; } JobDev;
 typedef struct { u64 nonce; u8 beta[64]; } Hit;
 
 // ----------------------------------------------------------------------------
 // field element
 // ----------------------------------------------------------------------------
-#if PX_FE32
+#if PX_FE == 29
+// 9 x 29-bit limbs (261 bits, lazily reduced), the AMD layout: every one of the 81 partial products
+// goes straight into a 64-bit accumulator with v_mad_u64_u32 (9 products < 2^58 each cannot overflow),
+// no carry handling inside the schoolbook. 2^261 = 1216 (mod p). Invariants: outputs of mul/sq/sub
+// are "reduced" (limbs < 2^29 + small), fe_add of two reduced values (< 2^30) may feed mul/sq/sub
+// but not another add.
+#define M29 0x1FFFFFFFu
+typedef struct { u32 v[9]; } fe;
+static inline void fe_0(fe *h) { for (int i = 0; i < 9; i++) h->v[i] = 0; }
+static inline void fe_1(fe *h) { fe_0(h); h->v[0] = 1; }
+static inline void fe_copy(fe *h, const fe *f) { for (int i = 0; i < 9; i++) h->v[i] = f->v[i]; }
+// carry pass: limbs < 2^29 + tiny
+static inline void fe_reduce(fe *h) {
+    u64 c = 0;
+    for (int i = 0; i < 9; i++) { u64 t = (u64)h->v[i] + c; h->v[i] = (u32)t & M29; c = t >> 29; }
+    u64 t0 = (u64)h->v[0] + c * 1216u;
+    h->v[0] = (u32)t0 & M29; h->v[1] += (u32)(t0 >> 29);
+}
+static inline void fe_add(fe *h, const fe *f, const fe *g) { for (int i = 0; i < 9; i++) h->v[i] = f->v[i] + g->v[i]; }
+// 1024p in limbs: every limb constant is >= 2^32 - 19456, so f + 1024p - g is non-negative limb by
+// limb (hence as an integer) for any g with limbs < 2^32 - 19456, i.e. for sums of up to four
+// reduced values. (8p would do for the value but its top limb, 2^26, is smaller than a lazily
+// added top limb: that wrapped and made fe_eq lie for operands with 30/31-bit limbs.)
+__constant u64 FE29_1024P[9] = { 0xFFFFB400UL, 0xFFFFFFF8UL, 0xFFFFFFF8UL, 0xFFFFFFF8UL, 0xFFFFFFF8UL, 0xFFFFFFF8UL, 0xFFFFFFF8UL, 0xFFFFFFF8UL, 0x1FFFFFFF8UL };
+#ifdef PX_HOST_REF
+#define PX29_ASSERT(cond, what) do { if (!(cond)) { fprintf(stderr, "fe29 invariant violated: %s\n", what); abort(); } } while (0)
+#else
+#define PX29_ASSERT(cond, what) do { } while (0)
+#endif
+static inline void fe_sub(fe *h, const fe *f, const fe *g) {
+    u64 c = 0;
+    for (int i = 0; i < 9; i++) {
+        PX29_ASSERT(g->v[i] <= FE29_1024P[i], "fe_sub: subtrahend limb too large");
+        u64 t = (u64)f->v[i] + FE29_1024P[i] - g->v[i] + c; h->v[i] = (u32)t & M29; c = t >> 29;
+    }
+    u64 t0 = (u64)h->v[0] + c * 1216u;
+    h->v[0] = (u32)t0 & M29; h->v[1] += (u32)(t0 >> 29);
+}
+static inline void fe_neg(fe *h, const fe *f) { fe z; fe_0(&z); fe_sub(h, &z, f); }
+// fold 17 columns into 9 limbs
+static inline void fe29_finish(fe *h, u64 c[17]) {
+    u64 carry = 0; u32 hi[8];
+    #pragma unroll
+    for (int k = 9; k < 17; k++) { c[k] += carry; hi[k - 9] = (u32)c[k] & M29; carry = c[k] >> 29; }
+    #pragma unroll
+    for (int k = 0; k < 8; k++) c[k] += (u64)hi[k] * 1216u;
+    c[8] += carry * 1216u;
+    carry = 0;
+    #pragma unroll
+    for (int k = 0; k < 9; k++) { c[k] += carry; h->v[k] = (u32)c[k] & M29; carry = c[k] >> 29; }
+    u64 t = (u64)h->v[0] + carry * 1216u;
+    h->v[0] = (u32)t & M29; h->v[1] += (u32)(t >> 29);
+}
+static void fe_mul(fe *h, const fe *f, const fe *g) {
+    u64 c[17];
+    for (int k = 0; k < 17; k++) c[k] = 0;
+    for (int k = 0; k < 9; k++) PX29_ASSERT(f->v[k] < (1u << 30) && g->v[k] < (1u << 30), "fe_mul: operand limb >= 2^30");
+    #pragma unroll
+    for (int i = 0; i < 9; i++) {
+        #pragma unroll
+        for (int j = 0; j < 9; j++) c[i + j] += (u64)f->v[i] * g->v[j];
+    }
+    fe29_finish(h, c);
+}
+static void fe_sq(fe *h, const fe *f) {
+    u64 c[17];
+    for (int k = 0; k < 17; k++) c[k] = 0;
+    for (int k = 0; k < 9; k++) PX29_ASSERT(f->v[k] < (1u << 30), "fe_sq: operand limb >= 2^30");
+    u32 d[9];
+    for (int i = 0; i < 9; i++) d[i] = f->v[i] << 1;
+    #pragma unroll
+    for (int i = 0; i < 9; i++) {
+        c[2 * i] += (u64)f->v[i] * f->v[i];
+        #pragma unroll
+        for (int j = i + 1; j < 9; j++) c[i + j] += (u64)d[i] * f->v[j];
+    }
+    fe29_finish(h, c);
+}
+static inline void fe_pow2k(fe *h, const fe *f, int k) { fe_copy(h, f); for (int i = 0; i < k; i++) fe_sq(h, h); }
+// canonical representative in [0, p): 9 limbs, top limb < 2^23
+__constant u32 FE29_P[9] = { 0x1FFFFFEDu, 0x1FFFFFFFu, 0x1FFFFFFFu, 0x1FFFFFFFu, 0x1FFFFFFFu, 0x1FFFFFFFu, 0x1FFFFFFFu, 0x1FFFFFFFu, 0x007FFFFFu };
+static inline void fe_canon(u32 out[9], const fe *f) {
+    fe t; fe_copy(&t, f); fe_reduce(&t);
+    // bits 255.. of the top limb are multiples of 2^255 = 19
+    for (int rep = 0; rep < 2; rep++) {
+        u32 q = t.v[8] >> 23; t.v[8] &= 0x007FFFFFu; t.v[0] += q * 19u;
+        u32 c = 0; for (int i = 0; i < 9; i++) { u32 x = t.v[i] + c; t.v[i] = x & M29; c = x >> 29; }
+        t.v[0] += c * 1216u;
+    }
+    // now < 2^255 + small: at most two subtractions of p
+    for (int rep = 0; rep < 2; rep++) {
+        u32 s[9]; u64 b = 0;
+        for (int i = 0; i < 9; i++) { u64 x = (u64)t.v[i] - FE29_P[i] - b; s[i] = (u32)x & M29; b = (x >> 63) & 1u; }
+        if (!b) for (int i = 0; i < 9; i++) t.v[i] = s[i];
+    }
+    for (int i = 0; i < 9; i++) out[i] = t.v[i];
+}
+static inline void fe_canon_le(u64 le[4], const fe *f) {
+    u32 c[9]; fe_canon(c, f);
+    le[0] = (u64)c[0] | ((u64)c[1] << 29) | ((u64)c[2] << 58);
+    le[1] = ((u64)c[2] >> 6) | ((u64)c[3] << 23) | ((u64)c[4] << 52);
+    le[2] = ((u64)c[4] >> 12) | ((u64)c[5] << 17) | ((u64)c[6] << 46);
+    le[3] = ((u64)c[6] >> 18) | ((u64)c[7] << 11) | ((u64)c[8] << 40);
+}
+static inline void fe_from_le(fe *h, const u64 le[4]) {
+    u64 l3 = le[3] & 0x7FFFFFFFFFFFFFFFUL;
+    h->v[0] = (u32)le[0] & M29;
+    h->v[1] = (u32)((le[0] >> 29) | (le[1] << 35)) & M29;
+    h->v[2] = (u32)((le[0] >> 58) | (le[1] << 6)) & M29;
+    h->v[3] = (u32)((le[1] >> 23) | (le[2] << 41)) & M29;
+    h->v[4] = (u32)((le[1] >> 52) | (le[2] << 12)) & M29;
+    h->v[5] = (u32)((le[2] >> 17) | (l3 << 47)) & M29;
+    h->v[6] = (u32)((le[2] >> 46) | (l3 << 18)) & M29;
+    h->v[7] = (u32)(l3 >> 11) & M29;
+    h->v[8] = (u32)(l3 >> 40) & M29;
+}
+static void fe_tobytes(u8 s[32], const fe *f) {
+    u64 le[4]; fe_canon_le(le, f);
+    for (int i = 0; i < 4; i++) for (int j = 0; j < 8; j++) s[8 * i + j] = (u8)(le[i] >> (8 * j));
+}
+static void fe_frombytes(fe *h, const u8 s[32]) {
+    u64 le[4];
+    for (int i = 0; i < 4; i++) { u64 w = 0; for (int j = 7; j >= 0; j--) w = (w << 8) | s[8 * i + j]; le[i] = w; }
+    fe_from_le(h, le);
+}
+static inline bool fe_isnegative(const fe *f) { u32 c[9]; fe_canon(c, f); return (c[0] & 1u) != 0; }
+static inline bool fe_iszero(const fe *f) { u32 c[9]; fe_canon(c, f); u32 o = 0; for (int i = 0; i < 9; i++) o |= c[i]; return o == 0; }
+static inline bool fe_eq(const fe *f, const fe *g) { fe t; fe_sub(&t, f, g); return fe_iszero(&t); }
+#elif PX_FE == 32
 // 8 x 32-bit limbs, lazily reduced (any 256-bit representative), 2^256 = 38 (mod p)
 typedef struct { u32 v[8]; } fe;
 static inline void fe_0(fe *h) { for (int i = 0; i < 8; i++) h->v[i] = 0; }
@@ -212,6 +357,50 @@ static inline bool fe_iszero(const fe *f) { u8 s[32]; fe_tobytes(s, f); u8 o = 0
 static inline bool fe_eq(const fe *f, const fe *g) { fe t; fe_sub(&t, f, g); return fe_iszero(&t); }
 #endif
 
+// ---- words <-> field elements (no byte arrays) ------------------------------------------
+#ifdef PX_HOST_REF
+static inline u64 bswap64(u64 x) { return __builtin_bswap64(x); }
+#else
+static inline u64 bswap64(u64 x) { uchar8 b = as_uchar8(x); return as_ulong(b.s76543210); }
+#endif
+static inline u64 ctz64(u64 x) { return 63 - clz(x & (0UL - x)); }
+#if PX_FE == 29
+// fe_canon_le / fe_from_le defined with the layout
+#elif PX_FE32
+// little-endian 64-bit words of the canonical representative
+static inline void fe_canon_le(u64 le[4], const fe *f) {
+    u32 c[8]; fe_canon(c, f);
+    for (int i = 0; i < 4; i++) le[i] = (u64)c[2 * i] | ((u64)c[2 * i + 1] << 32);
+}
+static inline void fe_from_le(fe *h, const u64 le[4]) {
+    for (int i = 0; i < 4; i++) { h->v[2 * i] = (u32)le[i]; h->v[2 * i + 1] = (u32)(le[i] >> 32); }
+    h->v[7] &= 0x7FFFFFFFu;
+}
+#else
+static inline void fe_canon_le(u64 le[4], const fe *f) {
+    fe h; fe_copy(&h, f); fe_reduce(&h);
+    u64 q = (h.v[0] + 19) >> 51;
+    q = (h.v[1] + q) >> 51; q = (h.v[2] + q) >> 51; q = (h.v[3] + q) >> 51; q = (h.v[4] + q) >> 51;
+    h.v[0] += 19 * q;
+    h.v[1] += h.v[0] >> 51; h.v[0] &= MASK51;
+    h.v[2] += h.v[1] >> 51; h.v[1] &= MASK51;
+    h.v[3] += h.v[2] >> 51; h.v[2] &= MASK51;
+    h.v[4] += h.v[3] >> 51; h.v[3] &= MASK51;
+    h.v[4] &= MASK51;
+    le[0] = h.v[0] | (h.v[1] << 51);
+    le[1] = (h.v[1] >> 13) | (h.v[2] << 38);
+    le[2] = (h.v[2] >> 26) | (h.v[3] << 25);
+    le[3] = (h.v[3] >> 39) | (h.v[4] << 12);
+}
+static inline void fe_from_le(fe *h, const u64 le[4]) {
+    h->v[0] = le[0] & MASK51;
+    h->v[1] = ((le[0] >> 51) | (le[1] << 13)) & MASK51;
+    h->v[2] = ((le[1] >> 38) | (le[2] << 26)) & MASK51;
+    h->v[3] = ((le[2] >> 25) | (le[3] << 39)) & MASK51;
+    h->v[4] = (le[3] >> 12) & MASK51;
+}
+#endif
+
 // derived constants and the key, written once by init_kernel / the host
 typedef struct { fe sqrt_m1, d, d2; u8 scalar[32]; char wnaf[260]; int wnaf_len; int pad; } Consts;
 typedef struct { fe sqrt_m1, d, d2; } Cfe;
@@ -291,6 +480,29 @@ static void ge_tobytes(u8 s[32], const ge *p) {
     s[31] ^= (fe_isnegative(&x) ? 0x80 : 0);
 }
 static bool ge_is_identity(const ge *p) { return fe_iszero(&p->X) && fe_eq(&p->Y, &p->Z); }
+// decode a compressed point given as 4 little-endian words (bit 255 = sign of x)
+static bool ge_from_le(ge *p, const u64 le_in[4], const Cfe *C) {
+    u64 le[4] = { le_in[0], le_in[1], le_in[2], le_in[3] & 0x7FFFFFFFFFFFFFFFUL };
+    fe Y, YY, u, v, X;
+    fe_from_le(&Y, le);
+    fe_1(&p->Z);
+    fe_sq(&YY, &Y);
+    fe_sub(&u, &YY, &p->Z);
+    fe_mul(&v, &YY, &C->d); fe_add(&v, &v, &p->Z);
+    if (!fe_sqrt_ratio_i(&X, &u, &v, C)) return false;
+    if (le_in[3] >> 63) fe_neg(&X, &X);
+    fe_copy(&p->X, &X); fe_copy(&p->Y, &Y);
+    fe_mul(&p->T, &X, &Y);
+    return true;
+}
+// compress with a precomputed 1/Z into 4 little-endian words
+static void ge_to_le_zi(u64 le[4], const ge *p, const fe *zi) {
+    fe x, y; fe_mul(&x, &p->X, zi); fe_mul(&y, &p->Y, zi);
+    fe_canon_le(le, &y);
+    u64 lx[4]; fe_canon_le(lx, &x);
+    le[3] |= (lx[0] & 1UL) << 63;
+}
+static void ge_to_le(u64 le[4], const ge *p) { fe zi; fe_invert(&zi, &p->Z); ge_to_le_zi(le, p, &zi); }
 static void ge_dbl(ge *r, const ge *p) {
     fe A, B, Cc, D, E, F, G, H, t;
     fe_sq(&A, &p->X); fe_sq(&B, &p->Y);
@@ -314,7 +526,7 @@ static void ge_add(ge *r, const ge *p, const ge *q, const Cfe *C) {
     fe_sub(&t1, &p->Y, &p->X); fe_sub(&t2, &q->Y, &q->X); fe_mul(&A, &t1, &t2);
     fe_add(&t1, &p->Y, &p->X); fe_add(&t2, &q->Y, &q->X); fe_mul(&B, &t1, &t2);
     fe_mul(&Cc, &p->T, &C->d2); fe_mul(&Cc, &Cc, &q->T);
-    fe_mul(&D, &p->Z, &q->Z); fe_add(&D, &D, &D);
+    fe_mul(&D, &p->Z, &q->Z); fe_add(&D, &D, &D); fe_reduce(&D);
     fe_sub(&E, &B, &A); fe_sub(&F, &D, &Cc); fe_add(&G, &D, &Cc); fe_add(&H, &B, &A);
     fe_mul(&r->X, &E, &F); fe_mul(&r->Y, &G, &H); fe_mul(&r->T, &E, &H); fe_mul(&r->Z, &F, &G);
 }
@@ -396,14 +608,10 @@ __constant u64 K512[80] = {
     0x28db77f523047d84UL, 0x32caab7b40c72493UL, 0x3c9ebe0a15c9bebcUL, 0x431d67c49c100d4cUL, 0x4cc5d4becb3e42b6UL, 0x597f299cfc657e2aUL, 0x5fcb6fab3ad6faecUL, 0x6c44198c4a475817UL
 };
 static inline u64 rotr64(u64 x, int n) { return (x >> n) | (x << (64 - n)); }
-static void sha512_single(const u8 *msg, int len, u8 out[64]) {
+// one padded block given as 16 big-endian words; output 8 words
+static void sha512_block(const u64 Win[16], u64 out[8]) {
     u64 W[16];
-    for (int i = 0; i < 16; i++) {
-        u64 w = 0;
-        for (int j = 0; j < 8; j++) { int k = i * 8 + j; u8 b = k < len ? msg[k] : (k == len ? (u8)0x80 : (u8)0); w = (w << 8) | b; }
-        W[i] = w;
-    }
-    W[15] = (u64)len * 8;
+    for (int i = 0; i < 16; i++) W[i] = Win[i];
     u64 a = 0x6a09e667f3bcc908UL, b = 0xbb67ae8584caa73bUL, c = 0x3c6ef372fe94f82bUL, d = 0xa54ff53a5f1d36f1UL;
     u64 e = 0x510e527fade682d1UL, f = 0x9b05688c2b3e6c1fUL, g = 0x1f83d9abfb41bd6bUL, h = 0x5be0cd19137e2179UL;
     #pragma unroll
@@ -425,59 +633,71 @@ static void sha512_single(const u8 *msg, int len, u8 out[64]) {
         u64 t2 = S0 + mj;
         h = g; g = f; f = e; e = d + t1; d = c; c = b; b = a; a = t1 + t2;
     }
-    u64 st[8] = { a + 0x6a09e667f3bcc908UL, b + 0xbb67ae8584caa73bUL, c + 0x3c6ef372fe94f82bUL, d + 0xa54ff53a5f1d36f1UL,
-                  e + 0x510e527fade682d1UL, f + 0x9b05688c2b3e6c1fUL, g + 0x1f83d9abfb41bd6bUL, h + 0x5be0cd19137e2179UL };
-    for (int i = 0; i < 8; i++) for (int j = 0; j < 8; j++) out[i * 8 + j] = (u8)(st[i] >> (56 - 8 * j));
+    out[0] = a + 0x6a09e667f3bcc908UL; out[1] = b + 0xbb67ae8584caa73bUL; out[2] = c + 0x3c6ef372fe94f82bUL; out[3] = d + 0xa54ff53a5f1d36f1UL;
+    out[4] = e + 0x510e527fade682d1UL; out[5] = f + 0x9b05688c2b3e6c1fUL; out[6] = g + 0x1f83d9abfb41bd6bUL; out[7] = h + 0x5be0cd19137e2179UL;
+}
+// hash-to-curve message: 03 01 pk(32) prefix(37) nonce(8) ctr 00 = 81 bytes. The host gives the
+// first 64 bytes as mw[0..7] and bytes 64..70 in the top of mw[8]; W[15] = 81*8.
+static inline void h2c_words(u64 W[16], __global const JobDev *job, u64 nonce, u8 ctr) {
+    for (int i = 0; i < 8; i++) W[i] = job->mw[i];
+    W[8] = job->mw[8] | (nonce >> 56);
+    W[9] = (nonce << 8) | ctr;
+    W[10] = 0x0080000000000000UL;
+    W[11] = 0; W[12] = 0; W[13] = 0; W[14] = 0; W[15] = 81 * 8;
+}
+// digest words (big-endian) -> the first 32 bytes as little-endian words
+static inline void digest_to_le(u64 le[4], const u64 dg[8]) { for (int i = 0; i < 4; i++) le[i] = bswap64(dg[i]); }
+// proof-to-hash message: 03 03 cg(32) 00 = 35 bytes, cg = compressed point (little-endian words)
+static inline void p2h_words(u64 W[16], const u64 le[4]) {
+    u64 be0 = bswap64(le[0]), be1 = bswap64(le[1]), be2 = bswap64(le[2]), be3 = bswap64(le[3]);
+    W[0] = (0x0303UL << 48) | (be0 >> 16);
+    W[1] = (be0 << 48) | (be1 >> 16);
+    W[2] = (be1 << 48) | (be2 >> 16);
+    W[3] = (be2 << 48) | (be3 >> 16);
+    W[4] = (be3 << 48) | 0x0000008000000000UL;   // cg30 cg31 00 80 00 00 00 00
+    for (int i = 5; i < 15; i++) W[i] = 0;
+    W[15] = 35 * 8;
+}
+static inline int trailing_zero_bits_w(const u64 B[8]) {
+    int n = 0;
+    for (int i = 7; i >= 0; i--) { if (B[i] == 0) { n += 64; continue; } return n + (int)ctz64(B[i]); }
+    return n;
+}
+static inline bool below_w(const u64 B[8], __global const u64 *beat) {
+    for (int i = 0; i < 8; i++) { if (B[i] < beat[i]) return true; if (B[i] > beat[i]) return false; }
+    return false;
+}
+static inline void store_hit(__global Hit *h, u64 nonce, const u64 B[8]) {
+    h->nonce = nonce;
+    for (int i = 0; i < 8; i++) for (int j = 0; j < 8; j++) h->beta[8 * i + j] = (u8)(B[i] >> (56 - 8 * j));
 }
 
 // ----------------------------------------------------------------------------
-// the VRF output for one nonce
+// the VRF output for one nonce (fused form, used by mine_kernel and test_kernel)
 // ----------------------------------------------------------------------------
 static inline void load_cfe(Cfe *C, __global const Consts *K) { C->sqrt_m1 = K->sqrt_m1; C->d = K->d; C->d2 = K->d2; }
-static inline int trailing_zero_bits(const u8 beta[64]) {
-    int n = 0;
-    for (int i = 63; i >= 0; i--) {
-        u32 b = beta[i];
-        if (b == 0) { n += 8; continue; }
-        return n + (31 - (int)clz(b & (0u - b)));
-    }
-    return n;
-}
-static inline bool below(const u8 a[64], __global const u8 *b) {
-    for (int i = 0; i < 64; i++) { if (a[i] < b[i]) return true; if (a[i] > b[i]) return false; }
-    return false;
-}
-static bool vrf_beta(__global const JobDev *job, u64 nonce, u8 beta[64], u8 *dbgH, u8 *dbgCG, const Cfe *C, __global const Consts *K) {
-    u8 msg[128];
-    int n = 0;
-    msg[n++] = 0x03; msg[n++] = 0x01;
-    for (int i = 0; i < 32; i++) msg[n++] = job->pk[i];
-    int pl = job->prefix_len;
-    for (int i = 0; i < pl; i++) msg[n++] = job->prefix[i];
-    for (int i = 0; i < 8; i++) msg[n++] = (u8)(nonce >> (56 - 8 * i));
-    int ctrpos = n; n += 2;
+static bool vrf_beta_w(__global const JobDev *job, u64 nonce, u64 B[8], u64 *dbgH, u64 *dbgCG, const Cfe *C, __global const Consts *K) {
     ge H;
     bool found = false;
     for (int ctr = 0; ctr < 256 && !found; ctr++) {
-        msg[ctrpos] = (u8)ctr; msg[ctrpos + 1] = 0;
-        u8 dg[64];
-        sha512_single(msg, n, dg);
-        if (!ge_frombytes(&H, dg, C)) continue;
+        u64 W[16], dg[8], le[4];
+        h2c_words(W, job, nonce, (u8)ctr);
+        sha512_block(W, dg);
+        digest_to_le(le, dg);
+        if (!ge_from_le(&H, le, C)) continue;
         ge_mul8(&H, &H);
         if (ge_is_identity(&H)) continue;
         found = true;
     }
     if (!found) return false;
-    if (dbgH) ge_tobytes(dbgH, &H);
+    if (dbgH) ge_to_le(dbgH, &H);
     ge G;
     ge_scalarmult_const(&G, &H, C, K);
     ge_mul8(&G, &G);
-    u8 m2[35];
-    m2[0] = 0x03; m2[1] = 0x03;
-    ge_tobytes(m2 + 2, &G);
-    m2[34] = 0x00;
-    if (dbgCG) for (int i = 0; i < 32; i++) dbgCG[i] = m2[2 + i];
-    sha512_single(m2, 35, beta);
+    u64 cg[4]; ge_to_le(cg, &G);
+    if (dbgCG) for (int i = 0; i < 4; i++) dbgCG[i] = cg[i];
+    u64 W[16]; p2h_words(W, cg);
+    sha512_block(W, B);
     return true;
 }
 
@@ -488,12 +708,13 @@ __kernel __attribute__((reqd_work_group_size(PX_WG, 1, 1)))
 void mine_kernel(__global const JobDev *job, u64 nonce_base, u64 stride, int iters, __global Hit *hits, __global uint *nhits, __global const Consts *K) {
     Cfe C; load_cfe(&C, K);
     u64 nonce = nonce_base + get_global_id(0);
+    int k = job->k;
     for (int it = 0; it < iters; it++, nonce += stride) {
-        u8 beta[64];
-        if (!vrf_beta(job, nonce, beta, 0, 0, &C, K)) continue;
-        if (trailing_zero_bits(beta) >= job->k && below(beta, job->beat)) {
+        u64 B[8];
+        if (!vrf_beta_w(job, nonce, B, 0, 0, &C, K)) continue;
+        if (trailing_zero_bits_w(B) >= k && below_w(B, job->beat_w)) {
             uint idx = atomic_inc(nhits);
-            if (idx < MAX_HITS) { hits[idx].nonce = nonce; for (int i = 0; i < 64; i++) hits[idx].beta[i] = beta[i]; }
+            if (idx < MAX_HITS) store_hit(&hits[idx], nonce, B);
         }
     }
 }
@@ -512,22 +733,15 @@ void h2c_kernel(__global const JobDev *job, u64 nonce_base, __global const u64 *
     uint gid = get_global_id(0), total = get_global_size(0);
     if (gid >= n_in) return;
     Cfe C; load_cfe(&C, K);
-    u8 msg[128];
-    int n = 0;
-    msg[n++] = 0x03; msg[n++] = 0x01;
-    for (int k = 0; k < 32; k++) msg[n++] = job->pk[k];
-    int pl = job->prefix_len;
-    for (int k = 0; k < pl; k++) msg[n++] = job->prefix[k];
-    int npos = n; n += 10;
     for (uint i = gid; i < n_in; i += total) {
         u64 nonce = first_pass ? nonce_base + i : in_nonce[i];
         u8 ctr = first_pass ? (u8)0 : in_ctr[i];
-        for (int k = 0; k < 8; k++) msg[npos + k] = (u8)(nonce >> (56 - 8 * k));
-        msg[npos + 8] = ctr; msg[npos + 9] = 0;
-        u8 dg[64];
-        sha512_single(msg, n, dg);
+        u64 W[16], dg[8], le[4];
+        h2c_words(W, job, nonce, ctr);
+        sha512_block(W, dg);
+        digest_to_le(le, dg);
         ge H;
-        if (ge_frombytes(&H, dg, &C)) {
+        if (ge_from_le(&H, le, &C)) {
             uint o = atomic_inc(n_pts);
             pts[o].X = H.X; pts[o].Y = H.Y; pts[o].nonce = nonce;
         } else if (ctr < 255) {
@@ -555,22 +769,17 @@ void mult_kernel(__global const JobDev *job, __global const HPoint *pts, __globa
     uint n = cnt[0];
     uint gid = get_global_id(0), total = get_global_size(0);
     Cfe C; load_cfe(&C, K);
+    int k = job->k;
     for (uint i = gid; i < n; i += total) {
         ge G;
         if (!mult_point(&G, &pts[i], &C, K)) continue;
-        fe zi, x, y;
-        fe_invert(&zi, &G.Z);
-        fe_mul(&x, &G.X, &zi); fe_mul(&y, &G.Y, &zi);
-        u8 m2[35];
-        m2[0] = 0x03; m2[1] = 0x03;
-        fe_tobytes(m2 + 2, &y);
-        m2[33] ^= (fe_isnegative(&x) ? 0x80 : 0);
-        m2[34] = 0x00;
-        u8 beta[64];
-        sha512_single(m2, 35, beta);
-        if (trailing_zero_bits(beta) >= job->k && below(beta, job->beat)) {
+        fe zi; fe_invert(&zi, &G.Z);
+        u64 cg[4]; ge_to_le_zi(cg, &G, &zi);
+        u64 W[16], B[8]; p2h_words(W, cg);
+        sha512_block(W, B);
+        if (trailing_zero_bits_w(B) >= k && below_w(B, job->beat_w)) {
             uint idx = atomic_inc(nhits);
-            if (idx < MAX_HITS) { hits[idx].nonce = pts[i].nonce; for (int k = 0; k < 64; k++) hits[idx].beta[k] = beta[k]; }
+            if (idx < MAX_HITS) store_hit(&hits[idx], pts[i].nonce, B);
         }
     }
 }
@@ -578,28 +787,36 @@ void mult_kernel(__global const JobDev *job, __global const HPoint *pts, __globa
 // self-test: beta for a complete alpha plus intermediates
 __kernel void test_kernel(__global const JobDev *job, u64 nonce, __global u8 *out_beta, __global u8 *out_h, __global u8 *out_cg, __global int *ok, __global const Consts *K) {
     Cfe C; load_cfe(&C, K);
-    u8 beta[64], hh[32], cg[32];
-    int r = vrf_beta(job, nonce, beta, hh, cg, &C, K) ? 1 : 0;
-    for (int i = 0; i < 64; i++) out_beta[i] = beta[i];
-    for (int i = 0; i < 32; i++) { out_h[i] = hh[i]; out_cg[i] = cg[i]; }
+    u64 B[8], hh[4], cg[4];
+    int r = vrf_beta_w(job, nonce, B, hh, cg, &C, K) ? 1 : 0;
+    for (int i = 0; i < 8; i++) for (int j = 0; j < 8; j++) out_beta[8 * i + j] = (u8)(B[i] >> (56 - 8 * j));
+    for (int i = 0; i < 4; i++) for (int j = 0; j < 8; j++) { out_h[8 * i + j] = (u8)(hh[i] >> (8 * j)); out_cg[8 * i + j] = (u8)(cg[i] >> (8 * j)); }
     *ok = r;
 }
 
 // randomized field-arithmetic test
+// px_gid0 is 0 at run time (single work item) but opaque to the compiler: it keeps the
+// test/init arithmetic on the per-lane (VGPR) code path that the mining kernels use.
+static inline u32 px_gid0(void) { return (u32)get_global_id(0); }
 __kernel void fe_test_kernel(uint seed, int n, __global int *fail, __global u8 *dump, __global const Consts *K) {
-    u64 st = (u64)seed * 0x9E3779B97F4A7C15UL + 1;
+    u64 st = (u64)(seed + px_gid0()) * 0x9E3779B97F4A7C15UL + 1;
     for (int it = 0; it < n; it++) {
         u8 xb[32], yb[32];
         for (int i = 0; i < 32; i++) { st = st * 6364136223846793005UL + 1442695040888963407UL; xb[i] = (u8)(st >> 56); st = st * 6364136223846793005UL + 1442695040888963407UL; yb[i] = (u8)(st >> 56); }
         fe x, y, s1, s2, t, u, v, w;
         fe_frombytes(&x, xb); fe_frombytes(&y, yb);
         if (it & 1) { fe_add(&x, &x, &x); fe_add(&y, &y, &x); }
+#if PX_FE == 29
+        fe_reduce(&x); fe_reduce(&y);   // this layout allows one lazy add before a multiply, not two
+#endif
         fe_sq(&s1, &x); fe_mul(&s2, &x, &x);
         int code = 0;
         if (!fe_eq(&s1, &s2)) code = 1;
-        fe_add(&t, &x, &y); fe_sq(&t, &t);
+        fe_add(&t, &x, &y);
+        { fe a2, b2; fe_sq(&a2, &t); fe_mul(&b2, &t, &t); if (!code && !fe_eq(&a2, &b2)) { code = 13; fe_copy(&t, &a2); fe_copy(&u, &b2); } }
+        if (!code) { fe_sq(&t, &t);
         fe_mul(&u, &x, &y); fe_add(&u, &u, &u); fe_sq(&v, &y); fe_add(&u, &u, &v); fe_add(&u, &u, &s2);
-        if (!code && !fe_eq(&t, &u)) code = 2;
+        if (!code && !fe_eq(&t, &u)) code = 2; }
         fe_sub(&w, &x, &y); fe_add(&t, &x, &y); fe_mul(&w, &w, &t);
         fe_sub(&v, &s2, &v);
         if (!code && !fe_eq(&w, &v)) code = 3;
@@ -611,7 +828,14 @@ __kernel void fe_test_kernel(uint seed, int n, __global int *fail, __global u8 *
           if (!code && fe_isnegative(&s2) != ((b1[0] & 1) != 0)) code = 10;
           fe f2; fe_frombytes(&f2, b1); if (!code && !fe_eq(&f2, &s2)) code = 11;
           u8 b2[32]; fe_tobytes(b2, &f2); int diff = 0; for (int i = 0; i < 32; i++) diff |= b1[i] ^ b2[i]; if (!code && diff) code = 12; }
-        if (code) { *fail = code * 1000000 + it; for (int i = 0; i < 32; i++) { dump[i] = xb[i]; dump[32 + i] = yb[i]; } u8 b1[32], b2[32]; fe_tobytes(b1, &s1); fe_tobytes(b2, &s2); for (int i = 0; i < 32; i++) { dump[64 + i] = b1[i]; dump[96 + i] = b2[i]; } return; }
+        if (code) {
+            *fail = code * 1000000 + it;
+            for (int i = 0; i < 32; i++) { dump[i] = xb[i]; dump[32 + i] = yb[i]; }
+            u8 b1[32], b2[32];
+            if (code == 2 || code == 13) { fe_tobytes(b1, &t); fe_tobytes(b2, &u); } else { fe_tobytes(b1, &s1); fe_tobytes(b2, &s2); }
+            for (int i = 0; i < 32; i++) { dump[64 + i] = b1[i]; dump[96 + i] = b2[i]; }
+            return;
+        }
     }
     // inversion sanity
     fe xx; fe_0(&xx); xx.v[0] = 121666;
@@ -623,12 +847,12 @@ __kernel void fe_test_kernel(uint seed, int n, __global int *fail, __global u8 *
 // constants: d = -121665/121666, sqrt(-1) = 2^((p-1)/4), base point B (y = 4/5); pk = scalar*B
 __kernel void init_kernel(__global const u8 *scalar, __global u8 *pk_out, __global int *ok, __global Consts *K) {
     fe a, b, t;
-    fe_0(&a); a.v[0] = 121665; fe_neg(&a, &a);
-    fe_0(&b); b.v[0] = 121666; fe_invert(&t, &b);
+    fe_0(&a); a.v[0] = 121665 + px_gid0(); fe_neg(&a, &a);
+    fe_0(&b); b.v[0] = 121666 + px_gid0(); fe_invert(&t, &b);
     fe d; fe_mul(&d, &a, &t);
     fe d2; fe_add(&d2, &d, &d); fe_reduce(&d2);
     { fe s1, s2; fe_sq(&s1, &d); fe_mul(&s2, &d, &d); if (!fe_eq(&s1, &s2)) { *ok = -2; return; } }
-    fe r; fe_0(&r); r.v[0] = 2;
+    fe r; fe_0(&r); r.v[0] = 2 + px_gid0();
     fe acc; fe_1(&acc);
     for (int i = 253; i >= 0; i--) {
         fe_sq(&acc, &acc);
@@ -637,14 +861,14 @@ __kernel void init_kernel(__global const u8 *scalar, __global u8 *pk_out, __glob
     }
     fe m1; fe_1(&m1); fe_neg(&m1, &m1);
     fe chk; fe_sq(&chk, &acc);
-    if (!fe_eq(&chk, &m1)) { *ok = 0; return; }
+    if (!fe_eq(&chk, &m1)) { *ok = -3; u8 b[32]; fe_tobytes(b, &chk); for (int i = 0; i < 32; i++) pk_out[i] = b[i]; return; }
     K->sqrt_m1 = acc; K->d = d; K->d2 = d2;
     Cfe C; C.sqrt_m1 = acc; C.d = d; C.d2 = d2;
-    fe four, five, y; fe_0(&four); four.v[0] = 4; fe_0(&five); five.v[0] = 5;
+    fe four, five, y; fe_0(&four); four.v[0] = 4 + px_gid0(); fe_0(&five); five.v[0] = 5 + px_gid0();
     fe_invert(&t, &five); fe_mul(&y, &four, &t);
     u8 yb[32]; fe_tobytes(yb, &y);
     ge B;
-    if (!ge_frombytes(&B, yb, &C)) { *ok = 0; return; }
+    if (!ge_frombytes(&B, yb, &C)) { *ok = -4; for (int i = 0; i < 32; i++) pk_out[i] = yb[i]; return; }
     u8 sc[32]; for (int i = 0; i < 32; i++) sc[i] = scalar[i];
     ge P; ge_scalarmult(&P, sc, &B, &C);
     u8 pk[32]; ge_tobytes(pk, &P);

@@ -60,3 +60,5 @@ dist/
 /opencl/kernel_blob.h
 /opencl/proxichorizo-cl
 /opencl/isa/
+/opencl/hostref/fetest-*
+/opencl/hostref/selftest-*

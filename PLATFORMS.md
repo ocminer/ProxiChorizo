@@ -162,7 +162,9 @@ through `host_common.inc`, generated from `proxichorizo.cu` by `gen_host.py`. Va
 `_c` = compacted pipeline; `wnaf`/`w4`/`w0` as on CUDA. Every selected variant must reproduce
 the 16 embedded test vectors on the device before it is used (`prog_validated`): ROCm 6.4's
 compiler miscompiles the fe51 layout (last byte of the compressed point wrong), ROCm 7.14 does
-not; fe32 is correct on both and is the default.
+not; if the platform default fails validation the miner falls back to `fe32_wnaf_c`.
+
+### First round (fe32 / fe51)
 
 | GPU | driver | best variant | MH/s |
 |---|---|---|---:|
@@ -173,10 +175,34 @@ not; fe32 is correct on both and is the default.
 ISA (gfx1100, fe32_wnaf_c): mult_kernel 248 VGPRs, 1.4 KB scratch/lane (the cached wNAF table
 and byte arrays), occupancy 5/16, the field multiply compiles to `v_mad_u64_u32` (4127 of them).
 RDNA executes 32×32→64 multiply-adds at a quarter of the ALU rate, so the realistic ceiling of a
-7900 XTX is well below a comparable NVIDIA part; `-O3` changes nothing. Next ideas, in order:
-word-based SHA-512 message assembly (removes the byte arrays from scratch), occupancy via fewer
-live registers in `mult_kernel`, LDS for a width-4 wNAF table with a 32-lane work-group.
-Verified live on the pool from the XTX (shares accepted, 4.9–5.2 MH/s reported).
+7900 XTX is well below a comparable NVIDIA part; `-O3` changes nothing. Word-based SHA-512
+message assembly (no byte arrays in scratch) brought +3 %.
+
+### Second round: 9×29-bit limbs (`fe29_*`, now the AMD default)
+
+The 8×32 comba needs a carry chain after every 64-bit accumulate because the column sums
+exceed 64 bits. With 9 limbs of 29 bits every one of the 81 partial products is < 2^58, so a
+whole column (≤ 9 products, or 2^30-limb operands after one lazy addition: 9 × 2^60 < 2^64)
+fits a 64-bit accumulator and the schoolbook is 81 bare `v_mad_u64_u32` with no carry handling
+at all; the 17 columns are folded once at the end (2^261 ≡ 1216 mod p). Subtraction adds 1024p
+limb-wise before subtracting so operands with 30/31-bit limbs stay non-negative (8p was not
+enough: its top limb is 2^26 and a lazily added top limb wrapped, which made `fe_eq` lie — found
+with the CPU reference build in `opencl/hostref/`, which compiles the very same `.cl` as C and
+asserts the limb invariants).
+
+| GPU | driver | fe32_wnaf_c | **fe29_wnaf_c** | fe29_w4_c | fe29_w0_c | fe29_wnaf (fused) |
+|---|---|---:|---:|---:|---:|---:|
+| RX 7900 XTX (gfx1100) | ROCm 7.14 | 5.43 | **10.81** | 9.64 | 8.68 | 7.99 |
+| RX 7600 XT (gfx1102) | ROCm 6.4 | 1.91 | **3.58** | | | |
+| MI50 (gfx906, 60 CU) | ROCm 6.4 | 1.95 | **4.52** | | | |
+
+2× across three generations (RDNA3, CDNA-era Vega 20), `--iters 8` best everywhere; live on
+the pool the XTX reports 10.3–10.5 MH/s with shares accepted. ISA (gfx1100, fe29_wnaf_c):
+mult_kernel 177 VGPRs (was 248), 1.16 KB scratch, occupancy 8/16, 8524 `v_mad_u64_u32`
+(2× the fe32 count — all 81 products are mads now, but each is a single instruction instead of
+mad + carry chain). The 1 T mad64/s measured ceiling argument below now puts the XTX at
+≈ 2.5 T mad64-equivalents/s of the 2.31 T peak: the multiply is at the ALU limit; what is left is
+the non-multiply work (carries, SHA-512, the scratch-resident wNAF table).
 
 Measured instruction throughput on the RX 7900 XTX (`tools/clmulbench.cpp`, 8 independent
 accumulators, the loop also carries 8 cheap updates per 8 multiplies):

@@ -14,7 +14,7 @@
 #include <random>
 #include <fstream>
 #include <sstream>
-#define PX_VERSION "0.4.0"
+#define PX_VERSION "0.4.1"
 // sockets: POSIX or Winsock behind four helpers
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
