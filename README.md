@@ -13,6 +13,21 @@ Built for and used by the Suprnova Proxima pool: https://proxi.suprnova.cc
 mining with `proxi node mine`, HiveOS, mmpOS, Docker, Windows, options, troubleshooting.
 It is included in every release archive.
 
+## Network upgrade (hard fork) at slot 29000 — 2026-10-21 17:01 UTC
+
+Proxima's first live library upgrade ([release v1.1.0-take1](https://github.com/lunfardo314/proxima/releases/tag/v1.1.0-take1))
+activates at slot 29000. From that slot a mine transit must be stamped at tick 83 of its
+slot or later and carry miner version 5, and every transaction carries the version of its
+slot's library. **ProxiChorizo needs no update**: a seeker only searches nonces for the job
+(predecessor ‖ slot ‖ nonce); the tick, the miner version and the transaction version are
+set by whoever builds the transit.
+
+* **Pool miners** (suprnova and any pool on an updated node): nothing to do.
+* **Solo miners**: the transit is built by your `proxi node mine`, so run `proxi` and your
+  node from **v1.1.0-take1 or newer before slot 29000**. An older `proxi` keeps building
+  version-4 transits after the upgrade and every one of them is rejected. A v1.1.0 `proxi`
+  mines the old rules until slot 28999 and the new ones from 29000 by itself, so update early.
+
 ## Download
 [GitHub Releases](https://github.com/ocminer/ProxiChorizo/releases) (Linux binary mirrored at https://proxi.suprnova.cc/downloads/):
 

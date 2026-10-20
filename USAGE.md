@@ -78,6 +78,12 @@ seeker" protocol of Proxima). You need a synced Proxima access node and the `pro
    ```
    If the key file is passphrase-encrypted, pass the seed with `--seed-hex` instead.
 
+**Library upgrade at slot 29000 (2026-10-21 17:01 UTC, proxima v1.1.0-take1):** from that
+slot transits are stamped at tick 83 and carry miner version 5. `proxi node mine` does this
+for you, but only from v1.1.0-take1 on — update `proxi` and your node before the slot, or
+every transit your older `proxi` builds after it is rejected. ProxiChorizo itself needs no
+update (the nonce search is unchanged); pool miners have nothing to do.
+
 `proxi node mine` logs `SOLVED …` / `confirmed` for every transit; the first rewards of a
 new account are 15 PROX "opening" payouts until the account is known on the ledger, then
 50 and 95 PROX (see the Proxima docs on mine payout options). Expect contests: several
