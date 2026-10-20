@@ -349,6 +349,83 @@ struct Job {
     std::chrono::steady_clock::time_point deadline;
     bool stale = false;
 };
+// ---- GPU sensors: temperature, fan, power ------------------------------------
+// Read where the driver offers them: NVML loaded at run time (NVIDIA, Linux and
+// Windows; no build dependency) or the kernel's hwmon files under the device's
+// PCI node (AMD on Linux). A GPU without either simply reports no sensors.
+struct GpuSensors { int temp = -1; int fan = -1; double power = -1; };  // degrees C, percent, watts; -1 = unknown
+#ifndef _WIN32
+#include <dlfcn.h>
+#include <dirent.h>
+#endif
+namespace nvml {
+typedef void *Dev;
+static int (*Init)() = nullptr;
+static int (*ByBus)(const char *, Dev *) = nullptr;
+static int (*Temp)(Dev, int, unsigned *) = nullptr;
+static int (*Fan)(Dev, unsigned *) = nullptr;
+static int (*Power)(Dev, unsigned *) = nullptr;
+static std::once_flag once; static bool ok = false;
+static void load() {
+#ifdef _WIN32
+    HMODULE h = LoadLibraryA("nvml.dll");
+    if (!h) h = LoadLibraryA("C:\\Program Files\\NVIDIA Corporation\\NVSMI\\nvml.dll");
+    if (!h) return;
+    auto sym = [&](const char *n) { return (void *)GetProcAddress(h, n); };
+#else
+    void *h = dlopen("libnvidia-ml.so.1", RTLD_NOW); if (!h) h = dlopen("libnvidia-ml.so", RTLD_NOW);
+    if (!h) return;
+    auto sym = [&](const char *n) { return dlsym(h, n); };
+#endif
+    Init = (int (*)())sym("nvmlInit_v2");
+    ByBus = (int (*)(const char *, Dev *))sym("nvmlDeviceGetHandleByPciBusId_v2");
+    Temp = (int (*)(Dev, int, unsigned *))sym("nvmlDeviceGetTemperature");
+    Fan = (int (*)(Dev, unsigned *))sym("nvmlDeviceGetFanSpeed");
+    Power = (int (*)(Dev, unsigned *))sym("nvmlDeviceGetPowerUsage");
+    ok = Init && ByBus && Temp && Init() == 0;
+}
+static bool read(const std::string &bus, GpuSensors &s) {
+    std::call_once(once, load);
+    if (!ok) return false;
+    Dev d; if (ByBus(bus.c_str(), &d) != 0) return false;
+    unsigned v;
+    if (Temp(d, 0 /* NVML_TEMPERATURE_GPU */, &v) == 0) s.temp = (int)v;
+    if (Fan && Fan(d, &v) == 0) s.fan = (int)v;           // fails on passive (server) cards: stays -1
+    if (Power && Power(d, &v) == 0) s.power = v / 1000.0;  // milliwatts
+    return s.temp >= 0 || s.power >= 0;
+}
+}
+static bool sysfs_sensors(const std::string &bus, GpuSensors &s) {
+#ifdef _WIN32
+    (void)bus; (void)s; return false;
+#else
+    std::string dir = "/sys/bus/pci/devices/" + bus + "/hwmon", hw;
+    if (DIR *d = opendir(dir.c_str())) { while (dirent *e = readdir(d)) if (e->d_name[0] != '.') { hw = dir + "/" + e->d_name; break; } closedir(d); }
+    if (hw.empty()) return false;
+    auto rd = [&](const char *f, double &v) { std::ifstream in(hw + "/" + f); return (bool)(in >> v); };
+    double v, m;
+    if (rd("temp1_input", v)) s.temp = (int)(v / 1000);
+    if (rd("fan1_input", v) && rd("fan1_max", m) && m > 0) s.fan = (int)(v * 100 / m + 0.5);
+    else if (rd("pwm1", v)) s.fan = (int)(v / 2.55 + 0.5);
+    if (rd("power1_average", v) || rd("power1_input", v)) s.power = v / 1e6;  // microwatts
+    return s.temp >= 0 || s.power >= 0;
+#endif
+}
+static GpuSensors read_sensors(const std::string &bus) { GpuSensors s; if (!nvml::read(bus, s)) sysfs_sensors(bus, s); return s; }
+// " | 61C, fan 45%, 318 W" for the 30-second line; empty without sensors
+static std::string sensors_str(const GpuSensors &s) {
+    if (s.temp < 0 && s.power < 0) return "";
+    char b[64]; std::string o = " |";
+    if (s.temp >= 0) { snprintf(b, sizeof b, " %dC", s.temp); o += b; }
+    if (s.fan >= 0) { snprintf(b, sizeof b, ", fan %d%%", s.fan); o += b; }
+    if (s.power >= 0) { snprintf(b, sizeof b, ", %.0f W", s.power); o += b; }
+    return o;
+}
+static std::string sensors_json(const GpuSensors &s) {
+    auto num = [](double v, bool f) { if (v < 0) return std::string("null"); char b[32]; snprintf(b, sizeof b, f ? "%.1f" : "%.0f", v); return std::string(b); };
+    return ",\"temp\":" + num(s.temp, false) + ",\"fan\":" + num(s.fan, false) + ",\"power\":" + num(s.power, true);
+}
+
 struct Shared {
     std::mutex mu;
     Job job;                           // current job (id 0 = none)
@@ -361,7 +438,7 @@ struct Shared {
     uint8_t pk[32];
     uint8_t scalar[32];
     // for the stats API (--api-bind): one entry per mining GPU, rate in H/s
-    struct GpuStat { int dev; int ordinal; std::string name; std::string bus; int bus_num; double rate; };
+    struct GpuStat { int dev; int ordinal; std::string name; std::string bus; int bus_num; double rate; GpuSensors sens; };
     std::vector<GpuStat> gpus;
     std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
     std::string api_bind;
@@ -539,8 +616,10 @@ static void gpu_worker(Shared &sh, GpuCfg cfg) {
             char line[300]; snprintf(line, sizeof line, "GPU %d: %.2f MH/s avg over %.0fs | in kernel %.0f%% (%d launches, %.1f ms each, %.2f MH/s in-kernel) | idle: no job %.0f%%, stale %.0f%%",
                 cfg.dev, local_attempts / s / 1e6, s, kernel_ms / 10 / s, launches, launches ? gpu_ms / launches : 0,
                 gpu_ms > 0 ? (double)launches * stride * cfg.iters / (gpu_ms / 1000.0) / 1e6 : 0, idle_nojob / 10 / s, idle_stale / 10 / s);
-            logln(line);
-            { std::lock_guard<std::mutex> l(sh.mu); if ((size_t)cfg.ordinal < sh.gpus.size()) sh.gpus[cfg.ordinal].rate = local_attempts / s; }
+            std::string bus; { std::lock_guard<std::mutex> l(sh.mu); if ((size_t)cfg.ordinal < sh.gpus.size()) bus = sh.gpus[cfg.ordinal].bus; }
+            GpuSensors se = read_sensors(bus);
+            logln(line + sensors_str(se));
+            { std::lock_guard<std::mutex> l(sh.mu); if ((size_t)cfg.ordinal < sh.gpus.size()) { sh.gpus[cfg.ordinal].rate = local_attempts / s; sh.gpus[cfg.ordinal].sens = se; } }
             t_last = now; local_attempts = 0; idle_nojob = idle_stale = kernel_ms = gpu_ms = 0; launches = 0;
         }
     }
@@ -559,17 +638,20 @@ static std::string stats_json(Shared &sh, bool mmpos) {
     std::lock_guard<std::mutex> l(sh.mu);
     uint64_t up = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - sh.started).count();
     uint64_t acc = sh.shares.load() + sh.solutions.load(), rej = sh.rejected.load();
-    double total = 0; std::string hs, bus, gpus;
+    double total = 0; std::string hs, bus, gpus, temp, fan, power;
     for (auto &g : sh.gpus) {
         total += g.rate;
         char r[64]; snprintf(r, sizeof r, "%.0f", g.rate);
-        if (!hs.empty()) { hs += ","; bus += ","; gpus += ","; }
+        if (!hs.empty()) { hs += ","; bus += ","; gpus += ","; temp += ","; fan += ","; power += ","; }
         hs += r; bus += std::to_string(g.bus_num);
+        temp += std::to_string(g.sens.temp < 0 ? 0 : g.sens.temp); fan += std::to_string(g.sens.fan < 0 ? 0 : g.sens.fan);
+        power += std::to_string(g.sens.power < 0 ? 0 : (int)(g.sens.power + 0.5));
         gpus += "{\"id\":" + std::to_string(g.ordinal) + ",\"cuda_device\":" + std::to_string(g.dev) + ",\"name\":\"" + json_escape(g.name) +
-                "\",\"bus_id\":\"" + g.bus + "\",\"bus_number\":" + std::to_string(g.bus_num) + ",\"hashrate\":" + r + "}";
+                "\",\"bus_id\":\"" + g.bus + "\",\"bus_number\":" + std::to_string(g.bus_num) + ",\"hashrate\":" + r + sensors_json(g.sens) + "}";
     }
     if (mmpos)
-        return "{\"busid\":[" + bus + "],\"hash\":[" + hs + "],\"units\":\"hs\",\"air\":[\"" + std::to_string(acc) + "\",\"0\",\"" + std::to_string(rej) +
+        return "{\"busid\":[" + bus + "],\"hash\":[" + hs + "],\"units\":\"hs\",\"temp\":[" + temp + "],\"fan\":[" + fan + "],\"power\":[" + power +
+               "],\"air\":[\"" + std::to_string(acc) + "\",\"0\",\"" + std::to_string(rej) +
                "\"],\"miner_name\":\"ProxiChorizo\",\"miner_version\":\"" PX_VERSION "\"}";
     char t[64]; snprintf(t, sizeof t, "%.0f", total);
     return "{\"miner\":\"ProxiChorizo\",\"version\":\"" PX_VERSION "\",\"uptime\":" + std::to_string(up) + ",\"hashrate\":" + t +
@@ -754,7 +836,7 @@ static void usage() {
         "  --seed-hex HEX     32-byte seed\n"
         "  --name NAME        seeker name in the pool's statistics (default ProxiChorizo-<pid>)\n"
         "  --api-bind [H:]P   stats API, JSON at http://H:P/ and the mmpOS line at /mmpos (default off; H defaults to 127.0.0.1)\n"
-        "  --gpus 0,1         devices to use (default all; indices as CUDA orders them, see CUDA_DEVICE_ORDER)\n"
+        "  --gpus 0,1         devices to use (default all; indices as CUDA orders them, see CUDA_DEVICE_ORDER); -d 0,1 is the same\n"
         "  --variant NAME     kernel variant for all GPUs (default: per-platform table; --list-variants)\n"
         "  --autotune [SECS]  measure every variant on each GPU first and use the fastest (default 6s per trial)\n"
         "  --blocks N --threads N --iters N   launch geometry (defaults from the platform table)\n"
@@ -778,7 +860,7 @@ int main(int argc, char **argv) {
         else if (a == "--seed-hex") next(seedhex);
         else if (a == "--name") next(name);
         else if (a == "--api-bind" || a == "--api-port") next(apiBind);
-        else if (a == "--gpus") next(gpus);
+        else if (a == "--gpus" || a == "-d" || a == "--devices") next(gpus);
         else if (a == "--variant") next(variant);
         else if (a == "--selftest") next(selftest);
         else if (a == "--fetest") fetest = true;

@@ -54,7 +54,7 @@ jobs:
         run: |
           git config --global --add safe.directory "$PWD"
           nvcc --version | tail -2
-          nvcc -O3 -std=c++17 $ARCHS -Xcompiler -static-libstdc++ -Xcompiler -static-libgcc -o proxichorizo proxichorizo.cu -lpthread
+          nvcc -O3 -std=c++17 $ARCHS -Xcompiler -static-libstdc++ -Xcompiler -static-libgcc -o proxichorizo proxichorizo.cu -lpthread -ldl
           objdump -T proxichorizo | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
       - name: build the OpenCL miner (AMD)
         run: |

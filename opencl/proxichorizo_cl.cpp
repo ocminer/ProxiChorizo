@@ -316,8 +316,10 @@ static void gpu_worker(Shared &sh, GpuCfg cfg) {
             double s = std::chrono::duration<double>(now - t_last).count();
             char line[300]; snprintf(line, sizeof line, "GPU %d: %.2f MH/s avg over %.0fs | in kernel %.0f%% (%d launches, %.1f ms each) | idle: no job %.0f%%, stale %.0f%%",
                 cfg.dev, local_attempts / s / 1e6, s, kernel_ms / 10 / s, launches, launches ? kernel_ms / launches : 0, idle_nojob / 10 / s, idle_stale / 10 / s);
-            logln(line);
-            { std::lock_guard<std::mutex> l(sh.mu); if ((size_t)cfg.ordinal < sh.gpus.size()) sh.gpus[cfg.ordinal].rate = local_attempts / s; }
+            std::string bus; { std::lock_guard<std::mutex> l(sh.mu); if ((size_t)cfg.ordinal < sh.gpus.size()) bus = sh.gpus[cfg.ordinal].bus; }
+            GpuSensors se = read_sensors(bus);
+            logln(line + sensors_str(se));
+            { std::lock_guard<std::mutex> l(sh.mu); if ((size_t)cfg.ordinal < sh.gpus.size()) { sh.gpus[cfg.ordinal].rate = local_attempts / s; sh.gpus[cfg.ordinal].sens = se; } }
             t_last = now; local_attempts = 0; idle_nojob = idle_stale = kernel_ms = 0; launches = 0;
         }
     }
@@ -451,7 +453,7 @@ static void usage() {
         "  --seed-hex HEX     32-byte seed\n"
         "  --name NAME        seeker name in the pool's statistics (default proxichorizo-<pid>)\n"
         "  --api-bind [H:]P   stats API, JSON at http://H:P/ and the mmpOS line at /mmpos (default off)\n"
-        "  --gpus 0,1         devices to use (default all; --list-devices shows them)\n"
+        "  --gpus 0,1         devices to use (default all; --list-devices shows them); -d 0,1 is the same\n"
         "  --variant NAME     kernel variant for all GPUs (default: per-GPU table; --list-variants)\n"
         "  --autotune [SECS]  measure every variant and iteration count on each GPU first (default 6s per trial)\n"
         "  --groups N --iters N   work-groups per launch (default 8 per compute unit) and nonces per work-item\n"
@@ -476,7 +478,7 @@ int main(int argc, char **argv) {
         else if (a == "--seed-hex") next(seedhex);
         else if (a == "--name") next(name);
         else if (a == "--api-bind" || a == "--api-port") next(apiBind);
-        else if (a == "--gpus") next(gpus);
+        else if (a == "--gpus" || a == "-d" || a == "--devices") next(gpus);
         else if (a == "--variant") next(variant);
         else if (a == "--kernel-file") next(kernelFile);
         else if (a == "--build-opts") next(g_extra_build);
