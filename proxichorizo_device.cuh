@@ -1017,8 +1017,11 @@ __device__ __forceinline__ void finish_point(const JobDev *job, const ge &G, con
 #ifndef PX_LB_MULT_BLOCKS
 #define PX_LB_MULT_BLOCKS PX_LB_BLOCKS
 #endif
+// two points per thread share one inversion by default: +1.4 % (RTX 3070) to
+// +2.9 % (RTX PRO 6000) once the loop above fit the instruction cache; larger
+// batches park too much (PLATFORMS.md)
 #ifndef PX_INV_BATCH
-#define PX_INV_BATCH 1
+#define PX_INV_BATCH 2
 #endif
 __global__ void __launch_bounds__(PX_LB_THREADS, PX_LB_MULT_BLOCKS) mult_kernel(const JobDev *job, const HPoint *pts, const unsigned *n_ptr, Hit *hits, unsigned *nhits) {
     unsigned n = *n_ptr;

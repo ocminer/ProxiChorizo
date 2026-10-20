@@ -284,3 +284,17 @@ SM throughput 76 → 82 %, issue slots 57 → 63 %. What remains is `wait` 1.5 (
 ptxas never overlaps two `.cc` chains, measured: two independent multiplies interleaved in
 source run exactly as fast as in sequence) and the IMAD pipe itself. `__noinline__` field
 multiply/square (to shrink the loop further) collapses to 11.6 MH/s: call overhead and stack.
+
+### Round 6b: shipped in 0.5.3 (2026-10-20 22:30 UTC)
+
+| GPU | 0.5.2 | merged loop | + batched inversion (2 points) | gain |
+|---|---:|---:|---:|---:|
+| RTX PRO 6000 | 36.75 | 40.38 | **41.54** | +13 % |
+| RTX 5080 | 18.3 | 20.9 | **21.46** | +17 % |
+| RTX 3070 | 7.06 | 7.27 | **7.37** | +4.4 % |
+| CMP 170HX (GA100) | 5.99 (w4, 8×2) | 6.89 (wNAF, 128×1) | **6.91** | +15 % |
+
+With the smaller loop the wNAF variant beats the 4-bit window on GA100 as well (6.89 vs 6.38
+at the same launch; the old 4.7-vs-4.1 note was an instruction-cache effect), so every NVIDIA
+row now uses `fe32_wnaf_lb2_c`, 128 blocks/SM × 256 × 1, two points per inversion
+(`PX_INV_BATCH 2`, the default for compacted variants).

@@ -14,7 +14,7 @@
 #include <random>
 #include <fstream>
 #include <sstream>
-#define PX_VERSION "0.5.2"
+#define PX_VERSION "0.5.3"
 // sockets: POSIX or Winsock behind four helpers
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -180,7 +180,7 @@ static const Platform PLATFORMS[] = {
     { 12, -1, "fe32_wnaf_lb2_c", 256, 1, 128, "Blackwell (RTX 50xx, RTX PRO 6000): compacted pipeline + wNAF, large launches (19.1 MH/s on a 5080, 36.7 on a PRO 6000)" },
     {  8,  9, "fe32_wnaf_lb2_c", 256, 1, 128, "Ada (RTX 40xx): assumed like Ampere/Blackwell, run --autotune once" },
     {  8,  6, "fe32_wnaf_lb2_c", 256, 1, 128, "Ampere GA10x (RTX 30xx): compacted pipeline + wNAF, large launches (7.1 MH/s on a 3070)" },
-    {  8,  0, "fe32_w4_lb2_c", 256, 2, 8, "Ampere GA100 (A100, CMP 170HX): compacted 4-bit window; wNAF is slower here (4.7 vs 4.1 MH/s on a CMP 170HX)" },
+    {  8,  0, "fe32_wnaf_lb2_c", 256, 1, 128, "Ampere GA100 (A100, CMP 170HX): wNAF wins since the loop fits the instruction cache (6.9 vs 6.0 MH/s on a CMP 170HX)" },
     {  7,  5, "fe32_wnaf_lb2_c", 256, 1, 128, "Turing: assumed, run --autotune once" },
     { -1, -1, "fe32_wnaf_lb2_c", 256, 1, 128, "default" },
 };
