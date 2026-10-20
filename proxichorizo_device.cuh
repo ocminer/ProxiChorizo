@@ -2,7 +2,141 @@
 // SHA-512, the VRF attempt and the kernels. Included once per variant from
 // ProxiChorizo.cu inside a namespace, with PX_FE32 / PX_WINDOW / PX_LB_BLOCKS /
 // PX_VARIANT_NAME set by the includer; see PLATFORMS.md for what each costs.
-#ifdef PX_FE32
+#if defined(PX_FE26)
+// ----------------------------------------------------------------------------
+// field element, 10 signed 32-bit limbs in radix 2^25.5 (26, 25, 26, ... bits),
+// the ref10 layout: products are accumulated in 64-bit columns, one IMAD.WIDE
+// each and independent of one another, so there is no carry chain for the
+// scheduler to wait on (the 8x32 schoolbook below serialises on the carry
+// flag). Columns past limb 9 are kept apart and folded once with 2^255 = 19,
+// so no operand is ever scaled by more than 4 and lazily reduced inputs with
+// limbs up to ~2^27 stay within int64. Measured 1.4x the multiply rate of the
+// 8x32 version on Blackwell (PLATFORMS.md, round 6).
+// ----------------------------------------------------------------------------
+struct fe { int32_t v[10]; };
+
+__device__ __forceinline__ void fe_0(fe &h) { for (int i = 0; i < 10; i++) h.v[i] = 0; }
+__device__ __forceinline__ void fe_1(fe &h) { fe_0(h); h.v[0] = 1; }
+__device__ __forceinline__ void fe_copy(fe &h, const fe &f) { for (int i = 0; i < 10; i++) h.v[i] = f.v[i]; }
+__device__ __forceinline__ void fe_add(fe &h, const fe &f, const fe &g) { for (int i = 0; i < 10; i++) h.v[i] = f.v[i] + g.v[i]; }
+__device__ __forceinline__ void fe_sub(fe &h, const fe &f, const fe &g) { for (int i = 0; i < 10; i++) h.v[i] = f.v[i] - g.v[i]; }
+__device__ __forceinline__ void fe_neg(fe &h, const fe &f) { for (int i = 0; i < 10; i++) h.v[i] = -f.v[i]; }
+
+// the ref10 carry pass over 64-bit columns: limbs back to 26/25 bits, signed
+__device__ __forceinline__ void fe_carry64(fe &h, int64_t t[10]) {
+    int64_t c;
+    c = (t[0] + (1 << 25)) >> 26; t[1] += c; t[0] -= c << 26;
+    c = (t[4] + (1 << 25)) >> 26; t[5] += c; t[4] -= c << 26;
+    c = (t[1] + (1 << 24)) >> 25; t[2] += c; t[1] -= c << 25;
+    c = (t[5] + (1 << 24)) >> 25; t[6] += c; t[5] -= c << 25;
+    c = (t[2] + (1 << 25)) >> 26; t[3] += c; t[2] -= c << 26;
+    c = (t[6] + (1 << 25)) >> 26; t[7] += c; t[6] -= c << 26;
+    c = (t[3] + (1 << 24)) >> 25; t[4] += c; t[3] -= c << 25;
+    c = (t[7] + (1 << 24)) >> 25; t[8] += c; t[7] -= c << 25;
+    c = (t[4] + (1 << 25)) >> 26; t[5] += c; t[4] -= c << 26;
+    c = (t[8] + (1 << 25)) >> 26; t[9] += c; t[8] -= c << 26;
+    c = (t[9] + (1 << 24)) >> 25; t[0] += c * 19; t[9] -= c << 25;
+    c = (t[0] + (1 << 25)) >> 26; t[1] += c; t[0] -= c << 26;
+    for (int i = 0; i < 10; i++) h.v[i] = (int32_t)t[i];
+}
+__device__ __forceinline__ void fe_reduce(fe &h) { int64_t t[10]; for (int i = 0; i < 10; i++) t[i] = h.v[i]; fe_carry64(h, t); }
+
+// h = f * g: 100 products into 64-bit columns (odd x odd limbs weigh one bit
+// more, hence x2), the wrapped columns folded with 19 at the end
+__device__ void fe_mul(fe &h, const fe &f, const fe &g) {
+    int64_t t[10], w[10];
+    #pragma unroll
+    for (int k = 0; k < 10; k++) { t[k] = 0; w[k] = 0; }
+    #pragma unroll
+    for (int i = 0; i < 10; i++) {
+        const int32_t fi = f.v[i], fi2 = fi * 2;
+        #pragma unroll
+        for (int j = 0; j < 10; j++) {
+            const int32_t a = ((i & 1) && (j & 1)) ? fi2 : fi;
+            const int64_t p = (int64_t)a * g.v[j];
+            if (i + j < 10) t[i + j] += p; else w[i + j - 10] += p;
+        }
+    }
+    #pragma unroll
+    for (int k = 0; k < 10; k++) t[k] += w[k] * 19;
+    fe_carry64(h, t);
+}
+// h = f^2: the 55 distinct products, cross terms doubled
+__device__ void fe_sq(fe &h, const fe &f) {
+    int64_t t[10], w[10];
+    #pragma unroll
+    for (int k = 0; k < 10; k++) { t[k] = 0; w[k] = 0; }
+    #pragma unroll
+    for (int i = 0; i < 10; i++) {
+        #pragma unroll
+        for (int j = i; j < 10; j++) {
+            const int32_t m = (i == j ? 1 : 2) * (((i & 1) && (j & 1)) ? 2 : 1);
+            const int64_t p = (int64_t)(f.v[i] * m) * f.v[j];
+            if (i + j < 10) t[i + j] += p; else w[i + j - 10] += p;
+        }
+    }
+    #pragma unroll
+    for (int k = 0; k < 10; k++) t[k] += w[k] * 19;
+    fe_carry64(h, t);
+}
+__device__ __forceinline__ void fe_pow2k(fe &h, const fe &f, int k) { fe_copy(h, f); for (int i = 0; i < k; i++) fe_sq(h, h); }
+
+// canonical little-endian bytes (ref10 fe_tobytes after a carry pass)
+__device__ void fe_tobytes(uint8_t s[32], const fe &f) {
+    fe r; fe_copy(r, f); fe_reduce(r);
+    int64_t h[10];
+    for (int i = 0; i < 10; i++) h[i] = r.v[i];
+    int64_t q = (19 * h[9] + (1 << 24)) >> 25;
+    q = (h[0] + q) >> 26; q = (h[1] + q) >> 25; q = (h[2] + q) >> 26; q = (h[3] + q) >> 25; q = (h[4] + q) >> 26;
+    q = (h[5] + q) >> 25; q = (h[6] + q) >> 26; q = (h[7] + q) >> 25; q = (h[8] + q) >> 26; q = (h[9] + q) >> 25;
+    h[0] += 19 * q;
+    int64_t c;
+    c = h[0] >> 26; h[1] += c; h[0] -= c << 26;
+    c = h[1] >> 25; h[2] += c; h[1] -= c << 25;
+    c = h[2] >> 26; h[3] += c; h[2] -= c << 26;
+    c = h[3] >> 25; h[4] += c; h[3] -= c << 25;
+    c = h[4] >> 26; h[5] += c; h[4] -= c << 26;
+    c = h[5] >> 25; h[6] += c; h[5] -= c << 25;
+    c = h[6] >> 26; h[7] += c; h[6] -= c << 26;
+    c = h[7] >> 25; h[8] += c; h[7] -= c << 25;
+    c = h[8] >> 26; h[9] += c; h[8] -= c << 26;
+    c = h[9] >> 25; h[9] -= c << 25;
+    const uint32_t h0 = (uint32_t)h[0], h1 = (uint32_t)h[1], h2 = (uint32_t)h[2], h3 = (uint32_t)h[3], h4 = (uint32_t)h[4];
+    const uint32_t h5 = (uint32_t)h[5], h6 = (uint32_t)h[6], h7 = (uint32_t)h[7], h8 = (uint32_t)h[8], h9 = (uint32_t)h[9];
+    s[0] = h0; s[1] = h0 >> 8; s[2] = h0 >> 16; s[3] = (h0 >> 24) | (h1 << 2);
+    s[4] = h1 >> 6; s[5] = h1 >> 14; s[6] = (h1 >> 22) | (h2 << 3);
+    s[7] = h2 >> 5; s[8] = h2 >> 13; s[9] = (h2 >> 21) | (h3 << 5);
+    s[10] = h3 >> 3; s[11] = h3 >> 11; s[12] = (h3 >> 19) | (h4 << 6);
+    s[13] = h4 >> 2; s[14] = h4 >> 10; s[15] = h4 >> 18;
+    s[16] = h5; s[17] = h5 >> 8; s[18] = h5 >> 16; s[19] = (h5 >> 24) | (h6 << 1);
+    s[20] = h6 >> 7; s[21] = h6 >> 15; s[22] = (h6 >> 23) | (h7 << 3);
+    s[23] = h7 >> 5; s[24] = h7 >> 13; s[25] = (h7 >> 21) | (h8 << 4);
+    s[26] = h8 >> 4; s[27] = h8 >> 12; s[28] = (h8 >> 20) | (h9 << 6);
+    s[29] = h9 >> 2; s[30] = h9 >> 10; s[31] = h9 >> 18;
+}
+__device__ __forceinline__ int64_t fe26_load3(const uint8_t *p) { return (int64_t)p[0] | ((int64_t)p[1] << 8) | ((int64_t)p[2] << 16); }
+__device__ __forceinline__ int64_t fe26_load4(const uint8_t *p) { return fe26_load3(p) | ((int64_t)p[3] << 24); }
+__device__ void fe_frombytes(fe &h, const uint8_t s[32]) {
+    int64_t t[10];
+    t[0] = fe26_load4(s); t[1] = fe26_load3(s + 4) << 6; t[2] = fe26_load3(s + 7) << 5; t[3] = fe26_load3(s + 10) << 3; t[4] = fe26_load3(s + 13) << 2;
+    t[5] = fe26_load4(s + 16); t[6] = fe26_load3(s + 20) << 7; t[7] = fe26_load3(s + 23) << 5; t[8] = fe26_load3(s + 26) << 4; t[9] = (fe26_load3(s + 29) & 8388607) << 2;
+    int64_t c;
+    c = (t[9] + (1 << 24)) >> 25; t[0] += c * 19; t[9] -= c << 25;
+    c = (t[1] + (1 << 24)) >> 25; t[2] += c; t[1] -= c << 25;
+    c = (t[3] + (1 << 24)) >> 25; t[4] += c; t[3] -= c << 25;
+    c = (t[5] + (1 << 24)) >> 25; t[6] += c; t[5] -= c << 25;
+    c = (t[7] + (1 << 24)) >> 25; t[8] += c; t[7] -= c << 25;
+    c = (t[0] + (1 << 25)) >> 26; t[1] += c; t[0] -= c << 26;
+    c = (t[2] + (1 << 25)) >> 26; t[3] += c; t[2] -= c << 26;
+    c = (t[4] + (1 << 25)) >> 26; t[5] += c; t[4] -= c << 26;
+    c = (t[6] + (1 << 25)) >> 26; t[7] += c; t[6] -= c << 26;
+    c = (t[8] + (1 << 25)) >> 26; t[9] += c; t[8] -= c << 26;
+    for (int i = 0; i < 10; i++) h.v[i] = (int32_t)t[i];
+}
+__device__ __forceinline__ bool fe_isnegative(const fe &f) { uint8_t s[32]; fe_tobytes(s, f); return s[0] & 1; }
+__device__ __forceinline__ bool fe_iszero(const fe &f) { uint8_t s[32]; fe_tobytes(s, f); uint8_t o = 0; for (int i = 0; i < 32; i++) o |= s[i]; return o == 0; }
+__device__ __forceinline__ bool fe_eq(const fe &f, const fe &g) { fe t; fe_sub(t, f, g); return fe_iszero(t); }
+#elif defined(PX_FE32)
 // ----------------------------------------------------------------------------
 // field element, 8 x 32-bit limbs (little-endian), lazily reduced: a value is
 // any 256-bit representative of its residue, and only tobytes / eq /
@@ -498,6 +632,22 @@ __device__ void ge_dbl_noT(ge &r, const ge &p) {
     fe_sub(H, D, B);
     fe_mul(r.X, E, F); fe_mul(r.Y, G, H); fe_mul(r.Z, F, G);
 }
+// one doubling for both cases of the scalar multiplication loop: T only when
+// an addition follows (wantT is uniform across the grid). A single call site
+// keeps one copy of the doubling in the instruction cache instead of two.
+__device__ void ge_dbl_opt(ge &r, const ge &p, bool wantT) {
+    fe A, B, C, D, E, F, G, H, t;
+    fe_sq(A, p.X);
+    fe_sq(B, p.Y);
+    fe_sq(C, p.Z); fe_add(C, C, C);
+    fe_neg(D, A);
+    fe_add(t, p.X, p.Y); fe_sq(t, t); fe_sub(t, t, A); fe_sub(E, t, B);
+    fe_add(G, D, B);
+    fe_sub(F, G, C);
+    fe_sub(H, D, B);
+    fe_mul(r.X, E, F); fe_mul(r.Y, G, H); fe_mul(r.Z, F, G);
+    if (wantT) fe_mul(r.T, E, H);
+}
 __device__ void ge_add(ge &r, const ge &p, const ge &q) {
     fe A, B, C, D, E, F, G, H, t1, t2;
     fe_sub(t1, p.Y, p.X); fe_sub(t2, q.Y, q.X); fe_mul(A, t1, t2);
@@ -529,6 +679,12 @@ __device__ __forceinline__ void ge_copy(ge &r, const ge &p) { fe_copy(r.X, p.X);
 // odd values in [-(2^(w-1)-1), 2^(w-1)-1], uniform across the grid
 __constant__ int8_t c_wnaf[260];
 __constant__ int c_wnaf_len;
+// c_wnaf_next[i]: table index of the next non-zero digit below i (-1: none), so
+// the entry can be prefetched into L1 during the doublings that precede its use
+__constant__ int8_t c_wnaf_next[260];
+#ifndef PX_PREFETCH
+#define PX_PREFETCH 0
+#endif
 
 // a point cached for mixed addition: Y+X, Y-X, 2d*T, 2Z
 struct geCached { fe YpX, YmX, T2d, Z2; };
@@ -556,14 +712,31 @@ __device__ void ge_scalarmult_const(ge &r, const ge &p) {
     ge_dbl(P2, p);
     ge_copy(acc, p);
     ge_cache(T[0], acc);
+    #pragma unroll 1
     for (int i = 1; i < 8; i++) { ge_add(acc, acc, P2); ge_cache(T[i], acc); }
     ge_identity(r);
+    // The loop body is the hot code of the whole miner; with one doubling and
+    // one addition site it is about half the size of the two-plus-two version
+    // and stays in the instruction cache (ncu: "no instruction" stalls).
     for (int i = c_wnaf_len - 1; i >= 0; i--) {
         int d = c_wnaf[i];
         // the digit is uniform across the grid: no divergence
-        if (d) ge_dbl(r, r); else ge_dbl_noT(r, r);
-        if (d > 0) ge_add_cached(r, r, T[d >> 1], false);
-        else if (d < 0) ge_add_cached(r, r, T[(-d) >> 1], true);
+        ge_dbl_opt(r, r, d != 0);
+        if (d) ge_add_cached(r, r, T[(d < 0 ? -d : d) >> 1], d < 0);
+#if PX_PREFETCH
+        // The table lives in local memory and, at 1 KB per thread, misses L1
+        // (30 % hit rate measured): fetch the next entry while the doublings
+        // before its use run. Local memory is interleaved per word across the
+        // warp, so every word of the entry is on its own cache line.
+        if (d) {
+            int n = c_wnaf_next[i];
+            if (n >= 0) {
+                const char *p = (const char *)&T[n];
+                #pragma unroll
+                for (int k = 0; k < (int)sizeof(geCached); k += 4) asm volatile("prefetch.L1 [%0];" :: "l"(p + k));
+            }
+        }
+#endif
     }
 }
 #elif PX_WINDOW == 0
@@ -897,6 +1070,9 @@ __global__ void fe_test_kernel(uint32_t seed, int n, int *fail, uint8_t *dump) {
         fe_frombytes(x, xb); fe_frombytes(y, yb);
         // lazily reduced operands up to 2^256, as the chain produces them
         if (it & 1) { fe_add(x, x, x); fe_add(y, y, x); }
+#ifdef PX_FE26
+        fe_reduce(x); fe_reduce(y);
+#endif
         fe_sq(s1, x); fe_mul(s2, x, x);
         int code = 0;
         if (!fe_eq(s1, s2)) code = 1;
@@ -1013,6 +1189,9 @@ static void v_set_scalar(const uint8_t *scalar) {
     }
     CUDA_CHECK(cudaMemcpyToSymbol(c_wnaf, digits, sizeof digits));
     CUDA_CHECK(cudaMemcpyToSymbol(c_wnaf_len, &len, sizeof len));
+    int8_t next[260]; int8_t last = -1;
+    for (int i = 0; i < 260; i++) { next[i] = last; if (digits[i]) last = (int8_t)((digits[i] > 0 ? digits[i] : -digits[i]) >> 1); }
+    CUDA_CHECK(cudaMemcpyToSymbol(c_wnaf_next, next, sizeof next));
 }
 static int v_init(const uint8_t *scalar, uint8_t pk_out[32]) {
     uint8_t *d_sc, *d_pk; int *d_ok;
@@ -1094,3 +1273,5 @@ static const VariantOps ops = { PX_VARIANT_NAME,
 #endif
     PX_WINDOW, PX_LB_BLOCKS, PX_COMPACT != 0, v_set_scalar, v_init, v_alloc, v_free, v_mine, v_test, v_fetest };
 #undef PX_INV_BATCH
+#undef PX_PREFETCH
+#undef PX_FE26

@@ -261,3 +261,17 @@ mult kernel at 86 % of GPU time and the inversion at ~10 % of it, so the ceiling
 Measured at 24064 × 256 × 1: k = 1 36.75 MH/s, k = 2 37.30 (+1.5 %), k = 4 36.87, k = 8 36.14 —
 the parked points (local memory) eat the saving, as the k = 2 trial on the 3070 had shown.
 Left at k = 1; the code stays for GPUs with more registers.
+
+### Round 6 candidates (2026-10-20 late, RTX PRO 6000)
+
+ncu on `mult_kernel` (86 % of GPU time): IMAD pipe 76 % busy, issue slots 57 %, IPC 2.3,
+occupancy 33 % (128 registers); stalls per issue: wait 1.46 (fixed-latency dependencies, the
+carry chains), no_instruction 1.32 (instruction fetch), math_pipe_throttle 1.26, long_scoreboard
+0.01 — the wNAF table in local memory (1 KB/thread, L1 hit 30 %) does not stall anything, so
+prefetching the next entry (`PX_PREFETCH`, kept in the source, off) gained nothing: 36.68 vs 36.75.
+
+A 10×26-bit signed-limb representation with 64-bit column products (`PX_FE26`, ref10 layout;
+no carry chains, one IMAD.WIDE per product) multiplies 1.4× faster in isolation (microbench:
+175 vs 125 G field-mul/s per GPU) but the ref10 carry pass over 64-bit columns costs as much as
+the products: 30.6 MH/s at 128 registers (1.4 KB spills), 31.0 at 255, against 36.7 for fe32.
+Correct (vectors, field test), kept in the source for GPUs where 64-bit integer adds are cheap.
