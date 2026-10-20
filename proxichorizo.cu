@@ -499,7 +499,11 @@ static void poller(Shared &sh) {
         backoff = 1;
         install_job(sh, r.body);
         { std::lock_guard<std::mutex> l(sh.mu); after = sh.job.id; }
-        if (after == 0) std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        // A pool retires its job for a few milliseconds at every round boundary
+        // (about once per slot). Asking again at once with after=0 long-polls
+        // until the next job is published; the short pause only guards against
+        // a server that answers an empty job immediately instead of waiting.
+        if (after == 0) std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
 }
 

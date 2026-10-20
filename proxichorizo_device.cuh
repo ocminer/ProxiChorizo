@@ -844,9 +844,34 @@ __device__ __forceinline__ void finish_point(const JobDev *job, const ge &G, con
 #ifndef PX_LB_MULT_BLOCKS
 #define PX_LB_MULT_BLOCKS PX_LB_BLOCKS
 #endif
+#ifndef PX_INV_BATCH
+#define PX_INV_BATCH 1
+#endif
 __global__ void __launch_bounds__(PX_LB_THREADS, PX_LB_MULT_BLOCKS) mult_kernel(const JobDev *job, const HPoint *pts, const unsigned *n_ptr, Hit *hits, unsigned *nhits) {
     unsigned n = *n_ptr;
     unsigned gid = blockIdx.x * blockDim.x + threadIdx.x, total = gridDim.x * blockDim.x;
+#if PX_INV_BATCH > 1
+    // PX_INV_BATCH points per thread share one inversion (Montgomery's trick):
+    // the multiplied points are parked, the prefix products of their Z give
+    // every 1/Z from a single fe_invert at 3 multiplications per point.
+    for (unsigned base = gid; base < n; base += total * PX_INV_BATCH) {
+        fe X[PX_INV_BATCH], Y[PX_INV_BATCH], Z[PX_INV_BATCH], P[PX_INV_BATCH];
+        uint64_t nonce[PX_INV_BATCH]; bool ok[PX_INV_BATCH];
+        for (int k = 0; k < PX_INV_BATCH; k++) {
+            unsigned i = base + (unsigned)k * total;
+            ge G; ok[k] = i < n && mult_point(G, pts[i]);
+            if (ok[k]) { fe_copy(X[k], G.X); fe_copy(Y[k], G.Y); fe_copy(Z[k], G.Z); nonce[k] = pts[i].nonce; } else fe_1(Z[k]);
+            if (k == 0) fe_copy(P[0], Z[0]); else fe_mul(P[k], P[k - 1], Z[k]);
+        }
+        fe inv; fe_invert(inv, P[PX_INV_BATCH - 1]);
+        for (int k = PX_INV_BATCH - 1; k > 0; k--) {
+            fe zi; fe_mul(zi, inv, P[k - 1]);
+            fe_mul(inv, inv, Z[k]);
+            if (ok[k]) { ge G; fe_copy(G.X, X[k]); fe_copy(G.Y, Y[k]); finish_point(job, G, zi, nonce[k], hits, nhits); }
+        }
+        if (ok[0]) { ge G; fe_copy(G.X, X[0]); fe_copy(G.Y, Y[0]); finish_point(job, G, inv, nonce[0], hits, nhits); }
+    }
+#else
     for (unsigned i = gid; i < n; i += total) {
         ge G;
         if (!mult_point(G, pts[i])) continue;
@@ -854,6 +879,7 @@ __global__ void __launch_bounds__(PX_LB_THREADS, PX_LB_MULT_BLOCKS) mult_kernel(
         fe_invert(zi, G.Z);
         finish_point(job, G, zi, pts[i].nonce, hits, nhits);
     }
+#endif
 }
 // self-test: beta for a complete alpha (= prefix 37 + nonce 8) plus intermediates
 __global__ void test_kernel(const JobDev *job, uint64_t nonce, uint8_t *out_beta, uint8_t *out_h, uint8_t *out_cg, int *ok) {
@@ -1035,7 +1061,7 @@ static void v_mine(int blocks, int threads, const JobDev *job, uint64_t nonce_ba
         int gp = max(1, g1 >> p); // the queue halves every pass
         h2c_kernel<<<gp, 256>>>(job, nonce_base, sc->nonce[in], sc->ctr[in], sc->cnt + p, sc->pts, sc->cnt, sc->nonce[out], sc->ctr[out], sc->cnt + p + 1);
     }
-    mult_kernel<<<blocks, threads>>>(job, sc->pts, sc->cnt, hits, nhits);
+    mult_kernel<<<(blocks + PX_INV_BATCH - 1) / PX_INV_BATCH, threads>>>(job, sc->pts, sc->cnt, hits, nhits);
 #else
     (void)scratch;
     mine_kernel<<<blocks, threads>>>(job, nonce_base, stride, iters, hits, nhits);
@@ -1067,3 +1093,4 @@ static const VariantOps ops = { PX_VARIANT_NAME,
     false,
 #endif
     PX_WINDOW, PX_LB_BLOCKS, PX_COMPACT != 0, v_set_scalar, v_init, v_alloc, v_free, v_mine, v_test, v_fetest };
+#undef PX_INV_BATCH

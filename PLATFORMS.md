@@ -252,3 +252,12 @@ Launch bounds re-checked on the PRO 6000 (dev build, not shipped): `__launch_bou
 33.1 MH/s, `(256,3)` 36.2, `(128,4)` 33.7, `(128,5)` 32.9, `(128,6)` 32.3, all at the large
 launch — `(256,2)` at 36.7 stays the best, so the register budget of 128 is right for GB202 too.
 The card draws ~485 W of its 600 W cap at 2430 MHz: not power-limited, pure ALU.
+
+### Batched inversion (2026-10-20, RTX PRO 6000, not shipped)
+
+`PX_INV_BATCH k` (proxichorizo_device.cuh) lets one thread multiply k points, park them and
+share one `fe_invert` through Montgomery's trick (3 multiplications per point). nsys puts the
+mult kernel at 86 % of GPU time and the inversion at ~10 % of it, so the ceiling was ~8 %.
+Measured at 24064 × 256 × 1: k = 1 36.75 MH/s, k = 2 37.30 (+1.5 %), k = 4 36.87, k = 8 36.14 —
+the parked points (local memory) eat the saving, as the k = 2 trial on the 3070 had shown.
+Left at k = 1; the code stays for GPUs with more registers.
