@@ -28,6 +28,17 @@ set by whoever builds the transit.
   version-4 transits after the upgrade and every one of them is rejected. A v1.1.0 `proxi`
   mines the old rules until slot 28999 and the new ones from 29000 by itself, so update early.
 
+## Which kernel runs on which card
+
+The platform table in `proxichorizo.cu` (NVIDIA) and `opencl/proxichorizo_cl.cpp` (AMD) holds the
+measured default per GPU generation: Blackwell, Ampere GA10x, GA100 and RDNA3 / Vega were
+benchmarked (see PLATFORMS.md). A generation without measurements (Ada, Turing, RDNA2/4, anything
+unknown) is **tuned on the card itself at the first start**: the two candidate kernels are measured
+for about 15 s and the winner is written to `proxichorizo-autotune.cache` next to the miner, keyed by
+card and miner version, so later starts (and every new release) use or refresh it. `--autotune`
+measures every kernel and shape, `--variant` / `--blocks` / `--iters` override everything; the
+start-up line `GPU n ...: <variant>, <blocks>x<threads>x<iters> — <reason>` says what was chosen and why.
+
 ## Download
 [GitHub Releases](https://github.com/ocminer/ProxiChorizo/releases) (Linux binary mirrored at https://proxi.suprnova.cc/downloads/):
 

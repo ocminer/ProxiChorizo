@@ -1,4 +1,4 @@
-ProxiChorizo 0.5.3 - native Windows x64 / NVIDIA CUDA
+ProxiChorizo 0.5.4 - native Windows x64 / NVIDIA CUDA
 
 CUDA nonce seeker for Proxima (PROX): pool mining on proxi.suprnova.cc or solo with your
 own proxi node mine. Windows 10/11 x64, NVIDIA Turing or newer GPU (sm_75/80/86/89/120),

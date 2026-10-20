@@ -300,3 +300,16 @@ row now uses `fe32_wnaf_lb2_c`, 128 blocks/SM × 256 × 1, two points per invers
 (`PX_INV_BATCH 2`, the default for compacted variants).
 Larger batches on the PRO 6000 after the loop merge: 3 points 41.66, 4 points 41.96 MH/s (vs 41.54
 for 2; no spills up to 4). Left at 2: the smaller cards park less happily (3070: 2 points +1.4 %).
+
+## Round 7: AMD gets the same loop, first-start tuning (2026-10-20/21 night)
+
+The OpenCL kernel got the merged doubling/addition sites and two points per inversion
+(`PX_INV_BATCH`, default 2, `--build-opts -DPX_INV_BATCH=1` to compare): RX 7900 XTX
+`--bench 8`, clean GPU: 0.5.3 10.72 MH/s, merged loop 10.92, + batching **11.13 (+3.8 %)**.
+(An earlier pair of numbers was taken with a forgotten `--selftest` still running on the card;
+always `ps` before benchmarking a shared GPU.)
+
+Both miners now tune unmeasured generations on first start (quick autotune: two kernels × two
+shapes, 3 s per trial) and cache the choice per card and version in `proxichorizo-autotune.cache`;
+measured rows start immediately. Verified on the PRO 6000 (CUDA, row temporarily marked unmeasured:
+picks fe32_wnaf_lb2_c 24064×256×1 in 12 s, second start reads the cache) and on the 7900 XTX (OpenCL).

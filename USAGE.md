@@ -150,6 +150,14 @@ about half of that). `--iters 8` is the best launch geometry on every AMD card m
 Typical rates: RTX 5080 ≈ 17 MH/s, RTX 3070 ≈ 6.9 MH/s, CMP 170HX ≈ 5–6 MH/s. The
 work is pure integer ALU; memory, PCIe link width and risers do not matter.
 
+## 6b. Kernel choice per card
+
+Measured generations (RTX 30xx/50xx, PRO 6000, A100/CMP 170HX; RX 7900 XTX, MI50) start with their
+measured kernel at once. Any other card is measured on first start (~15 s, two candidate kernels) and
+the result kept in `proxichorizo-autotune.cache` in the directory the miner runs from (HiveOS: the
+miner directory); delete the file to re-measure, or pass `--autotune` for the full sweep. The start-up
+line shows the kernel, the launch shape and the reason.
+
 ## 7. Troubleshooting
 
 - `cannot fetch the job: HTTP 401` — wrong token. `HTTP 409` — the pool moved on to the
