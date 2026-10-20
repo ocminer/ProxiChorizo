@@ -298,3 +298,5 @@ With the smaller loop the wNAF variant beats the 4-bit window on GA100 as well (
 at the same launch; the old 4.7-vs-4.1 note was an instruction-cache effect), so every NVIDIA
 row now uses `fe32_wnaf_lb2_c`, 128 blocks/SM × 256 × 1, two points per inversion
 (`PX_INV_BATCH 2`, the default for compacted variants).
+Larger batches on the PRO 6000 after the loop merge: 3 points 41.66, 4 points 41.96 MH/s (vs 41.54
+for 2; no spills up to 4). Left at 2: the smaller cards park less happily (3070: 2 points +1.4 %).
