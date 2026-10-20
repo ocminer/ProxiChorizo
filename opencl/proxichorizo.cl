@@ -521,6 +521,19 @@ static void ge_dbl_noT(ge *r, const ge *p) {
     fe_add(&G, &D, &B); fe_sub(&F, &G, &Cc); fe_sub(&H, &D, &B);
     fe_mul(&r->X, &E, &F); fe_mul(&r->Y, &G, &H); fe_mul(&r->Z, &F, &G);
 }
+// one doubling for both cases of the scalar multiplication loop: T only when
+// an addition follows (wantT is uniform across the grid). One call site keeps a
+// single copy of the doubling in the instruction cache (a +10 % on NVIDIA).
+static void ge_dbl_opt(ge *r, const ge *p, bool wantT) {
+    fe A, B, Cc, D, E, F, G, H, t;
+    fe_sq(&A, &p->X); fe_sq(&B, &p->Y);
+    fe_sq(&Cc, &p->Z); fe_add(&Cc, &Cc, &Cc);
+    fe_neg(&D, &A);
+    fe_add(&t, &p->X, &p->Y); fe_sq(&t, &t); fe_sub(&t, &t, &A); fe_sub(&E, &t, &B);
+    fe_add(&G, &D, &B); fe_sub(&F, &G, &Cc); fe_sub(&H, &D, &B);
+    fe_mul(&r->X, &E, &F); fe_mul(&r->Y, &G, &H); fe_mul(&r->Z, &F, &G);
+    if (wantT) fe_mul(&r->T, &E, &H);
+}
 static void ge_add(ge *r, const ge *p, const ge *q, const Cfe *C) {
     fe A, B, Cc, D, E, F, G, H, t1, t2;
     fe_sub(&t1, &p->Y, &p->X); fe_sub(&t2, &q->Y, &q->X); fe_mul(&A, &t1, &t2);
@@ -555,14 +568,15 @@ static void ge_scalarmult_const(ge *r, const ge *p, const Cfe *C, __global const
     ge_dbl(&P2, p);
     ge_copy(&acc, p);
     ge_cache(&T[0], &acc, C);
+    __attribute__((opencl_unroll_hint(1)))
     for (int i = 1; i < 8; i++) { ge_add(&acc, &acc, &P2, C); ge_cache(&T[i], &acc, C); }
     ge_identity(r);
     int len = K->wnaf_len;
+    // one doubling site and one addition site: the hot loop at half its size
     for (int i = len - 1; i >= 0; i--) {
         int d = K->wnaf[i];
-        if (d) ge_dbl(r, r); else ge_dbl_noT(r, r);
-        if (d > 0) ge_add_cached(r, r, &T[d >> 1], false);
-        else if (d < 0) ge_add_cached(r, r, &T[(-d) >> 1], true);
+        ge_dbl_opt(r, r, d != 0);
+        if (d) ge_add_cached(r, r, &T[(d < 0 ? -d : d) >> 1], d < 0);
     }
 }
 #elif PX_WINDOW == 0
@@ -764,24 +778,50 @@ static inline bool mult_point(ge *G, __global const HPoint *pt, const Cfe *C, __
 #else
 #define PX_OCC
 #endif
+#ifndef PX_INV_BATCH
+#define PX_INV_BATCH 2
+#endif
+static inline void finish_point_zi(__global const JobDev *job, const ge *G, const fe *zi, u64 nonce, int k, __global Hit *hits, __global uint *nhits) {
+    u64 cg[4]; ge_to_le_zi(cg, G, zi);
+    u64 W[16], B[8]; p2h_words(W, cg);
+    sha512_block(W, B);
+    if (trailing_zero_bits_w(B) >= k && below_w(B, job->beat_w)) {
+        uint idx = atomic_inc(nhits);
+        if (idx < MAX_HITS) store_hit(&hits[idx], nonce, B);
+    }
+}
 __kernel __attribute__((reqd_work_group_size(PX_WG, 1, 1))) PX_OCC
 void mult_kernel(__global const JobDev *job, __global const HPoint *pts, __global const uint *cnt, __global Hit *hits, __global uint *nhits, __global const Consts *K) {
     uint n = cnt[0];
     uint gid = get_global_id(0), total = get_global_size(0);
     Cfe C; load_cfe(&C, K);
     int k = job->k;
+#if PX_INV_BATCH > 1
+    // PX_INV_BATCH points per work-item share one inversion (Montgomery's trick)
+    for (uint base = gid; base < n; base += total * PX_INV_BATCH) {
+        ge G[PX_INV_BATCH]; fe P[PX_INV_BATCH]; u64 nonce[PX_INV_BATCH]; bool ok[PX_INV_BATCH];
+        for (int b = 0; b < PX_INV_BATCH; b++) {
+            uint i = base + (uint)b * total;
+            ok[b] = i < n && mult_point(&G[b], &pts[i], &C, K);
+            if (ok[b]) nonce[b] = pts[i].nonce; else fe_1(&G[b].Z);
+            if (b == 0) fe_copy(&P[0], &G[0].Z); else fe_mul(&P[b], &P[b - 1], &G[b].Z);
+        }
+        fe inv; fe_invert(&inv, &P[PX_INV_BATCH - 1]);
+        for (int b = PX_INV_BATCH - 1; b > 0; b--) {
+            fe zi; fe_mul(&zi, &inv, &P[b - 1]);
+            fe_mul(&inv, &inv, &G[b].Z);
+            if (ok[b]) finish_point_zi(job, &G[b], &zi, nonce[b], k, hits, nhits);
+        }
+        if (ok[0]) finish_point_zi(job, &G[0], &inv, nonce[0], k, hits, nhits);
+    }
+#else
     for (uint i = gid; i < n; i += total) {
         ge G;
         if (!mult_point(&G, &pts[i], &C, K)) continue;
         fe zi; fe_invert(&zi, &G.Z);
-        u64 cg[4]; ge_to_le_zi(cg, &G, &zi);
-        u64 W[16], B[8]; p2h_words(W, cg);
-        sha512_block(W, B);
-        if (trailing_zero_bits_w(B) >= k && below_w(B, job->beat_w)) {
-            uint idx = atomic_inc(nhits);
-            if (idx < MAX_HITS) store_hit(&hits[idx], pts[i].nonce, B);
-        }
+        finish_point_zi(job, &G, &zi, pts[i].nonce, k, hits, nhits);
     }
+#endif
 }
 
 // self-test: beta for a complete alpha plus intermediates
