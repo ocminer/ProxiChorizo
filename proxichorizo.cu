@@ -178,11 +178,11 @@ static const int NVARIANTS = 6;
 struct Platform { int major, minor; const char *variant; int threads, iters, blocksPerSM; const char *note; };
 static const Platform PLATFORMS[] = {
     { 12, -1, "fe32_wnaf_lb2_c", 256, 1, 128, "Blackwell (RTX 50xx, RTX PRO 6000): compacted pipeline + wNAF, large launches (19.1 MH/s on a 5080, 36.7 on a PRO 6000)" },
-    {  8,  9, "fe32_wnaf_lb2_c", 256, 4, 8, "Ada (RTX 40xx): assumed like Ampere/Blackwell, run --autotune once" },
-    {  8,  6, "fe32_wnaf_lb2_c", 256, 4, 8, "Ampere GA10x (RTX 30xx): compacted pipeline + wNAF (6.2 MH/s on a 3070)" },
+    {  8,  9, "fe32_wnaf_lb2_c", 256, 1, 128, "Ada (RTX 40xx): assumed like Ampere/Blackwell, run --autotune once" },
+    {  8,  6, "fe32_wnaf_lb2_c", 256, 1, 128, "Ampere GA10x (RTX 30xx): compacted pipeline + wNAF, large launches (7.1 MH/s on a 3070)" },
     {  8,  0, "fe32_w4_lb2_c", 256, 2, 8, "Ampere GA100 (A100, CMP 170HX): compacted 4-bit window; wNAF is slower here (4.7 vs 4.1 MH/s on a CMP 170HX)" },
-    {  7,  5, "fe32_wnaf_lb2_c", 256, 4, 8, "Turing: assumed, run --autotune once" },
-    { -1, -1, "fe32_wnaf_lb2_c", 256, 4, 8, "default" },
+    {  7,  5, "fe32_wnaf_lb2_c", 256, 1, 128, "Turing: assumed, run --autotune once" },
+    { -1, -1, "fe32_wnaf_lb2_c", 256, 1, 128, "default" },
 };
 static uint8_t g_scalar[32];
 static const VariantOps *variantByName(const std::string &n) { for (int i = 0; i < NVARIANTS; i++) if (n == VARIANTS[i]->name) return VARIANTS[i]; return nullptr; }

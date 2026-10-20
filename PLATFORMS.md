@@ -243,7 +243,10 @@ Iterating inside the thread is always worse at equal work (12032 × 4: 34.7; 240
 **New Blackwell default: 128 blocks per SM × 256 threads × 1 nonce** (`Platform.blocksPerSM`,
 +13 % on the PRO 6000, +10 % on the 5080); a launch is then ~150 ms on a 5080, ~170 ms on a PRO 6000,
 still small against the 10 s slot. `--autotune` now tries 64 and 128 blocks/SM as well.
-Ampere and GA100 keep 8 × 4 until measured (see below).
+Ampere measured the same way on the RTX 3070 (46 SMs, sm_86 build, the German test rig): 368 × 4 = 6.78 MH/s,
+736 × 2 = 6.92, 1472 × 1 = 6.91, 2944 × 1 = 7.01, 5888 (128/SM) × 1 = 7.07, 11776 × 1 = 7.08 → +4.5 %,
+so GA10x, Ada, Turing and the default row use 128 × 1 as well. GA100 (CMP 170HX, `fe32_w4_lb2_c`)
+keeps 8 × 2 until measured.
 
 Launch bounds re-checked on the PRO 6000 (dev build, not shipped): `__launch_bounds__(256,1)`
 33.1 MH/s, `(256,3)` 36.2, `(128,4)` 33.7, `(128,5)` 32.9, `(128,6)` 32.3, all at the large
