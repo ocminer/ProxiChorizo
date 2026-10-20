@@ -275,3 +275,12 @@ no carry chains, one IMAD.WIDE per product) multiplies 1.4× faster in isolation
 175 vs 125 G field-mul/s per GPU) but the ref10 carry pass over 64-bit columns costs as much as
 the products: 30.6 MH/s at 128 registers (1.4 KB spills), 31.0 at 255, against 36.7 for fe32.
 Correct (vectors, field test), kept in the source for GPUs where 64-bit integer adds are cheap.
+
+**Round 6 result: one doubling site + one addition site in the wNAF loop** (`ge_dbl_opt` with a
+uniform "T wanted" flag, `ge_add_cached` called once with the sign as an argument, the table
+loop not unrolled): the loop body halves, registers 128 → 122 with no spills, and the
+`no_instruction` stalls drop 1.32 → 0.60: **36.75 → 40.4 MH/s (+10 %) on the RTX PRO 6000**,
+SM throughput 76 → 82 %, issue slots 57 → 63 %. What remains is `wait` 1.5 (the carry chains:
+ptxas never overlaps two `.cc` chains, measured: two independent multiplies interleaved in
+source run exactly as fast as in sequence) and the IMAD pipe itself. `__noinline__` field
+multiply/square (to shrink the loop further) collapses to 11.6 MH/s: call overhead and stack.
