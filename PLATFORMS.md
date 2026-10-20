@@ -221,3 +221,31 @@ work is counted — the ceiling is ≈ 10 MH/s theoretical, 7–7.5 MH/s realist
 (11 limbs, 121 lo + 121 hi products at the faster `mad24` rate) cost about twice as many
 cycle-equivalents as the 8×32 schoolbook and were not pursued. For comparison an RTX 5080 does
 ~8 T IMAD32/s in the CUDA kernel: the hardware ratio, not the port, explains most of the gap.
+
+## Round 5: launch size (2026-10-20 evening, 8× RTX PRO 6000 Blackwell Server Edition cloud box, CUDA 13.4, driver 580)
+
+The compacted pipeline runs its h2c passes and the mult pass over the whole launch, so a
+bigger launch amortises the per-pass overhead and the tail of each pass. One nonce per
+thread with many more blocks beats looping inside the thread at the same work per launch.
+`--bench 5`, realistic scalar, `fe32_wnaf_lb2_c`, 256 threads (RTX PRO 6000 = 188 SMs, RTX 5080 = 84 SMs):
+
+| blocks (per SM) × nonces/thread | RTX PRO 6000 | RTX 5080 |
+|---|---|---|
+| 1504 (8) × 4 — the 0.5.0 default | 32.46 MH/s | 17.38 (672 × 4) |
+| 3008 (16) × 2 | 34.03 | 17.93 (1344 × 2) |
+| 6016 (32) × 1 | 35.38 | 18.47 (2688 × 1) |
+| 12032 (64) × 1 | 36.31 | 18.92 (5376 × 1) |
+| 24064 (128) × 1 | 36.75 | 19.14 (10752 × 1) |
+| 48128 (256) × 1 | 36.94 | 19.24 (21504 × 1) |
+| 96256 (512) × 1 | 37.04 | |
+
+Iterating inside the thread is always worse at equal work (12032 × 4: 34.7; 24064 × 2: 35.8).
+**New Blackwell default: 128 blocks per SM × 256 threads × 1 nonce** (`Platform.blocksPerSM`,
++13 % on the PRO 6000, +10 % on the 5080); a launch is then ~150 ms on a 5080, ~170 ms on a PRO 6000,
+still small against the 10 s slot. `--autotune` now tries 64 and 128 blocks/SM as well.
+Ampere and GA100 keep 8 × 4 until measured (see below).
+
+Launch bounds re-checked on the PRO 6000 (dev build, not shipped): `__launch_bounds__(256,1)`
+33.1 MH/s, `(256,3)` 36.2, `(128,4)` 33.7, `(128,5)` 32.9, `(128,6)` 32.3, all at the large
+launch — `(256,2)` at 36.7 stays the best, so the register budget of 128 is right for GB202 too.
+The card draws ~485 W of its 600 W cap at 2430 MHz: not power-limited, pure ALU.

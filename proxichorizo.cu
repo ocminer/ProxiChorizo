@@ -171,14 +171,18 @@ static const int NVARIANTS = 6;
 
 // platform table: compute capability -> default variant and launch geometry,
 // from the measurements in PLATFORMS.md; anything unlisted gets the last row
-struct Platform { int major, minor; const char *variant; int threads, iters; const char *note; };
+// blocksPerSM x multiprocessors is the launch size: the compacted pipeline runs
+// its passes over the whole launch, so a bigger launch amortises the pass
+// overhead (RTX PRO 6000: 32.4 MH/s at 8 blocks/SM x 4 nonces/thread, 36.3 at
+// 64 x 1, 37.0 at 512 x 1; one nonce per thread with more blocks beats looping).
+struct Platform { int major, minor; const char *variant; int threads, iters, blocksPerSM; const char *note; };
 static const Platform PLATFORMS[] = {
-    { 12, -1, "fe32_wnaf_lb2_c", 256, 4, "Blackwell (RTX 50xx): compacted pipeline + wNAF (17.3 MH/s on a 5080)" },
-    {  8,  9, "fe32_wnaf_lb2_c", 256, 4, "Ada (RTX 40xx): assumed like Ampere/Blackwell, run --autotune once" },
-    {  8,  6, "fe32_wnaf_lb2_c", 256, 4, "Ampere GA10x (RTX 30xx): compacted pipeline + wNAF (6.2 MH/s on a 3070)" },
-    {  8,  0, "fe32_w4_lb2_c", 256, 2, "Ampere GA100 (A100, CMP 170HX): compacted 4-bit window; wNAF is slower here (4.7 vs 4.1 MH/s on a CMP 170HX)" },
-    {  7,  5, "fe32_wnaf_lb2_c", 256, 4, "Turing: assumed, run --autotune once" },
-    { -1, -1, "fe32_wnaf_lb2_c", 256, 4, "default" },
+    { 12, -1, "fe32_wnaf_lb2_c", 256, 1, 128, "Blackwell (RTX 50xx, RTX PRO 6000): compacted pipeline + wNAF, large launches (19.1 MH/s on a 5080, 36.7 on a PRO 6000)" },
+    {  8,  9, "fe32_wnaf_lb2_c", 256, 4, 8, "Ada (RTX 40xx): assumed like Ampere/Blackwell, run --autotune once" },
+    {  8,  6, "fe32_wnaf_lb2_c", 256, 4, 8, "Ampere GA10x (RTX 30xx): compacted pipeline + wNAF (6.2 MH/s on a 3070)" },
+    {  8,  0, "fe32_w4_lb2_c", 256, 2, 8, "Ampere GA100 (A100, CMP 170HX): compacted 4-bit window; wNAF is slower here (4.7 vs 4.1 MH/s on a CMP 170HX)" },
+    {  7,  5, "fe32_wnaf_lb2_c", 256, 4, 8, "Turing: assumed, run --autotune once" },
+    { -1, -1, "fe32_wnaf_lb2_c", 256, 4, 8, "default" },
 };
 static uint8_t g_scalar[32];
 static const VariantOps *variantByName(const std::string &n) { for (int i = 0; i < NVARIANTS; i++) if (n == VARIANTS[i]->name) return VARIANTS[i]; return nullptr; }
@@ -772,20 +776,22 @@ static GpuCfg autotune(int dev, const uint8_t scalar[32], const uint8_t pk[32], 
     CUDA_CHECK(cudaSetDevice(dev));
     cudaDeviceProp prop; CUDA_CHECK(cudaGetDeviceProperties(&prop, dev));
     const Platform &pl = platformFor(prop);
-    GpuCfg best{dev, fixedBlocks, pl.threads, pl.iters, variantByName(pl.variant)};
+    GpuCfg best{dev, fixedBlocks > 0 ? fixedBlocks : prop.multiProcessorCount * pl.blocksPerSM, pl.threads, pl.iters, variantByName(pl.variant)};
     double bestRate = 0;
-    const int geo[][2] = { {256, 2}, {128, 4}, {256, 4} };
+    // threads, nonces per thread, blocks per multiprocessor (ignored under --blocks)
+    const int geo[][3] = { {256, 4, 8}, {256, 2, 8}, {128, 4, 8}, {256, 1, 64}, {256, 2, 64} };
     fprintf(stderr, "autotune GPU %d %s (sm_%d%d), %.0fs per trial:\n", dev, prop.name, prop.major, prop.minor, seconds);
     for (int v = 0; v < NVARIANTS; v++) {
         uint8_t pk2[32];
         if (VARIANTS[v]->init(scalar, pk2) != 1 || memcmp(pk2, pk, 32) != 0) { fprintf(stderr, "  %-12s: init failed, skipped\n", VARIANTS[v]->name); continue; }
         for (auto &g : geo) {
-            double r = run_bench(VARIANTS[v], pk, dev, fixedBlocks, g[0], g[1], seconds, false);
-            fprintf(stderr, "  %-12s %3dx%d: %.3f MH/s%s\n", VARIANTS[v]->name, g[0], g[1], r, r > bestRate ? "  <- best so far" : "");
-            if (r > bestRate) { bestRate = r; best = GpuCfg{dev, fixedBlocks, g[0], g[1], VARIANTS[v]}; }
+            int blocks = fixedBlocks > 0 ? fixedBlocks : prop.multiProcessorCount * g[2];
+            double r = run_bench(VARIANTS[v], pk, dev, blocks, g[0], g[1], seconds, false);
+            fprintf(stderr, "  %-16s %5dx%3dx%d: %.3f MH/s%s\n", VARIANTS[v]->name, blocks, g[0], g[1], r, r > bestRate ? "  <- best so far" : "");
+            if (r > bestRate) { bestRate = r; best = GpuCfg{dev, blocks, g[0], g[1], VARIANTS[v]}; }
         }
     }
-    fprintf(stderr, "autotune GPU %d: %s %dx%d (%.3f MH/s)\n", dev, best.ops->name, best.threads, best.iters, bestRate);
+    fprintf(stderr, "autotune GPU %d: %s %dx%dx%d (%.3f MH/s)\n", dev, best.ops->name, best.blocks, best.threads, best.iters, bestRate);
     return best;
 }
 
@@ -927,14 +933,14 @@ int main(int argc, char **argv) {
         { char busid[32] = "?"; cudaDeviceGetPCIBusId(busid, sizeof busid, d); int bn = (int)strtol(busid + 5, nullptr, 16);
           gstats.push_back(Shared::GpuStat{d, (int)cfgs.size(), prop.name, busid, bn, 0.0}); }
         const Platform &pl = platformFor(prop);
-        GpuCfg cfg{d, blocks, threads > 0 ? threads : pl.threads, iters > 0 ? iters : pl.iters, forced ? forced : variantByName(pl.variant)};
+        GpuCfg cfg{d, blocks > 0 ? blocks : prop.multiProcessorCount * pl.blocksPerSM, threads > 0 ? threads : pl.threads, iters > 0 ? iters : pl.iters, forced ? forced : variantByName(pl.variant)};
         cfg.ordinal = (int)cfgs.size();
         if (!cfg.ops) cfg.ops = VARIANTS[0];
         uint8_t pk2[32]; int ok = cfg.ops->init(scalar, pk2);
         if (ok != 1) { fprintf(stderr, "device %d: constant derivation failed on %s\n", d, cfg.ops->name); return 2; }
         if (d == devs[0]) memcpy(pk, pk2, 32); else if (memcmp(pk, pk2, 32) != 0) { fprintf(stderr, "device %d derives a different public key\n", d); return 2; }
         if (autotuneSecs > 0) { cfg = autotune(d, scalar, pk, autotuneSecs, blocks); if (threads > 0) cfg.threads = threads; if (iters > 0) cfg.iters = iters; cfg.ops->init(scalar, pk2); }
-        else fprintf(stderr, "GPU %d %s (sm_%d%d): %s, %dx%d — %s\n", d, prop.name, prop.major, prop.minor, cfg.ops->name, cfg.threads, cfg.iters, pl.note);
+        else fprintf(stderr, "GPU %d %s (sm_%d%d): %s, %dx%dx%d — %s\n", d, prop.name, prop.major, prop.minor, cfg.ops->name, cfg.blocks, cfg.threads, cfg.iters, pl.note);
         cfgs.push_back(cfg);
     }
     if (bench > 0) { for (auto &c : cfgs) run_bench(c.ops, pk, c.dev, c.blocks, c.threads, c.iters, bench, true); return 0; }
