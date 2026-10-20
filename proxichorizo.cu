@@ -175,14 +175,17 @@ static const int NVARIANTS = 6;
 // its passes over the whole launch, so a bigger launch amortises the pass
 // overhead (RTX PRO 6000: 32.4 MH/s at 8 blocks/SM x 4 nonces/thread, 36.3 at
 // 64 x 1, 37.0 at 512 x 1; one nonce per thread with more blocks beats looping).
-struct Platform { int major, minor; const char *variant; int threads, iters, blocksPerSM; const char *note; };
+// measured: the row was benchmarked on that generation. For an unmeasured row the
+// miner measures the two candidate kernels on first start and caches the result
+// (quickTune), so every card gets a kernel chosen on itself rather than assumed.
+struct Platform { int major, minor; const char *variant; int threads, iters, blocksPerSM; bool measured; const char *note; };
 static const Platform PLATFORMS[] = {
-    { 12, -1, "fe32_wnaf_lb2_c", 256, 1, 128, "Blackwell (RTX 50xx, RTX PRO 6000): compacted pipeline + wNAF, large launches (19.1 MH/s on a 5080, 36.7 on a PRO 6000)" },
-    {  8,  9, "fe32_wnaf_lb2_c", 256, 1, 128, "Ada (RTX 40xx): assumed like Ampere/Blackwell, run --autotune once" },
-    {  8,  6, "fe32_wnaf_lb2_c", 256, 1, 128, "Ampere GA10x (RTX 30xx): compacted pipeline + wNAF, large launches (7.1 MH/s on a 3070)" },
-    {  8,  0, "fe32_wnaf_lb2_c", 256, 1, 128, "Ampere GA100 (A100, CMP 170HX): wNAF wins since the loop fits the instruction cache (6.9 vs 6.0 MH/s on a CMP 170HX)" },
-    {  7,  5, "fe32_wnaf_lb2_c", 256, 1, 128, "Turing: assumed, run --autotune once" },
-    { -1, -1, "fe32_wnaf_lb2_c", 256, 1, 128, "default" },
+    { 12, -1, "fe32_wnaf_lb2_c", 256, 1, 128, true,  "Blackwell (RTX 50xx, RTX PRO 6000): compacted pipeline + wNAF, large launches, 2 points per inversion (21.5 MH/s on a 5080, 41.5 on a PRO 6000)" },
+    {  8,  9, "fe32_wnaf_lb2_c", 256, 1, 128, false, "Ada (RTX 40xx): not measured here, tuned on first start" },
+    {  8,  6, "fe32_wnaf_lb2_c", 256, 1, 128, true,  "Ampere GA10x (RTX 30xx): compacted pipeline + wNAF, large launches (7.4 MH/s on a 3070)" },
+    {  8,  0, "fe32_wnaf_lb2_c", 256, 1, 128, true,  "Ampere GA100 (A100, CMP 170HX): wNAF wins since the loop fits the instruction cache (6.9 vs 6.0 MH/s on a CMP 170HX)" },
+    {  7,  5, "fe32_wnaf_lb2_c", 256, 1, 128, false, "Turing: not measured here, tuned on first start" },
+    { -1, -1, "fe32_wnaf_lb2_c", 256, 1, 128, false, "unknown generation: tuned on first start" },
 };
 static uint8_t g_scalar[32];
 static const VariantOps *variantByName(const std::string &n) { for (int i = 0; i < NVARIANTS; i++) if (n == VARIANTS[i]->name) return VARIANTS[i]; return nullptr; }
@@ -776,19 +779,25 @@ static double run_bench(const VariantOps *ops, const uint8_t pk[32], int dev, in
 }
 
 // autotune: every variant and a few geometries on this device, best wins
-static GpuCfg autotune(int dev, const uint8_t scalar[32], const uint8_t pk[32], double seconds, int fixedBlocks) {
+static GpuCfg autotune(int dev, const uint8_t scalar[32], const uint8_t pk[32], double seconds, int fixedBlocks, bool quick = false) {
     CUDA_CHECK(cudaSetDevice(dev));
     cudaDeviceProp prop; CUDA_CHECK(cudaGetDeviceProperties(&prop, dev));
     const Platform &pl = platformFor(prop);
     GpuCfg best{dev, fixedBlocks > 0 ? fixedBlocks : prop.multiProcessorCount * pl.blocksPerSM, pl.threads, pl.iters, variantByName(pl.variant)};
     double bestRate = 0;
     // threads, nonces per thread, blocks per multiprocessor (ignored under --blocks)
-    const int geo[][3] = { {256, 4, 8}, {256, 2, 8}, {128, 4, 8}, {256, 1, 64}, {256, 2, 64} };
+    const int geoAll[][3] = { {256, 4, 8}, {256, 2, 8}, {128, 4, 8}, {256, 1, 64}, {256, 1, 128}, {256, 2, 64} };
+    // quick: the two kernels that win somewhere, at the two launch shapes that do
+    const int geoQuick[][3] = { {256, 1, 128}, {256, 4, 8} };
+    const int (*geo)[3] = quick ? geoQuick : geoAll;
+    const int ngeo = quick ? 2 : 6;
     fprintf(stderr, "autotune GPU %d %s (sm_%d%d), %.0fs per trial:\n", dev, prop.name, prop.major, prop.minor, seconds);
     for (int v = 0; v < NVARIANTS; v++) {
+        if (quick && strcmp(VARIANTS[v]->name, "fe32_wnaf_lb2_c") != 0 && strcmp(VARIANTS[v]->name, "fe32_w4_lb2_c") != 0) continue;
         uint8_t pk2[32];
         if (VARIANTS[v]->init(scalar, pk2) != 1 || memcmp(pk2, pk, 32) != 0) { fprintf(stderr, "  %-12s: init failed, skipped\n", VARIANTS[v]->name); continue; }
-        for (auto &g : geo) {
+        for (int gi = 0; gi < ngeo; gi++) {
+            const int *g = geo[gi];
             int blocks = fixedBlocks > 0 ? fixedBlocks : prop.multiProcessorCount * g[2];
             double r = run_bench(VARIANTS[v], pk, dev, blocks, g[0], g[1], seconds, false);
             fprintf(stderr, "  %-16s %5dx%3dx%d: %.3f MH/s%s\n", VARIANTS[v]->name, blocks, g[0], g[1], r, r > bestRate ? "  <- best so far" : "");
@@ -797,6 +806,36 @@ static GpuCfg autotune(int dev, const uint8_t scalar[32], const uint8_t pk[32], 
     }
     fprintf(stderr, "autotune GPU %d: %s %dx%dx%d (%.3f MH/s)\n", dev, best.ops->name, best.blocks, best.threads, best.iters, bestRate);
     return best;
+}
+
+// Tuning cache for generations this build has no measurements for: one line per
+// card and build, "<name>|sm<xy>|<version>|<variant> <blocks> <threads> <iters>",
+// in proxichorizo-autotune.cache next to where the miner runs. A new release
+// re-measures (its defaults may have moved); --autotune / --variant / --blocks
+// bypass it.
+static const char *TUNE_CACHE = "proxichorizo-autotune.cache";
+static std::string tuneKey(const cudaDeviceProp &prop) {
+    return std::string(prop.name) + "|sm" + std::to_string(prop.major) + std::to_string(prop.minor) + "|" PX_VERSION "|";
+}
+static bool loadTuned(const cudaDeviceProp &prop, int dev, GpuCfg &cfg) {
+    std::ifstream in(TUNE_CACHE);
+    std::string line, key = tuneKey(prop);
+    while (std::getline(in, line)) {
+        if (line.compare(0, key.size(), key) != 0) continue;
+        std::istringstream ss(line.substr(key.size()));
+        std::string v; int b = 0, t = 0, it = 0;
+        if (!(ss >> v >> b >> t >> it) || b <= 0 || t <= 0 || it <= 0) return false;
+        const VariantOps *ops = variantByName(v);
+        if (!ops) return false;
+        cfg = GpuCfg{dev, b, t, it, ops};
+        return true;
+    }
+    return false;
+}
+static void saveTuned(const cudaDeviceProp &prop, const GpuCfg &cfg) {
+    std::ofstream out(TUNE_CACHE, std::ios::app);
+    if (!out) { logln(std::string("cannot write ") + TUNE_CACHE + ": the result is not kept for the next start"); return; }
+    out << tuneKey(prop) << cfg.ops->name << ' ' << cfg.blocks << ' ' << cfg.threads << ' ' << cfg.iters << '\n';
 }
 
 
@@ -944,6 +983,17 @@ int main(int argc, char **argv) {
         if (ok != 1) { fprintf(stderr, "device %d: constant derivation failed on %s\n", d, cfg.ops->name); return 2; }
         if (d == devs[0]) memcpy(pk, pk2, 32); else if (memcmp(pk, pk2, 32) != 0) { fprintf(stderr, "device %d derives a different public key\n", d); return 2; }
         if (autotuneSecs > 0) { cfg = autotune(d, scalar, pk, autotuneSecs, blocks); if (threads > 0) cfg.threads = threads; if (iters > 0) cfg.iters = iters; cfg.ops->init(scalar, pk2); }
+        else if (!pl.measured && !forced && blocks <= 0 && threads <= 0 && iters <= 0 && bench <= 0) {
+            GpuCfg tuned;
+            if (loadTuned(prop, d, tuned)) {
+                cfg = tuned; cfg.ordinal = (int)cfgs.size(); cfg.ops->init(scalar, pk2);
+                fprintf(stderr, "GPU %d %s (sm_%d%d): %s, %dx%dx%d — tuned on this card earlier (%s)\n", d, prop.name, prop.major, prop.minor, cfg.ops->name, cfg.blocks, cfg.threads, cfg.iters, TUNE_CACHE);
+            } else {
+                fprintf(stderr, "GPU %d %s (sm_%d%d): %s; this build has no measurements for this generation, measuring the two candidate kernels now (~15 s, once; kept in %s)\n", d, prop.name, prop.major, prop.minor, pl.note, TUNE_CACHE);
+                cfg = autotune(d, scalar, pk, 3, 0, true); cfg.ordinal = (int)cfgs.size(); cfg.ops->init(scalar, pk2);
+                saveTuned(prop, cfg);
+            }
+        }
         else fprintf(stderr, "GPU %d %s (sm_%d%d): %s, %dx%dx%d — %s\n", d, prop.name, prop.major, prop.minor, cfg.ops->name, cfg.blocks, cfg.threads, cfg.iters, pl.note);
         cfgs.push_back(cfg);
     }
