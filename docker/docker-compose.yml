@@ -1,6 +1,6 @@
 services:
   miner:
-    image: ocminersupr/proxichorizo:0.5.4
+    image: ocminersupr/proxichorizo:0.5.5
     restart: unless-stopped
     deploy:
       resources:
