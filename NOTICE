@@ -1,7 +1,10 @@
 ProxiChorizo
 Copyright (c) 2026 ocminer / suprnova.cc
 
-The miner is MIT-licensed with a commercial-inclusion clause (see LICENSE). It contains no
+The miner is published under the ProxiChorizo License 1.0 (see LICENSE): free to run for mining
+and to modify and share under the same license; inclusion in commercial or closed-source
+miners needs written permission from suprnova.cc. Versions up to v0.5.4 stay under their
+MIT-with-restriction license. The miner contains no
 third-party source code: the Ed25519 field arithmetic, the ECVRF construction (RFC 9381,
 ECVRF-EDWARDS25519-SHA512-TAI) and SHA-512 are implemented in this repository. Test vectors
 in vectors.json were generated with the Proxima node's own util/vrf package

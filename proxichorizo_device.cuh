@@ -1,3 +1,5 @@
+// ProxiChorizo - Copyright (c) 2026 suprnova.cc. ProxiChorizo License 1.0: free to run for mining;
+// reuse in commercial or closed-source miners needs written permission. See LICENSE.
 // proxichorizo_device.cuh — the device side of ProxiChorizo: field arithmetic, Ed25519 points,
 // SHA-512, the VRF attempt and the kernels. Included once per variant from
 // ProxiChorizo.cu inside a namespace, with PX_FE32 / PX_WINDOW / PX_LB_BLOCKS /

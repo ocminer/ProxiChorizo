@@ -107,5 +107,17 @@ text rather than the checker.
 
 ## License
 
-MIT License with one restriction: inclusion in commercial projects requires prior
-written permission from suprnova.cc. See `LICENSE`. Author: suprnova.cc.
+ProxiChorizo License 1.0 (see `LICENSE`), source-available:
+
+- **Mining is free.** Run it on any hardware and any pool, for yourself or as a paid
+  operation, no permission needed.
+- **Copy, study, modify and share it**, as long as the source goes with it and your
+  changes stay under the same license with the notices intact.
+- **Not allowed without written permission from suprnova.cc:** taking the code or
+  any substantial part of it (field and point arithmetic, hash-to-curve, VRF attempt,
+  kernel designs, autotuning, pool protocol) into another miner that is commercial
+  (sold, dev fee, paid service) or closed-source, in source, PTX, SPIR-V or binary form.
+
+Permission requests: open an issue on GitHub or contact suprnova.cc. Versions up to
+and including v0.5.4 were released under an MIT license with a commercial-inclusion
+clause; what those versions granted stays granted. Author: suprnova.cc.

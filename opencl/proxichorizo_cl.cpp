@@ -1,3 +1,5 @@
+// ProxiChorizo - Copyright (c) 2026 suprnova.cc. ProxiChorizo License 1.0: free to run for mining;
+// reuse in commercial or closed-source miners needs written permission. See LICENSE.
 // proxichorizo_cl.cpp — ProxiChorizo for OpenCL GPUs (AMD first). The host side that does not
 // touch the GPU (sockets, HTTP, job poller, submit, stats API, key loading) is shared with the
 // CUDA miner through host_common.inc (generated from proxichorizo.cu); the device code is

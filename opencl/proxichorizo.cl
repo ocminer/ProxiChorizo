@@ -1,3 +1,5 @@
+// ProxiChorizo - Copyright (c) 2026 suprnova.cc. ProxiChorizo License 1.0: free to run for mining;
+// reuse in commercial or closed-source miners needs written permission. See LICENSE.
 // proxichorizo.cl — ProxiChorizo device code for OpenCL (AMD and any other OpenCL 1.2 GPU).
 // Same algorithm as proxichorizo_device.cuh: Ed25519 field + points, SHA-512, the ECVRF
 // attempt, the fused kernel and the compacted two-kernel pipeline. Built per variant with

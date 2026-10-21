@@ -1,3 +1,5 @@
+// ProxiChorizo - Copyright (c) 2026 suprnova.cc. ProxiChorizo License 1.0: free to run for mining;
+// reuse in commercial or closed-source miners needs written permission. See LICENSE.
 #include <cuda_runtime.h>
 #include <stdint.h>
 #include <stdio.h>

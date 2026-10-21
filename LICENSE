@@ -1,26 +1,73 @@
-MIT License (with commercial-use restriction)
+ProxiChorizo License 1.0
 
 Copyright (c) 2026 suprnova.cc
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute and sublicense copies of the
-Software, and to permit persons to whom the Software is furnished to do so,
-subject to the following conditions:
+This license applies to every version of ProxiChorizo (the "Software") that
+carries this text. Versions up to and including v0.5.4 were published under the
+"MIT License (with commercial-use restriction)"; the permissions granted for
+those versions remain as granted and are not changed by this license.
 
-1. The above copyright notice and this permission notice shall be included in
-   all copies or substantial portions of the Software.
+1. Definitions
 
-2. Inclusion of the Software, or of substantial portions of it, in commercial
-   products or projects requires the prior written permission of suprnova.cc.
-   Mining with the Software, on any pool, is not a commercial inclusion and
-   needs no permission.
+   "Mining" means running the Software, modified or not, to search nonces for
+   the Proxima network, alone or through a pool, for yourself or for others,
+   including as a paid or commercial operation.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+   "Another Miner" means any software other than the Software, or a derivative
+   of the Software, whose purpose includes searching nonces or proofs of work
+   for Proxima or any other network.
+
+   "Commercial" means sold, licensed or rented for a fee, carrying a developer
+   fee or similar built-in payment, bundled with a paid product or service, or
+   offered as a service for payment.
+
+   "Closed-source" means distributed, offered or run for third parties without
+   making the complete corresponding source code available to every recipient
+   under this license.
+
+2. What you may do
+
+   a. Run the Software for Mining, on any hardware, on any pool, for any purpose,
+      with no fee and no permission needed.
+   b. Copy and redistribute the Software, in source or binary form, unmodified,
+      provided this license, the copyright notice and the NOTICE file travel
+      with it.
+   c. Modify the Software for your own Mining and study it freely.
+   d. Distribute your modifications, provided the complete corresponding source
+      is included, the modified work stays under this license, and your changes
+      are marked as such.
+
+3. What you may not do without written permission
+
+   Without the prior written permission of suprnova.cc you may not include,
+   incorporate, port, translate or adapt the Software or any substantial part
+   of it (including the field arithmetic, point arithmetic, hash-to-curve, VRF
+   attempt, kernel designs, autotuning and pool protocol code) into Another
+   Miner that is Commercial or Closed-source, or distribute Another Miner that
+   contains such a part. This applies to source code, compiled code, PTX, SPIR-V
+   and binary form alike.
+
+   Permission requests: the contact given in the README. Permission, when
+   granted, is per project and in writing.
+
+4. Notices and names
+
+   Keep every copyright, license and attribution notice in the Software and in
+   the NOTICE file. This license grants no rights to the names "ProxiChorizo",
+   "suprnova" or "suprnova.cc" except to describe the unmodified Software.
+
+5. Termination
+
+   If you breach section 3 or 4 your rights under this license end at once.
+   They are restored if the breach is cured within 30 days of notice, unless
+   suprnova.cc has terminated them in writing.
+
+6. No warranty
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+   FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+   IN THE SOFTWARE.
