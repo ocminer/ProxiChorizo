@@ -16,7 +16,7 @@
 #include <random>
 #include <fstream>
 #include <sstream>
-#define PX_VERSION "0.5.5"
+#define PX_VERSION "0.5.6"
 // sockets: POSIX or Winsock behind four helpers
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -183,6 +183,7 @@ static const int NVARIANTS = 6;
 struct Platform { int major, minor; const char *variant; int threads, iters, blocksPerSM; bool measured; const char *note; };
 static const Platform PLATFORMS[] = {
     { 12, -1, "fe32_wnaf_lb2_c", 256, 1, 128, true,  "Blackwell (RTX 50xx, RTX PRO 6000): compacted pipeline + wNAF, large launches, 2 points per inversion (21.5 MH/s on a 5080, 41.5 on a PRO 6000)" },
+    {  9, -1, "fe32_w4_lb2_c",   256, 1, 128, true,  "Hopper (H100): the 4-bit table beats wNAF here (21.2 vs 19.3 MH/s on an H100 SXM), large launches" },
     {  8,  9, "fe32_wnaf_lb2_c", 256, 1, 128, false, "Ada (RTX 40xx): not measured here, tuned on first start" },
     {  8,  6, "fe32_wnaf_lb2_c", 256, 1, 128, true,  "Ampere GA10x (RTX 30xx): compacted pipeline + wNAF, large launches (7.4 MH/s on a 3070)" },
     {  8,  0, "fe32_wnaf_lb2_c", 256, 1, 128, true,  "Ampere GA100 (A100, CMP 170HX): wNAF wins since the loop fits the instruction cache (6.9 vs 6.0 MH/s on a CMP 170HX)" },

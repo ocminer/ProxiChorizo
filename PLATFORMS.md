@@ -313,3 +313,95 @@ Both miners now tune unmeasured generations on first start (quick autotune: two 
 shapes, 3 s per trial) and cache the choice per card and version in `proxichorizo-autotune.cache`;
 measured rows start immediately. Verified on the PRO 6000 (CUDA, row temporarily marked unmeasured:
 picks fe32_wnaf_lb2_c 24064×256×1 in 12 s, second start reads the cache) and on the 7900 XTX (OpenCL).
+
+## Round 8: RTX A6000 (GA102, sm_86, 84 SMs, 300 W) — 2026-10-21 23:00 UTC
+
+A 4-card A6000 box (CUDA 13.2) got the full autotune and an Nsight Compute profile of
+`mult_kernel` on its spare card.
+
+- Autotune: `fe32_wnaf_lb2_c` wins at 11.6 MH/s (10752×256×1); `fe32_w4_lb2_c` 10.8,
+  `fe32_w0_lb2_c` 8.6, `fe51_w4_lb1` 3.1. The platform row's geometry (blocksPerSM 128,
+  256 threads, 1 nonce) does 11.8–12.0 MH/s mining, so the Ampere row stays as it is.
+  Per SM and GHz the A6000 (12.0 / 84 SMs / 1.69 GHz) matches the 3070 (7.4 / 46 / 1.9):
+  the GA10x kernel is not leaving anything card-specific on the table.
+- Profile (ncu, `mult_kernel` 200 ms launch): compute-bound, memory idle (10 % DRAM, 0.3 % LSU).
+  Pipes: ALU 61 %, FMA-heavy (IMAD) 49 %, i.e. on Ampere the carry/add/logic side leads,
+  not the multiplier as on Blackwell. Stalls per issued instruction: wait 1.34 (carry chains),
+  math_pipe_throttle 1.24, no_instruction 1.18 (loop body vs. instruction cache), not_selected
+  1.04, dispatch 0.96. Occupancy 33 % (128 registers/thread → 16 warps/SM); 43 % of issue
+  cycles find no eligible warp. The card runs power-capped: 1.69 GHz under the 300 W limit
+  (2.1 GHz max).
+- Occupancy experiment (`__launch_bounds__(256,3)` = 85 regs, `(256,4)` = 64 regs, wNAF
+  compact, same loop): lb3 11.29 MH/s (−4.7 %, no spills but the compiler's schedule gets
+  worse), lb4 10.61 (−10 %, 1.7 KB spills). More warps do not pay for the register cap on
+  GA102 either — same answer as lb3/lb5-6 gave on Blackwell. Not shipped.
+- Conclusion: nothing cheap left for Ampere; the remaining ideas are the structural ones
+  from round 6 (a multiplication without PTX carry chains, fewer field ops per doubling),
+  which would have to be measured per generation.
+
+## Round 9: H100 SXM (GH100, sm_90, 132 SMs, 700 W) — 2026-10-22 01:40 UTC
+
+First Hopper measurement, CUDA 13.4, one H100 80GB HBM3 (cloud spot box). Build `-gencode arch=compute_90,code=sm_90`.
+
+| variant | launch | MH/s |
+|---|---|---|
+| **fe32_w4_lb2_c** | 16896 × 256 × 1 (128 blocks/SM) | **19.8** |
+| fe32_w4_lb2_c | 33792 × 256 × 1 | 19.9 |
+| fe32_wnaf_lb2_c | 16896 × 256 × 1 | 17.1 |
+| fe32_w0_lb2_c | 16896 × 256 × 1 | 13.0 |
+| fe32_w4_lb2 / w0_lb2 / fe51_w4_lb1 (non-compact) | best | 3.4 / 2.9 / 2.8 |
+
+Hopper is the first generation where the 4-bit fixed window beats wNAF (+16 %); on Blackwell, GA10x and
+(since Round 5) GA100 it is the other way round. The platform table got a measured sm_90 row
+(`fe32_w4_lb2_c`, 256 × 1, 128 blocks/SM); the first-start quick-tune would have chosen the same.
+
+Launch shape: 8448–67584 blocks all within 19.5–19.9 (plateau from 128 blocks/SM); 128 threads −20 %,
+2 or 4 nonces per thread −5 to −20 %, 512 threads does not launch (128 regs × 512 = full register file).
+
+The card is compute-bound, not power-bound: 1,980 MHz at 400–440 W of the 700 W cap, 44 °C.
+ncu on `mult_kernel` (w4): ALU pipe 60 %, IMAD-heavy 49 %, issue-active 56 %, LSU 0.2 %, occupancy 25 %
+(128 registers, 2 blocks/SM); stalls per issue: no_instruction 1.62, wait 1.37, math-pipe throttle 1.22,
+not_selected 0.94, dispatch 0.80. Same picture as the A6000 in Round 8 with slightly more instruction-fetch stall.
+
+Tried and rejected (experimental build, not in the repo): launch bounds 3 blocks/SM (85 regs) 15.4 MH/s,
+4 blocks/SM (64 regs, ~1 KB spills) 15.7; 2-bit window 14.8, 2-bit + 3 blocks/SM 12.6. More warps do not
+pay for the spills and the shorter window costs more additions than it saves in table lookups.
+
+Per SM·GHz the H100 (19.9 / (132 × 1.98) = 0.076) sits between GA100 (CMP 170HX 0.07) and the RTX PRO 6000
+(0.084): Hopper has 64 INT32 lanes per SM like GA100, so a Hopper-specific kernel would need to move work onto
+the FP32/FMA pipes, which the 32-bit-limb field arithmetic does not do. At €1.97/h spot the H100 is the worst
+€/MH of the boxes tried (PRO 6000 box ≈ €0.027/MH·h, A6000 ≈ €0.030, H100 ≈ €0.099).
+
+### Round 9b: branch-free carries, cached 4-bit table — 2026-10-22 02:00–03:10 UTC (H100, then every generation)
+
+Pipe microbenchmark on the H100 (`mad.lo.cc`/`madc.hi.cc` chains, independent IMADs, dependent IMAD chain,
+`mad.wide.u32`, DFMA, FFMA, and 4 IMAD + 4 DFMA / 4 IMAD + 4 FFMA mixes; 8 and 2 blocks per SM): every integer
+form and DFMA run at 64 lane-ops per clock per SM, FFMA at 124, and the mixes at 58–61, i.e. the integer and
+FP64/FP32 pipes do not add up through one dispatcher. A dependent IMAD chain already reaches the full 64 with
+16 warps per SM. So the miner's ~420 W of the 700 W cap is what the arithmetic draws at full issue, there is no
+idle pipe to move work to, and latency hiding is not the limit either.
+
+ncu, wNAF vs 4-bit on the H100: the wNAF kernel executes 7 % fewer instructions (101.0 vs 108.6 G per bench)
+but stalls on `no_instruction` 4.03 vs 1.66 per issue. Not the loop's skip branch (a run-length version with a
+tight doubling loop measured 16.8): the stalls come from the small data-dependent branches inside every field
+operation. `fe_add`/`fe_sub` branched on the carry/borrow out, which is set in about half the lanes, and
+`fe_fold512` on the top word, which is non-zero in ~97 % of the lanes, so the warp diverged on nearly every one
+of the ~4,000 such branches per point and ran the fix-up anyway. Made unconditional (a `mad.lo.cc` of c×38 plus
+the carry chain, same instruction count as the old body):
+
+| card | kernel | before | after |
+|---|---|---|---|
+| H100 (sm_90) | fe32_w4_lb2_c + cached table | 20.16 | **21.20** (+5.2 %; +7 % vs the shipped 19.8) |
+| H100 | fe32_wnaf_lb2_c | 17.10 | 19.31 (+13 %) |
+| RTX PRO 6000 (sm_120) | fe32_wnaf_lb2_c | 41.55 | **42.97** (+3.4 %) |
+| RTX A6000 (sm_86) | fe32_wnaf_lb2_c | 11.60 | **12.01** (+3.5 %) |
+
+Also in: the 4-bit window's table is now kept in cached form (`ge_add_cached`, 8 instead of 9 multiplications
+per addition): H100 19.83 → 20.16 (+1.7 %). The 4-bit window remains Hopper-only; wNAF stays ahead everywhere
+else (PRO 6000: w4 cached branch-free 38.1 vs wNAF branch-free 43.0).
+
+Tried on the H100 and dropped: signed odd-digit 5-bit windows (Joye–Tunstall recoding of s−1, 51 additions, no
+digit test, 16-entry odd table) 21.17 branch-free = the 4-bit kernel; `__noinline__` field functions 9.9;
+squaring through the multiply 15.9; 96-register launch bounds (128×5, 192×3; 262 B spills) 13.4/12.5; one or
+three points per inversion 19.3/19.6; the run-length wNAF loop 16.8. Compiled `mult_kernel` sizes are 700–930 KB
+(45–59k instructions) per variant; the instruction count, not the size, is what the branch removal changed.

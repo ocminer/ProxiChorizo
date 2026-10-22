@@ -56,7 +56,7 @@ start-up line `GPU n ...: <variant>, <blocks>x<threads>x<iters> — <reason>` sa
 ./proxichorizo --selftest vectors.json      # the math against the Proxima node's VRF vectors
 ./proxichorizo ... --api-bind 127.0.0.1:4078   # JSON statistics at /, mmpOS line at /mmpos
 ```
-Measured: RTX 5080 ≈ 17 MH/s, RTX 3070 ≈ 6.9 MH/s, CMP 170HX ≈ 5–6 MH/s; one CPU core of the reference seeker ≈ 37 kH/s.
+Measured (0.5.6): RTX PRO 6000 ≈ 43 MH/s, RTX 5090 ≈ 29 MH/s, H100 SXM ≈ 21 MH/s, RTX 5080 ≈ 21 MH/s, RTX A6000 ≈ 12 MH/s, RTX 3070 ≈ 7.4 MH/s, CMP 170HX ≈ 7 MH/s; one CPU core of the reference seeker ≈ 37 kH/s.
 **[USAGE.md](USAGE.md)** has the full guide: registering at the pool, solo mining with `proxi node mine`, HiveOS / MMPOS / SMOS flight sheets, Docker, Windows, every option, troubleshooting.
 
 ## Build
@@ -78,8 +78,8 @@ glibc 2.31 so they run on HiveOS and mmpOS images.
 Per attempt: SHA-512, try-and-increment hash-to-curve (one field exponentiation per try),
 a 254-bit scalar multiplication on Ed25519, cofactor ×8, compression (one inversion),
 SHA-512. See `PLATFORMS.md` for the measured variants and why each exists.
-Reference points (the same binary, platform defaults): RTX 5080 ≈ 17 MH/s, RTX 3070
-≈ 6.5 MH/s, CMP 170HX ≈ 4.7 MH/s, one CPU core of the reference Rust seeker ≈ 37 kH/s.
+Reference points (the same binary, platform defaults): RTX 5090 ≈ 29 MH/s, RTX 5080 ≈ 21 MH/s,
+RTX 3070 ≈ 7.4 MH/s, CMP 170HX ≈ 7 MH/s, one CPU core of the reference Rust seeker ≈ 37 kH/s.
 
 ## Layout
 

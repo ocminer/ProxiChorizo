@@ -189,7 +189,17 @@ __device__ __forceinline__ void fe_add(fe &h, const fe &f, const fe &g) {
         : "=&r"(h.v[0]), "=&r"(h.v[1]), "=&r"(h.v[2]), "=&r"(h.v[3]), "=&r"(h.v[4]), "=&r"(h.v[5]), "=&r"(h.v[6]), "=&r"(h.v[7]), "=&r"(c)
         : "r"(f.v[0]), "r"(f.v[1]), "r"(f.v[2]), "r"(f.v[3]), "r"(f.v[4]), "r"(f.v[5]), "r"(f.v[6]), "r"(f.v[7]),
           "r"(g.v[0]), "r"(g.v[1]), "r"(g.v[2]), "r"(g.v[3]), "r"(g.v[4]), "r"(g.v[5]), "r"(g.v[6]), "r"(g.v[7]));
-    if (c) { if (fe_addsmall(h, 38u)) fe_addsmall(h, 38u); }
+    // the carry out is set in about half the lanes, so a branch around the
+    // fix-up diverges nearly every time and the body runs anyway: fold c*38 in
+    // unconditionally (H100 +7 %, RTX PRO 6000 +3.4 %, RTX A6000 +3.5 %)
+    { uint32_t k = 38u, c2;
+      asm("mad.lo.cc.u32 %0, %9, %10, %0;\n\t"
+          "addc.cc.u32 %1, %1, 0;\n\t" "addc.cc.u32 %2, %2, 0;\n\t" "addc.cc.u32 %3, %3, 0;\n\t"
+          "addc.cc.u32 %4, %4, 0;\n\t" "addc.cc.u32 %5, %5, 0;\n\t" "addc.cc.u32 %6, %6, 0;\n\t"
+          "addc.cc.u32 %7, %7, 0;\n\t" "addc.u32 %8, 0, 0;"
+          : "+r"(h.v[0]), "+r"(h.v[1]), "+r"(h.v[2]), "+r"(h.v[3]), "+r"(h.v[4]), "+r"(h.v[5]), "+r"(h.v[6]), "+r"(h.v[7]), "=&r"(c2)
+          : "r"(c), "r"(k));
+      if (c2) fe_addsmall(h, 38u); }
 }
 // h = f - g
 __device__ __forceinline__ void fe_sub(fe &h, const fe &f, const fe &g) {
@@ -202,8 +212,16 @@ __device__ __forceinline__ void fe_sub(fe &h, const fe &f, const fe &g) {
         : "=&r"(h.v[0]), "=&r"(h.v[1]), "=&r"(h.v[2]), "=&r"(h.v[3]), "=&r"(h.v[4]), "=&r"(h.v[5]), "=&r"(h.v[6]), "=&r"(h.v[7]), "=&r"(b)
         : "r"(f.v[0]), "r"(f.v[1]), "r"(f.v[2]), "r"(f.v[3]), "r"(f.v[4]), "r"(f.v[5]), "r"(f.v[6]), "r"(f.v[7]),
           "r"(g.v[0]), "r"(g.v[1]), "r"(g.v[2]), "r"(g.v[3]), "r"(g.v[4]), "r"(g.v[5]), "r"(g.v[6]), "r"(g.v[7]));
-    // a wrap past zero added 2^256 = 38 too much
-    if (b & 1u) { if (fe_subsmall(h, 38u)) fe_subsmall(h, 38u); }
+    // a wrap past zero added 2^256 = 38 too much; subtract it unconditionally
+    // (same reasoning as in fe_add: the borrow is set in about half the lanes)
+    { uint32_t t = (b & 1u) * 38u, b2;
+      asm("sub.cc.u32 %0, %0, %9;\n\t"
+          "subc.cc.u32 %1, %1, 0;\n\t" "subc.cc.u32 %2, %2, 0;\n\t" "subc.cc.u32 %3, %3, 0;\n\t"
+          "subc.cc.u32 %4, %4, 0;\n\t" "subc.cc.u32 %5, %5, 0;\n\t" "subc.cc.u32 %6, %6, 0;\n\t"
+          "subc.cc.u32 %7, %7, 0;\n\t" "subc.u32 %8, 0, 0;"
+          : "+r"(h.v[0]), "+r"(h.v[1]), "+r"(h.v[2]), "+r"(h.v[3]), "+r"(h.v[4]), "+r"(h.v[5]), "+r"(h.v[6]), "+r"(h.v[7]), "=&r"(b2)
+          : "r"(t));
+      if (b2 & 1u) fe_subsmall(h, 38u); }
 }
 __device__ __forceinline__ void fe_neg(fe &h, const fe &f) { fe z; fe_0(z); fe_sub(h, z, f); }
 
@@ -320,8 +338,9 @@ __device__ __forceinline__ void fe_fold512(fe &h, uint32_t r[18]) {
     for (int i = 0; i < 8; i++) { hi[i] = r[8 + i]; r[8 + i] = 0; }
     PX_MUL_ROW(r + 0, 38u, hi);        // r[0..8] = lo + 38*hi, r[8] <= 38
     for (int i = 0; i < 8; i++) h.v[i] = r[i];
+    // r[8] is non-zero in about 97 % of the lanes: fold it without a branch
     uint32_t top = r[8];
-    if (top) {
+    {
         uint32_t c, k = 38u;
         asm(
             "mad.lo.cc.u32 %0, %9, %10, %0;\n\t"
@@ -774,10 +793,13 @@ __device__ void ge_scalarmult_const(ge &r, const ge &p) {
     // top window (bits 252..255) is 4..7 for a clamped scalar, never zero
     int w = (c_scalar[31] >> 4) & 0xF;
     ge_copy(r, T[w]);
+    // the table in cached form: 8 instead of 9 multiplications per addition (H100 +1.7 %)
+    geCached C[16];
+    for (int i = 1; i < 16; i++) ge_cache(C[i], T[i]);
     for (int i = 62; i >= 0; i--) {
         w = (c_scalar[i >> 1] >> ((i & 1) * 4)) & 0xF;
         ge_dbl_noT(r, r); ge_dbl_noT(r, r); ge_dbl_noT(r, r);
-        if (w) { ge_dbl(r, r); ge_add(r, r, T[w]); } else ge_dbl_noT(r, r);
+        if (w) { ge_dbl(r, r); ge_add_cached(r, r, C[w], false); } else ge_dbl_noT(r, r);
     }
 }
 #endif

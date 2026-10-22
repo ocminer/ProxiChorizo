@@ -147,7 +147,7 @@ about half of that). `--iters 8` is the best launch geometry on every AMD card m
 --bench [SECS]       measure the hashrate and exit      --selftest vectors.json   verify the math
 ```
 
-Typical rates: RTX 5080 ≈ 17 MH/s, RTX 3070 ≈ 6.9 MH/s, CMP 170HX ≈ 5–6 MH/s. The
+Typical rates: RTX 5090 ≈ 29 MH/s, RTX 5080 ≈ 21 MH/s, RTX 3070 ≈ 7.4 MH/s, CMP 170HX ≈ 7 MH/s. The
 work is pure integer ALU; memory, PCIe link width and risers do not matter.
 
 ## 6b. Kernel choice per card
