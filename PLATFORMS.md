@@ -405,3 +405,15 @@ digit test, 16-entry odd table) 21.17 branch-free = the 4-bit kernel; `__noinlin
 squaring through the multiply 15.9; 96-register launch bounds (128×5, 192×3; 262 B spills) 13.4/12.5; one or
 three points per inversion 19.3/19.6; the run-length wNAF loop 16.8. Compiled `mult_kernel` sizes are 700–930 KB
 (45–59k instructions) per variant; the instruction count, not the size, is what the branch removal changed.
+
+### Round 9c: 0.5.6 rollout on the suprnova rigs — 2026-10-22 11:05 UTC
+
+Pool-mining rates (miner's 30-second line, 8-sample average, same launch parameters as 0.5.4/0.5.5; the branch-free carry handling is the only kernel change):
+
+| GPU | 0.5.4 | 0.5.6 | change |
+|---|---|---|---|
+| RTX 5090 (sm_120, 420 W) | 29.06 MH/s | 30.05 MH/s | +3.4 % |
+| RTX 5080 (sm_120, 360 W) | 20.78 MH/s | 21.49 MH/s | +3.4 % |
+| RTX 3070 (sm_86, 238 W), 2 cards | 7.34 / 7.41 MH/s | 7.61 / 7.67 MH/s | +3.6 % |
+
+Power and temperature unchanged. The OpenCL miner (RX 7900 XTX 11.0 MH/s) is not affected by 0.5.6.
