@@ -941,7 +941,9 @@ int main(int argc, char **argv) {
         // bench/tests without a key: a fixed pseudo-random seed, so the scalar
         // multiplication costs what a real key costs (an all-zero scalar skips every addition)
         const char *fake = "ProxiChorizo bench scalar";
-        host_sha512((const uint8_t *)fake, strlen(fake), seed);
+        uint8_t digest[64];
+        host_sha512((const uint8_t *)fake, strlen(fake), digest);
+        memcpy(seed, digest, sizeof seed);
     }
     { uint8_t h[64]; host_sha512(seed, 32, h); memcpy(scalar, h, 32); scalar[0] &= 248; scalar[31] &= 127; scalar[31] |= 64; memcpy(g_scalar, scalar, 32); }
 
