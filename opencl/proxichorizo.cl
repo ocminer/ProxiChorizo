@@ -34,7 +34,7 @@ typedef uchar u8; typedef uint u32; typedef ulong u64;
 #ifndef PX_WG
 #define PX_WG 256
 #endif
-#define MAX_HITS 256
+#define MAX_HITS 8192
 
 // mw[0..7] = the first 64 bytes of the hash-to-curve message (03 01 pk prefix...) as big-endian
 // words, mw[8] = bytes 64..70 (the prefix tail) in the top 56 bits; beat_w = beat as 8 big-endian
@@ -825,6 +825,41 @@ void mult_kernel(__global const JobDev *job, __global const HPoint *pts, __globa
     }
 #endif
 }
+
+#ifdef PX_SPLIT_FINISH
+typedef struct {fe X,Y,Z;u64 nonce;uint valid;} ProjectivePoint;
+__kernel __attribute__((reqd_work_group_size(PX_WG,1,1))) PX_OCC
+void scalar_kernel(__global const HPoint *pts,__global const uint *cnt,__global ProjectivePoint *out,__global const Consts *K) {
+    uint n=cnt[0],total=get_global_size(0);Cfe C;load_cfe(&C,K);
+    for(uint i=get_global_id(0);i<n;i+=total) {
+        ge G;bool ok=mult_point(&G,&pts[i],&C,K);
+        out[i].valid=ok;out[i].nonce=pts[i].nonce;
+        if(ok) {out[i].X=G.X;out[i].Y=G.Y;out[i].Z=G.Z;}
+        else {fe z;fe_1(&z);out[i].Z=z;}
+    }
+}
+__kernel __attribute__((reqd_work_group_size(PX_WG,1,1)))
+void finish_batch_kernel(__global const JobDev *job,__global const ProjectivePoint *pts,__global const uint *cnt,__global Hit *hits,__global uint *nhits) {
+    uint n=cnt[0],total=get_global_size(0);
+    for(uint base=get_global_id(0);base<n;base+=total*PX_SPLIT_FINISH) {
+        fe prefix[PX_SPLIT_FINISH],prod;fe_1(&prod);
+        #pragma unroll
+        for(int k=0;k<PX_SPLIT_FINISH;k++) {
+            uint i=base+(uint)k*total;prefix[k]=prod;
+            if(i<n){fe z=pts[i].Z;fe_mul(&prod,&prod,&z);}
+        }
+        fe inv;fe_invert(&inv,&prod);
+        #pragma unroll
+        for(int k=PX_SPLIT_FINISH-1;k>=0;k--) {
+            uint i=base+(uint)k*total;
+            if(i<n) {
+                fe zi,z=pts[i].Z;fe_mul(&zi,&inv,&prefix[k]);fe_mul(&inv,&inv,&z);
+                if(pts[i].valid) {ge G;G.X=pts[i].X;G.Y=pts[i].Y;finish_point_zi(job,&G,&zi,pts[i].nonce,job->k,hits,nhits);}
+            }
+        }
+    }
+}
+#endif
 
 // self-test: beta for a complete alpha plus intermediates
 __kernel void test_kernel(__global const JobDev *job, u64 nonce, __global u8 *out_beta, __global u8 *out_h, __global u8 *out_cg, __global int *ok, __global const Consts *K) {

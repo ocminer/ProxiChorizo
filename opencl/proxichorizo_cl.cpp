@@ -37,7 +37,7 @@ static void prepare_job(JobDev &jd) {
     for (int i = 0; i < 8; i++) { uint64_t w = 0; for (int j = 0; j < 8; j++) w = (w << 8) | jd.beat[8 * i + j]; jd.beat_w[i] = w; }
 }
 struct Hit { uint64_t nonce; uint8_t beta[64]; };
-#define MAX_HITS 256
+#define MAX_HITS 8192  // also accommodates complete low-difficulty verification batches
 #define PX_MAX_PASSES 12
 
 #define CL_CHECK(x) do { cl_int e_ = (x); if (e_ != CL_SUCCESS) { fprintf(stderr, "OpenCL error %d at %s:%d\n", (int)e_, __FILE__, __LINE__); exit(2); } } while (0)
@@ -72,9 +72,10 @@ static void enumerate_devices() {
 static std::string dev_label(const ClDev &d) { return d.board.empty() ? d.name : d.board + " (" + d.name + ")"; }
 
 // ---- variants: one kernel source, several build configurations --------------------
-struct Variant { const char *name; int fe, window, compact, wg; };
+struct Variant { const char *name; int fe, window, compact, wg; int split = 0; };
 static const Variant VARIANTS[] = {
     { "fe29_wnaf_c", 29, 5, 1, 256 },
+    { "fe29_wnaf_split8_c", 29, 5, 1, 256, 8 },
     { "fe29_w4_c",   29, 4, 1, 256 },
     { "fe29_w0_c",   29, 0, 1, 256 },
     { "fe32_wnaf_c", 32, 5, 1, 256 },
@@ -88,15 +89,31 @@ static const Variant *variantByName(const std::string &n) { for (int i = 0; i < 
 // measured: benchmarked on that family. An unmeasured family is tuned on first
 // start (the two candidate layouts at two iteration counts) and the choice
 // cached in proxichorizo-autotune.cache, as the CUDA miner does.
-struct Platform { const char *prefix; const char *variant; int iters; bool measured; const char *note; };
+struct Platform {
+    const char *prefix; const char *variant; int iters; bool measured; const char *note;
+    int groups_per_cu = 8;
+    unsigned required_cus = 0;
+    const char *board_match = nullptr;
+};
 static const Platform PLATFORMS[] = {
+    { "gfx1100", "fe29_wnaf_split8_c", 1, true, "RX 7900 XTX: measured model profile", 128, 48, "7900 XTX" },
+    { "gfx1102", "fe29_wnaf_split8_c", 1, true, "RX 7600 XT: measured model profile", 128, 16, "7600 XT" },
+    { "gfx906",  "fe29_wnaf_split8_c", 1, true, "MI50: measured 60-CU profile", 128, 60, "MI50" },
     { "gfx11", "fe29_wnaf_c", 8, true,  "RDNA3: 9x29 limbs straight into v_mad_u64_u32, wNAF, compacted pipeline (10.5 MH/s on an RX 7900 XTX)" },
     { "gfx12", "fe29_wnaf_c", 8, false, "RDNA4: not measured here, tuned on first start" },
     { "gfx10", "fe29_wnaf_c", 8, false, "RDNA2/1: not measured here, tuned on first start" },
     { "gfx9",  "fe29_wnaf_c", 8, true,  "Vega/CDNA (4.5 MH/s on an MI50)" },
     { "",      "fe29_wnaf_c", 8, false, "unknown family: tuned on first start" },
 };
-static const Platform &platformFor(const ClDev &d) { for (auto &p : PLATFORMS) if (d.name.rfind(p.prefix, 0) == 0) return p; return PLATFORMS[sizeof PLATFORMS / sizeof PLATFORMS[0] - 1]; }
+static const Platform &platformFor(const ClDev &d) {
+    for (const auto &p : PLATFORMS) {
+        if (d.name.rfind(p.prefix, 0) != 0) continue;
+        if (p.required_cus && d.cus != p.required_cus) continue;
+        if (p.board_match && d.board.find(p.board_match) == std::string::npos) continue;
+        return p;
+    }
+    return PLATFORMS[sizeof PLATFORMS / sizeof PLATFORMS[0] - 1];
+}
 
 static std::string g_kernel_src;   // from the blob or --kernel-file
 static std::string g_extra_build;  // --build-opts
@@ -105,6 +122,7 @@ static std::string g_extra_build;  // --build-opts
 struct Prog {
     const Variant *v = nullptr; ClDev *dev = nullptr;
     cl_program p = nullptr; cl_kernel k_mine = nullptr, k_h2c = nullptr, k_mult = nullptr, k_test = nullptr, k_fetest = nullptr, k_init = nullptr;
+    cl_kernel k_scalar = nullptr, k_finish = nullptr;
     cl_mem consts = nullptr;  // Consts struct: 3 fe + scalar[32] + wnaf[260] + int len + pad
     size_t fe_size = 32, consts_size = 0;
 };
@@ -118,6 +136,7 @@ static Prog *get_prog(ClDev &dev, const Variant *v) {
     const char *src = g_kernel_src.c_str(); size_t len = g_kernel_src.size(); cl_int err;
     pr->p = clCreateProgramWithSource(dev.ctx, 1, &src, &len, &err); CL_CHECK(err);
     std::string opts = "-DPX_FE=" + std::to_string(v->fe) + " -DPX_WINDOW=" + std::to_string(v->window) + " -DPX_COMPACT=" + std::to_string(v->compact) + " -DPX_WG=" + std::to_string(v->wg) + " " + g_extra_build;
+    if (v->split) opts += " -DPX_SPLIT_FINISH=" + std::to_string(v->split);
     auto t0 = std::chrono::steady_clock::now();
     err = clBuildProgram(pr->p, 1, &dev.id, opts.c_str(), nullptr, nullptr);
     if (err != CL_SUCCESS) {
@@ -132,6 +151,10 @@ static Prog *get_prog(ClDev &dev, const Variant *v) {
     pr->k_test = clCreateKernel(pr->p, "test_kernel", &err); CL_CHECK(err);
     pr->k_fetest = clCreateKernel(pr->p, "fe_test_kernel", &err); CL_CHECK(err);
     pr->k_init = clCreateKernel(pr->p, "init_kernel", &err); CL_CHECK(err);
+    if (v->split) {
+        pr->k_scalar = clCreateKernel(pr->p, "scalar_kernel", &err); CL_CHECK(err);
+        pr->k_finish = clCreateKernel(pr->p, "finish_batch_kernel", &err); CL_CHECK(err);
+    }
     pr->fe_size = v->fe == 32 ? 32 : v->fe == 51 ? 40 : 36;
     pr->consts_size = 3 * pr->fe_size + 32 + 260 + 8;
     pr->consts = clCreateBuffer(dev.ctx, CL_MEM_READ_WRITE, pr->consts_size, nullptr, &err); CL_CHECK(err);
@@ -191,11 +214,16 @@ static int prog_init(Prog *pr, const uint8_t *scalar, uint8_t pk_out[32]) {
 }
 
 // per-launch scratch of the compacted pipeline
-struct Scratch { cl_mem pts = nullptr, nonce[2] = {nullptr, nullptr}, ctr[2] = {nullptr, nullptr}, cnt = nullptr; size_t n = 0; };
+struct Scratch { cl_mem projective = nullptr; cl_mem pts = nullptr, nonce[2] = {nullptr, nullptr}, ctr[2] = {nullptr, nullptr}, cnt = nullptr; size_t n = 0; };
 static Scratch *scratch_alloc(Prog *pr, size_t n) {
     if (!pr->v->compact) return nullptr;
     cl_int err; ClDev &d = *pr->dev; Scratch *sc = new Scratch(); sc->n = n;
     size_t hpoint = 2 * pr->fe_size + 8;
+    if (pr->v->split) {
+        // Three field elements, an 8-byte aligned nonce, valid flag and tail padding.
+        size_t bytes = ((3 * pr->fe_size + 7) / 8) * 8 + 16;
+        sc->projective = clCreateBuffer(d.ctx, CL_MEM_READ_WRITE, n * bytes, nullptr, &err); CL_CHECK(err);
+    }
     sc->pts = clCreateBuffer(d.ctx, CL_MEM_READ_WRITE, n * hpoint, nullptr, &err); CL_CHECK(err);
     for (int b = 0; b < 2; b++) { sc->nonce[b] = clCreateBuffer(d.ctx, CL_MEM_READ_WRITE, n * 8, nullptr, &err); CL_CHECK(err); sc->ctr[b] = clCreateBuffer(d.ctx, CL_MEM_READ_WRITE, n, nullptr, &err); CL_CHECK(err); }
     sc->cnt = clCreateBuffer(d.ctx, CL_MEM_READ_WRITE, (PX_MAX_PASSES + 2) * 4, nullptr, &err); CL_CHECK(err);
@@ -204,6 +232,7 @@ static Scratch *scratch_alloc(Prog *pr, size_t n) {
 }
 static void scratch_free(Scratch *sc) {
     if (!sc) return;
+    if (sc->projective) clReleaseMemObject(sc->projective);
     clReleaseMemObject(sc->pts); for (int b = 0; b < 2; b++) { clReleaseMemObject(sc->nonce[b]); clReleaseMemObject(sc->ctr[b]); } clReleaseMemObject(sc->cnt); delete sc;
 }
 // one launch over stride*iters nonces starting at nonce_base; hits appended to d_hits/d_n
@@ -226,11 +255,27 @@ static void prog_mine(Prog *pr, cl_mem d_job, uint64_t nonce_base, uint64_t stri
             clSetKernelArg(pr->k_h2c, 10, sizeof out_ctr, &out_ctr); clSetKernelArg(pr->k_h2c, 11, sizeof pr->consts, &pr->consts);
             CL_CHECK(clEnqueueNDRangeKernel(d.q, pr->k_h2c, 1, nullptr, &gsz, &lsz, 0, nullptr, nullptr));
         }
-        size_t gsz = stride, lsz = pr->v->wg;
-        clSetKernelArg(pr->k_mult, 0, sizeof d_job, &d_job); clSetKernelArg(pr->k_mult, 1, sizeof sc->pts, &sc->pts);
-        clSetKernelArg(pr->k_mult, 2, sizeof sc->cnt, &sc->cnt); clSetKernelArg(pr->k_mult, 3, sizeof d_hits, &d_hits);
-        clSetKernelArg(pr->k_mult, 4, sizeof d_n, &d_n); clSetKernelArg(pr->k_mult, 5, sizeof pr->consts, &pr->consts);
-        CL_CHECK(clEnqueueNDRangeKernel(d.q, pr->k_mult, 1, nullptr, &gsz, &lsz, 0, nullptr, nullptr));
+        if (pr->v->split) {
+            size_t gsz = stride, lsz = pr->v->wg;
+            CL_CHECK(clSetKernelArg(pr->k_scalar, 0, sizeof sc->pts, &sc->pts));
+            CL_CHECK(clSetKernelArg(pr->k_scalar, 1, sizeof sc->cnt, &sc->cnt));
+            CL_CHECK(clSetKernelArg(pr->k_scalar, 2, sizeof sc->projective, &sc->projective));
+            CL_CHECK(clSetKernelArg(pr->k_scalar, 3, sizeof pr->consts, &pr->consts));
+            CL_CHECK(clEnqueueNDRangeKernel(d.q, pr->k_scalar, 1, nullptr, &gsz, &lsz, 0, nullptr, nullptr));
+            gsz = ((stride + pr->v->split * lsz - 1) / (pr->v->split * lsz)) * lsz;
+            CL_CHECK(clSetKernelArg(pr->k_finish, 0, sizeof d_job, &d_job));
+            CL_CHECK(clSetKernelArg(pr->k_finish, 1, sizeof sc->projective, &sc->projective));
+            CL_CHECK(clSetKernelArg(pr->k_finish, 2, sizeof sc->cnt, &sc->cnt));
+            CL_CHECK(clSetKernelArg(pr->k_finish, 3, sizeof d_hits, &d_hits));
+            CL_CHECK(clSetKernelArg(pr->k_finish, 4, sizeof d_n, &d_n));
+            CL_CHECK(clEnqueueNDRangeKernel(d.q, pr->k_finish, 1, nullptr, &gsz, &lsz, 0, nullptr, nullptr));
+        } else {
+            size_t gsz = stride, lsz = pr->v->wg;
+            clSetKernelArg(pr->k_mult, 0, sizeof d_job, &d_job); clSetKernelArg(pr->k_mult, 1, sizeof sc->pts, &sc->pts);
+            clSetKernelArg(pr->k_mult, 2, sizeof sc->cnt, &sc->cnt); clSetKernelArg(pr->k_mult, 3, sizeof d_hits, &d_hits);
+            clSetKernelArg(pr->k_mult, 4, sizeof d_n, &d_n); clSetKernelArg(pr->k_mult, 5, sizeof pr->consts, &pr->consts);
+            CL_CHECK(clEnqueueNDRangeKernel(d.q, pr->k_mult, 1, nullptr, &gsz, &lsz, 0, nullptr, nullptr));
+        }
     } else {
         size_t gsz = stride, lsz = pr->v->wg;
         clSetKernelArg(pr->k_mine, 0, sizeof d_job, &d_job); clSetKernelArg(pr->k_mine, 1, sizeof nonce_base, &nonce_base);
@@ -331,6 +376,30 @@ static void gpu_worker(Shared &sh, GpuCfg cfg) {
     scratch_free(sc); clReleaseMemObject(d_job); clReleaseMemObject(d_hits); clReleaseMemObject(d_n);
 }
 
+// Replay an independent vector through the actual compacted mining pipeline.
+// The search intentionally retains its 12 hash-to-curve passes; later decodes
+// must produce no hit rather than being compared to the unbounded test kernel.
+static bool pipeline_vector_ok(Prog *pr, JobDev jd, uint64_t nonce,
+                               uint64_t counter, const std::string &beta) {
+    if (!pr->v->compact) return true;
+    ClDev &d = *pr->dev; cl_int err;
+    jd.k = 0; memset(jd.beat, 255, sizeof jd.beat);
+    cl_mem job = make_job(d, jd);
+    cl_mem hits = clCreateBuffer(d.ctx, CL_MEM_READ_WRITE, sizeof(Hit) * MAX_HITS, nullptr, &err); CL_CHECK(err);
+    cl_mem nhits = clCreateBuffer(d.ctx, CL_MEM_READ_WRITE, sizeof(cl_uint), nullptr, &err); CL_CHECK(err);
+    Scratch *sc = scratch_alloc(pr, 1);
+    cl_uint n = 0; CL_CHECK(clEnqueueWriteBuffer(d.q, nhits, CL_TRUE, 0, sizeof n, &n, 0, nullptr, nullptr));
+    prog_mine(pr, job, nonce, pr->v->wg, 1, hits, nhits, sc);
+    CL_CHECK(clEnqueueReadBuffer(d.q, nhits, CL_TRUE, 0, sizeof n, &n, 0, nullptr, nullptr));
+    bool ok = n == (counter < PX_MAX_PASSES ? 1u : 0u);
+    if (ok && n) {
+        Hit hit; CL_CHECK(clEnqueueReadBuffer(d.q, hits, CL_TRUE, 0, sizeof hit, &hit, 0, nullptr, nullptr));
+        ok = hit.nonce == nonce && hexs(hit.beta, sizeof hit.beta) == beta;
+    }
+    scratch_free(sc); clReleaseMemObject(job); clReleaseMemObject(hits); clReleaseMemObject(nhits);
+    return ok;
+}
+
 // ---- tests, bench, autotune, verify (as in the CUDA miner) -------------------------------
 static int run_selftest(Prog *pr, const std::string &path, bool quiet = false) {
     std::string text;
@@ -346,7 +415,13 @@ static int run_selftest(Prog *pr, const std::string &path, bool quiet = false) {
         std::vector<uint8_t> xb, pkb, ab;
         unhex(x, xb); unhex(pk, pkb); unhex(alpha, ab);
         if (xb.size() != 32 || pkb.size() != 32 || ab.size() != 45) { fprintf(stderr, "bad vector line\n"); bad++; continue; }
-        if (x != cur_x) { uint8_t pk2[32]; prog_init(pr, xb.data(), pk2); cur_x = x; }
+        if (x != cur_x) {
+            uint8_t pk2[32];
+            if (prog_init(pr, xb.data(), pk2) != 1 || memcmp(pk2, pkb.data(), 32)) {
+                fprintf(stderr, "[%s] vector public-key derivation failed\n", pr->v->name); bad++; continue;
+            }
+            cur_x = x;
+        }
         JobDev jd; memset(&jd, 0, sizeof jd);
         memcpy(jd.pk, pkb.data(), 32); memcpy(jd.prefix, ab.data(), 37); jd.prefix_len = 37;
         uint64_t nonce = 0; for (int i = 0; i < 8; i++) nonce = (nonce << 8) | ab[37 + i];
@@ -354,6 +429,9 @@ static int run_selftest(Prog *pr, const std::string &path, bool quiet = false) {
         uint8_t ob[64], oh[32], ocg[32];
         int ok = prog_test(pr, d_job, nonce, ob, oh, ocg);
         clReleaseMemObject(d_job);
+        if (pr->v->split && !pipeline_vector_ok(pr, jd, nonce, ctr, beta)) {
+            fprintf(stderr, "[%s] mining pipeline vector %d FAILED\n", pr->v->name, n + 1); bad++;
+        }
         n++;
         bool hok = hexs(oh, 32) == h, cgok = hexs(ocg, 32) == cg, bok = hexs(ob, 64) == beta;
         if (!ok || !hok || !cgok || !bok) {
@@ -440,6 +518,8 @@ static void saveTuned(const ClDev &d, const GpuCfg &cfg) {
     out << tuneKey(d) << cfg.v->name << ' ' << cfg.groups << ' ' << cfg.v->wg << ' ' << cfg.iters << '\n';
 }
 // every variant over the same nonce range at low difficulty must find exactly the same hits
+#include "pipeline_verify.inc"
+
 static int run_verify(const uint8_t scalar[32], const uint8_t pk[32], int dev) {
     ClDev &d = g_devs[dev]; cl_int err;
     int groups = (int)d.cus * 4, iters = 2, launches = 3;
@@ -491,13 +571,14 @@ static void usage() {
         "  --kernel-file F    read the OpenCL source from F instead of the embedded copy; --build-opts \"...\" extra compiler flags\n"
         "  --selftest [FILE]  verify every variant against the embedded test vectors (or FILE) and exit\n"
         "  --fetest           randomized field-arithmetic test of every variant and exit\n"
+        "  --verify-pipeline  complete compacted-pipeline output checks, including partial batches; exit\n"
         "  --verify           every variant over one nonce range at low difficulty must find identical hits; exit\n"
         "  --bench [SECS]     measure the hashrate of the chosen variant and exit\n");
 }
 
 int main(int argc, char **argv) {
     std::string proxi, token, keyfile, seedhex, name, selftest, gpus, variant, apiBind, kernelFile;
-    int groups = 0, iters = 0; double bench = 0, autotuneSecs = 0; bool fetest = false, listVariants = false, listDevices = false, verify = false;
+    int groups = 0, iters = 0; double bench = 0, autotuneSecs = 0; bool fetest = false, listVariants = false, listDevices = false, verify = false, verifyPipeline = false;
     sock_init();
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
@@ -516,6 +597,7 @@ int main(int argc, char **argv) {
         else if (a == "--selftest") { selftest = "embedded"; if (i + 1 < argc && argv[i + 1][0] != '-') selftest = argv[++i]; }
         else if (a == "--fetest") fetest = true;
         else if (a == "--verify") verify = true;
+        else if (a == "--verify-pipeline") verifyPipeline = true;
         else if (a == "--list-variants") listVariants = true;
         else if (a == "--list-devices") listDevices = true;
         else if (a == "--groups" || a == "--blocks") { std::string s; next(s); groups = atoi(s.c_str()); }
@@ -544,13 +626,15 @@ int main(int argc, char **argv) {
     else { for (int i = 0; i < 32; i++) seed[i] = (uint8_t)(i * 97 + 13); }  // tests/bench without a key: fixed pseudo-random seed
     { uint8_t h[64]; host_sha512(seed, 32, h); memcpy(scalar, h, 32); scalar[0] &= 248; scalar[31] &= 127; scalar[31] |= 64; }
 
-    if (!selftest.empty() || fetest || verify) {
+    if (!selftest.empty() || fetest || verify || verifyPipeline) {
         int rc = 0; ClDev &d = g_devs[devs[0]];
         for (int v = 0; v < NVARIANTS; v++) {
             if (forced && &VARIANTS[v] != forced) continue;
+            if (verifyPipeline && selftest.empty() && !fetest && !verify && !VARIANTS[v].split && strcmp(VARIANTS[v].name, "fe29_wnaf_c")) continue;
             Prog *pr = get_prog(d, &VARIANTS[v]);
             uint8_t pk2[32]; int ok = prog_init(pr, scalar, pk2);
             if (ok != 1) { fprintf(stderr, "[%s] constant derivation FAILED (%s) %s\n", VARIANTS[v].name, ok == -2 ? "fe_sq != fe_mul" : ok == -3 ? "sqrt(-1)^2 != -1, got" : ok == -4 ? "basepoint decode, y =" : "?", hexs(pk2, 32).c_str()); rc = 1; }
+            if (ok == 1) memcpy(pk, pk2, sizeof pk);
             if (ok == 1 && !selftest.empty()) rc |= run_selftest(pr, selftest);
             if (fetest) {
                 int worst = 0;
@@ -558,6 +642,7 @@ int main(int argc, char **argv) {
                 if (!worst) fprintf(stderr, "[%s] fetest: 32000 random values ok\n", VARIANTS[v].name); else rc = 1;
             }
         }
+        if (verifyPipeline) rc |= run_pipeline_edges(scalar, pk, devs[0]);
         if (verify) rc |= run_verify(scalar, pk, devs[0]);
         return rc;
     }
@@ -566,12 +651,18 @@ int main(int argc, char **argv) {
     for (int dv : devs) {
         ClDev &d = g_devs[dv];
         const Platform &pl = platformFor(d);
-        GpuCfg cfg{dv, groups > 0 ? groups : (int)d.cus * 8, iters > 0 ? iters : pl.iters, forced ? forced : variantByName(pl.variant)};
+        GpuCfg cfg{dv, groups > 0 ? groups : (int)d.cus * pl.groups_per_cu, iters > 0 ? iters : pl.iters, forced ? forced : variantByName(pl.variant)};
         cfg.ordinal = (int)cfgs.size();
         Prog *pr = get_prog(d, cfg.v);
         if (!prog_validated(pr)) {
             if (forced) { fprintf(stderr, "device %d: the forced variant %s is wrong on this driver; refusing to mine with it\n", dv, cfg.v->name); return 2; }
-            cfg.v = variantByName("fe32_wnaf_c"); pr = get_prog(d, cfg.v);  // the layout known to be right on every driver so far
+            // Try the established fe29 path before the portable fe32 fallback.
+            if (cfg.v->split) {
+                cfg.v = variantByName("fe29_wnaf_c"); pr = get_prog(d, cfg.v);
+                cfg.groups = groups > 0 ? groups : (int)d.cus * 8;
+                cfg.iters = iters > 0 ? iters : 8;
+            }
+            if (!prog_validated(pr)) { cfg.v = variantByName("fe32_wnaf_c"); pr = get_prog(d, cfg.v); }
             if (!prog_validated(pr)) { fprintf(stderr, "device %d: no variant reproduces the test vectors\n", dv); return 2; }
         }
         uint8_t pk2[32]; int ok = prog_init(pr, scalar, pk2);
