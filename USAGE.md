@@ -100,7 +100,7 @@ release, miner name `proxichorizo`. Flight sheet:
 | Pool URL | `proxi.suprnova.cc:8100` (or your own `proxi node mine` seeker address) |
 | Wallet / template | your pool **token** (or the mine.seeker.token) |
 | Pass | the **seed**: first 64 hex characters of `private_key` in your key file |
-| Extra config | optional `KEY=VALUE` lines: `DEVICES=0,1`, `VARIANT=fe32_w4_lb2_c`, `THREADS=256`, `ITERS=2`, `EXTRA_ARGS=...` |
+| Extra config | optional `KEY=VALUE` lines: `DEVICES=0,1`, `API_BIND=127.0.0.1:4078`, `EXTRA_ARGS=...`; omit geometry overrides to use automatic GPU profiles. `MINER_GROUPS` overrides the block/workgroup count. |
 
 Hashrate, shares and per-GPU figures come from the miner's stats API on `127.0.0.1:4078`.
 

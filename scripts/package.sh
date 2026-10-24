@@ -14,7 +14,7 @@ cp "$BIN" "$D/proxichorizo"; strip "$D/proxichorizo" 2>/dev/null || true
 [[ -n "$CLBIN" ]] && { cp "$CLBIN" "$D/proxichorizo-cl"; strip "$D/proxichorizo-cl" 2>/dev/null || true; }
 cp README.md USAGE.md LICENSE NOTICE PLATFORMS.md vectors.json "$D/"
 [[ -f RELEASE-v$VER.md ]] && cp "RELEASE-v$VER.md" "$D/"
-printf '{"version":"%s","source_commit":"%s","ci_run":"%s","platform":"linux-x86_64","glibc_min":"%s","cuda":"%s","architectures":[75,80,86,89,120],"opencl":%s}\n' \
+printf '{"version":"%s","source_commit":"%s","ci_run":"%s","platform":"linux-x86_64","glibc_min":"%s","cuda":"%s","architectures":[75,80,86,89,90,120],"opencl":%s}\n' \
   "$VER" "$(git rev-parse HEAD 2>/dev/null || echo unknown)" "${GITHUB_SERVER_URL:-}/${GITHUB_REPOSITORY:-}/actions/runs/${GITHUB_RUN_ID:-local}" \
   "$(objdump -T "$D/proxichorizo" 2>/dev/null | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)" "$CUDA" "$([[ -n "$CLBIN" ]] && echo true || echo false)" > "$D/BUILD-INFO.json"
 cp hiveos/h-config.sh hiveos/h-run.sh hiveos/h-stats.sh hiveos/h-manifest.conf "$D/"

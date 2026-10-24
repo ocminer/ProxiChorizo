@@ -584,7 +584,8 @@ int main(int argc, char **argv) {
         std::string a = argv[i];
         auto next = [&](std::string &dst) { if (i + 1 < argc) dst = argv[++i]; };
         auto optnum = [&](double dflt) { if (i + 1 < argc && isdigit((unsigned char)argv[i + 1][0])) return atof(argv[++i]); return dflt; };
-        if (a == "--proxi") next(proxi);
+        if (a == "--help" || a == "-h") { usage(); return 0; }
+        else if (a == "--proxi") next(proxi);
         else if (a == "--token") next(token);
         else if (a == "--key-file") next(keyfile);
         else if (a == "--seed-hex") next(seedhex);

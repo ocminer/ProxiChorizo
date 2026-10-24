@@ -18,7 +18,8 @@ args=( --proxi "$POOL_URL" --token "$TOKEN" --name "${WORKER:-hiveos}" --api-bin
 [[ -n $VARIANT  ]] && args+=( --variant "$VARIANT" )
 [[ -n $THREADS  ]] && args+=( --threads "$THREADS" )
 [[ -n $ITERS    ]] && args+=( --iters "$ITERS" )
-[[ -n $GROUPS   ]] && args+=( --groups "$GROUPS" )
+# GROUPS is Bash's built-in Unix group array; it must never override GPU defaults.
+[[ -n ${MINER_GROUPS:-} ]] && args+=( --blocks "$MINER_GROUPS" )
 [[ -n $EXTRA_ARGS ]] && args+=( $EXTRA_ARGS )
 mkdir -p "$(dirname "$CUSTOM_LOG_BASENAME")"
 "$BIN" "${args[@]}" 2>&1 | tee -a "${CUSTOM_LOG_BASENAME}.log"

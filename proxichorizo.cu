@@ -16,7 +16,7 @@
 #include <random>
 #include <fstream>
 #include <sstream>
-#define PX_VERSION "0.5.6"
+#define PX_VERSION "0.5.7"
 // sockets: POSIX or Winsock behind four helpers
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -993,7 +993,8 @@ int main(int argc, char **argv) {
         std::string a = argv[i];
         auto next = [&](std::string &dst) { if (i + 1 < argc) dst = argv[++i]; };
         auto optnum = [&](double dflt) { if (i + 1 < argc && isdigit((unsigned char)argv[i + 1][0])) return atof(argv[++i]); return dflt; };
-        if (a == "--proxi") next(proxi);
+        if (a == "--help" || a == "-h") { usage(); return 0; }
+        else if (a == "--proxi") next(proxi);
         else if (a == "--token") next(token);
         else if (a == "--key-file") next(keyfile);
         else if (a == "--seed-hex") next(seedhex);

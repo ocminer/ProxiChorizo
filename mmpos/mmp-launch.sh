@@ -14,8 +14,10 @@ done
 [[ -n $POOL && $POOL != *://* ]] && POOL="http://$POOL"
 sed -i "s/^CUSTOM_API_PORT=.*/CUSTOM_API_PORT=$API_PORT/" mmp-external.conf 2>/dev/null
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
-CMD=(./proxichorizo --proxi "$POOL" --token "$USERV" --api-bind "127.0.0.1:$API_PORT" --name "${WORKER_NAME:-mmpos}")
+BIN=./proxichorizo
+if [[ ${MINER:-} == cl || ( ${MINER:-} != cuda && ! -e /dev/nvidiactl && -x ./proxichorizo-cl ) ]]; then BIN=./proxichorizo-cl; fi
+CMD=("$BIN" --proxi "$POOL" --token "$USERV" --api-bind "127.0.0.1:$API_PORT" --name "${WORKER_NAME:-mmpos}")
 [[ -n $PASS && $PASS != x ]] && CMD+=(--seed-hex "${PASS:0:64}")
 CMD+=("${FINAL[@]}")
-echo "Running: ${CMD[*]}"
+echo "Starting ProxiChorizo ($BIN)"
 exec "${CMD[@]}"

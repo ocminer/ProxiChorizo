@@ -15,13 +15,18 @@ if (Test-Path "RELEASE-v$Version.md") { Copy-Item "RELEASE-v$Version.md" $stage 
 $info = @{
     version = $Version; source_commit = (& git rev-parse HEAD).Trim()
     ci_run = "https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
-    platform = 'native-windows-x86_64'; cuda = $Cuda; architectures = @(75,80,86,89,120)
+    platform = 'native-windows-x86_64'; cuda = $Cuda; architectures = @(75,80,86,89,90,120)
     windows_gpu_hardware_test = $false
 }
 $info | ConvertTo-Json | Set-Content "$stage/BUILD-INFO.json"
 # cudart is linked statically; a clean --help proves the executable starts (no GPU on the runner).
 Push-Location $stage
-try { & ./proxichorizo.exe --help 2>&1 | Select-Object -First 2 } finally { Pop-Location }
+try {
+    $helpText = & ./proxichorizo.exe --help 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "executable startup failed: $LASTEXITCODE" }
+    if (!(($helpText -join "`n").Contains("ProxiChorizo $Version"))) { throw 'executable version mismatch' }
+    $helpText | Select-Object -First 2
+} finally { Pop-Location }
 Get-ChildItem $stage -File -Recurse | Sort-Object FullName | ForEach-Object {
     $relative = $_.FullName.Substring($stage.Length + 1).Replace('\','/')
     "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $relative

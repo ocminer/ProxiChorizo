@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: version label for a manual (non-release) build
+        description: source version for a manual build (dev uses PX_VERSION)
         default: dev
 permissions:
   contents: write
@@ -25,13 +25,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - id: v
+        env: { REQUESTED_VERSION: "${{ inputs.version }}" }
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then VER=${GITHUB_REF#refs/tags/v}; else VER="${{ inputs.version }}"; fi
           SRC=$(grep -oP '#define PX_VERSION "\K[^"]+' proxichorizo.cu)
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            [[ "$VER" == "$SRC" ]] || { echo "tag $VER != PX_VERSION $SRC"; exit 1; }
-            [[ -f "RELEASE-v$VER.md" ]] || { echo "RELEASE-v$VER.md missing"; exit 1; }
+            VER=${GITHUB_REF#refs/tags/v}
+          else
+            VER=${REQUESTED_VERSION:-dev}
+            [[ "$VER" != dev ]] || VER=$SRC
           fi
+          [[ "$VER" == "$SRC" ]] || { echo "version $VER != PX_VERSION $SRC"; exit 1; }
+          [[ -f "RELEASE-v$VER.md" ]] || { echo "RELEASE-v$VER.md missing"; exit 1; }
           echo "ver=$VER" >> "$GITHUB_OUTPUT"
       - name: exposure check
         run: scripts/check-secrets.sh --all
@@ -61,8 +65,18 @@ jobs:
           make -C opencl proxichorizo-cl CL_INC=/usr/include CL_LIB=/usr/lib/x86_64-linux-gnu CXXFLAGS="-O2 -std=c++17 -Wall -Wno-unused-function -I/usr/include -static-libstdc++ -static-libgcc"
           objdump -T opencl/proxichorizo-cl | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
           ldd opencl/proxichorizo-cl | grep -i opencl
+      - name: CPU regression checks
+        run: |
+          g++ -std=c++17 -O2 tests/platform_profiles.cpp -o /tmp/test-platform-profiles
+          /tmp/test-platform-profiles
+          make -C opencl test-profiles CL_INC=/usr/include CL_LIB=/usr/lib/x86_64-linux-gnu
+          python3 scripts/test-launchers.py
+          ./proxichorizo --help
+          ./opencl/proxichorizo-cl --help
       - name: package
         run: scripts/package.sh "${{ needs.version.outputs.ver }}" ./proxichorizo 12.9 opencl/proxichorizo-cl
+      - name: verify packaged notices and checksums
+        run: python3 scripts/verify-release.py --version "${{ needs.version.outputs.ver }}" dist/*.tar.gz
       - uses: actions/upload-artifact@v4
         with: { name: linux, path: dist/*, if-no-files-found: error }
       - name: attach to the release
@@ -91,6 +105,9 @@ jobs:
       - name: package
         shell: pwsh
         run: scripts/package-windows.ps1 -Version "${{ needs.version.outputs.ver }}" -Exe proxichorizo.exe -Cuda 12.9
+      - name: verify packaged notices and checksums
+        shell: pwsh
+        run: python scripts/verify-release.py --version "${{ needs.version.outputs.ver }}" (Get-ChildItem dist/*.zip | ForEach-Object FullName)
       - uses: actions/upload-artifact@v4
         with: { name: windows, path: dist/*, if-no-files-found: error }
       - name: attach to the release
@@ -119,8 +136,26 @@ jobs:
         with:
           context: .
           file: docker/Dockerfile
-          push: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          load: true
+          push: false
           tags: ${{ steps.reg.outputs.tags }}
+      - name: verify actual container contents
+        env: { RELEASE_VERSION: "${{ needs.version.outputs.ver }}", IMAGE_TAGS: "${{ steps.reg.outputs.tags }}" }
+        run: |
+          IMAGE="${IMAGE_TAGS%%,*}"
+          CID=$(docker create --entrypoint /bin/true "$IMAGE")
+          trap 'docker rm -f "$CID" >/dev/null' EXIT
+          mkdir image-check
+          docker cp "$CID:/app/." image-check/
+          python3 scripts/verify-release.py --version "$RELEASE_VERSION" --directory image-check
+          docker run --rm --entrypoint /app/proxichorizo "$IMAGE" --help > image-help.txt 2>&1
+          grep -F "ProxiChorizo $RELEASE_VERSION" image-help.txt
+      - name: publish verified container images
+        if: startsWith(github.ref, 'refs/tags/v')
+        env: { IMAGE_TAGS: "${{ steps.reg.outputs.tags }}" }
+        run: |
+          IFS=',' read -ra TAGS <<< "$IMAGE_TAGS"
+          for TAG in "${TAGS[@]}"; do docker push "$TAG"; done
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
