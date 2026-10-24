@@ -66,7 +66,7 @@ Measured (0.5.6): RTX PRO 6000 ≈ 43 MH/s, RTX 5090 ≈ 29 MH/s, H100 SXM ≈ 2
 
 ## Build
 
-**AMD / other OpenCL GPUs:** `cd opencl && make && ./proxichorizo-cl --selftest && ./proxichorizo-cl --proxi ... --token ... --key-file ...` — needs an OpenCL ICD and headers (ROCm or `ocl-icd-opencl-dev opencl-headers`); the kernels are compiled by the driver at start-up (about a minute) and checked against the embedded test vectors before mining. Measured: RX 7900 XTX ≈ 10.5 MH/s, MI50 ≈ 4.5, RX 7600 XT ≈ 3.6 (9×29-bit field layout, see PLATFORMS.md). Same options as the CUDA miner (`--groups` instead of `--blocks`). See the AMD section of PLATFORMS.md for rates.
+**AMD / other OpenCL GPUs:** `cd opencl && make && ./proxichorizo-cl --selftest && ./proxichorizo-cl --proxi ... --token ... --key-file ...` — needs an OpenCL ICD and headers (ROCm or `ocl-icd-opencl-dev opencl-headers`); the kernels are compiled by the driver at start-up (about a minute) and checked against the embedded test vectors before mining. Measured automatic profiles: RX 7900 XTX ≈ 11.27 MH/s, MI50 ≈ 4.75–4.84, RX 7600 XT ≈ 4.00; see [matched measurements and power caps](PLATFORMS.md#amd-measured-profiles-2026-10-24). Remove old `--groups`/`--iters` overrides to use the automatic profiles. Same options as the CUDA miner (`--groups` instead of `--blocks`). See the AMD section of PLATFORMS.md for rates.
 
 ```bash
 make                 # all supported generations (Turing .. Blackwell), slow

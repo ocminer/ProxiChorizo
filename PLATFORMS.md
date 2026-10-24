@@ -464,3 +464,30 @@ the Makefile and Linux/Windows release build matrix. This packaging issue is
 separate from the prior native H100 performance results above. The benchmark's
 keyless SHA512 digest buffer was also corrected to hold all 64 output bytes before
 copying the intended 32-byte seed.
+
+## AMD measured profiles (2026-10-24)
+
+The RX 7900 XTX, RX 7600 XT and 60-CU MI50 now select measured defaults automatically.
+Omit old `--variant`, `--groups` and `--iters` overrides to use these profiles.
+Other models retain their existing selection rules.
+
+Matched comparisons used the same card, driver and power cap for the previous and
+optimized defaults. These are measurements at the listed caps, not stock-power claims.
+
+| GPU | Power cap | Previous defaults | Optimized defaults | Gain | Avg. GPU power, before → after |
+|---|---:|---:|---:|---:|---:|
+| RX 7900 XTX | 244 W | 11.0160 MH/s | 11.2710 MH/s | +2.31% | 243.3 → 243.3 W |
+| RX 7600 XT | 155 W | 3.8180 MH/s | 3.9985 MH/s | +4.73% | 155.8 → 155.2 W |
+| MI50 sample 1 | 100 W | 4.6865 MH/s | 4.8365 MH/s | +3.20% | 96.3 → 99.8 W |
+| MI50 sample 2 | 100 W | 4.5830 MH/s | 4.7475 MH/s | +3.59% | 99.3 → 99.2 W |
+
+Each result averages two measurements in an A–B–B–A sequence after warmup: 45 seconds
+per measurement on the XTX, 30 seconds on each MI50, and 15 seconds on the RX 7600 XT.
+The shorter RX 7600 XT runs and reduced caps kept testing within temperature guards.
+Rates depend on clocks, cooling, driver and the mining key.
+
+All four cards passed 512 independent VRF vectors, 32,000 randomized field checks,
+and 70 dense pipeline cases comparing 83,393 complete outputs per implementation.
+The new profile also checks its actual mining pipeline against embedded vectors at
+startup. Run `./proxichorizo-cl --verify-pipeline` for the dense checks, or
+`make -C opencl test-profiles` for the CPU-only model-selection regression.
