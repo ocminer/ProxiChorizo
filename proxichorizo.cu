@@ -168,8 +168,47 @@ namespace v_fe32_wnaf_lb2_c {
 #undef PX_VARIANT_NAME
 #undef PX_LB_THREADS
 
-static const VariantOps *VARIANTS[] = { &v_fe32_w0_lb2::ops, &v_fe32_w4_lb2::ops, &v_fe32_w0_lb2_c::ops, &v_fe32_w4_lb2_c::ops, &v_fe32_wnaf_lb2_c::ops, &v_fe51_w4_lb1::ops };
-static const int NVARIANTS = 6;
+#define PX_FE32 1
+#define PX_WINDOW 5
+#define PX_LB_BLOCKS 2
+#define PX_COMPACT 1
+#define PX_SPLIT_FINISH 16
+#define PX_VARIANT_NAME "fe32_wnaf_split16_c"
+namespace v_fe32_wnaf_split16_c {
+#include "proxichorizo_device.cuh"
+}
+#undef PX_FE32
+#undef PX_WINDOW
+#undef PX_LB_BLOCKS
+#undef PX_COMPACT
+#undef PX_VARIANT_NAME
+#undef PX_LB_THREADS
+#undef PX_LB_MULT_BLOCKS
+#undef PX_SPLIT_FINISH
+#undef PX_LINEAR_W4
+
+#define PX_FE32 1
+#define PX_WINDOW 4
+#define PX_LB_BLOCKS 2
+#define PX_COMPACT 1
+#define PX_SPLIT_FINISH 8
+#define PX_LINEAR_W4 1
+#define PX_VARIANT_NAME "fe32_w4_linear_split8_c"
+namespace v_fe32_w4_linear_split8_c {
+#include "proxichorizo_device.cuh"
+}
+#undef PX_FE32
+#undef PX_WINDOW
+#undef PX_LB_BLOCKS
+#undef PX_COMPACT
+#undef PX_VARIANT_NAME
+#undef PX_LB_THREADS
+#undef PX_LB_MULT_BLOCKS
+#undef PX_SPLIT_FINISH
+#undef PX_LINEAR_W4
+
+static const VariantOps *VARIANTS[] = { &v_fe32_w0_lb2::ops, &v_fe32_w4_lb2::ops, &v_fe32_w0_lb2_c::ops, &v_fe32_w4_lb2_c::ops, &v_fe32_wnaf_lb2_c::ops, &v_fe51_w4_lb1::ops, &v_fe32_wnaf_split16_c::ops, &v_fe32_w4_linear_split8_c::ops };
+static const int NVARIANTS = sizeof(VARIANTS) / sizeof(VARIANTS[0]);
 
 // platform table: compute capability -> default variant and launch geometry,
 // from the measurements in PLATFORMS.md; anything unlisted gets the last row
@@ -180,21 +219,11 @@ static const int NVARIANTS = 6;
 // measured: the row was benchmarked on that generation. For an unmeasured row the
 // miner measures the two candidate kernels on first start and caches the result
 // (quickTune), so every card gets a kernel chosen on itself rather than assumed.
-struct Platform { int major, minor; const char *variant; int threads, iters, blocksPerSM; bool measured; const char *note; };
-static const Platform PLATFORMS[] = {
-    { 12, -1, "fe32_wnaf_lb2_c", 256, 1, 128, true,  "Blackwell (RTX 50xx, RTX PRO 6000): compacted pipeline + wNAF, large launches, 2 points per inversion (21.5 MH/s on a 5080, 41.5 on a PRO 6000)" },
-    {  9, -1, "fe32_w4_lb2_c",   256, 1, 128, true,  "Hopper (H100): the 4-bit table beats wNAF here (21.2 vs 19.3 MH/s on an H100 SXM), large launches" },
-    {  8,  9, "fe32_wnaf_lb2_c", 256, 1, 128, false, "Ada (RTX 40xx): not measured here, tuned on first start" },
-    {  8,  6, "fe32_wnaf_lb2_c", 256, 1, 128, true,  "Ampere GA10x (RTX 30xx): compacted pipeline + wNAF, large launches (7.4 MH/s on a 3070)" },
-    {  8,  0, "fe32_wnaf_lb2_c", 256, 1, 128, true,  "Ampere GA100 (A100, CMP 170HX): wNAF wins since the loop fits the instruction cache (6.9 vs 6.0 MH/s on a CMP 170HX)" },
-    {  7,  5, "fe32_wnaf_lb2_c", 256, 1, 128, false, "Turing: not measured here, tuned on first start" },
-    { -1, -1, "fe32_wnaf_lb2_c", 256, 1, 128, false, "unknown generation: tuned on first start" },
-};
+#include "platform_profiles.h"
 static uint8_t g_scalar[32];
 static const VariantOps *variantByName(const std::string &n) { for (int i = 0; i < NVARIANTS; i++) if (n == VARIANTS[i]->name) return VARIANTS[i]; return nullptr; }
 static const Platform &platformFor(const cudaDeviceProp &p) {
-    for (const Platform &pl : PLATFORMS) if ((pl.major == -1) || (pl.major == p.major && (pl.minor == -1 || pl.minor == p.minor))) return pl;
-    return PLATFORMS[sizeof(PLATFORMS) / sizeof(PLATFORMS[0]) - 1];
+    return platformFor(p.major, p.minor, p.name);
 }
 // ----------------------------------------------------------------------------
 // host side
@@ -580,7 +609,7 @@ static void gpu_worker(Shared &sh, GpuCfg cfg) {
     void *scratch = cfg.ops->alloc(stride * (size_t)cfg.iters);
     logln(std::string("GPU ") + std::to_string(cfg.dev) + " " + prop.name + " (sm_" + std::to_string(prop.major) + std::to_string(prop.minor) + "): variant " + cfg.ops->name + ", " +
           std::to_string(cfg.blocks) + "x" + std::to_string(cfg.threads) + " threads, " + std::to_string(cfg.iters) + " nonces/thread/launch");
-    auto t_last = std::chrono::steady_clock::now(); uint64_t local_attempts = 0;
+    auto t_last = std::chrono::steady_clock::now(); uint64_t local_attempts = 0, current_job_attempts = 0;
     double idle_nojob = 0, idle_stale = 0, kernel_ms = 0, gpu_ms = 0; int launches = 0;
     cudaEvent_t ev0, ev1; CUDA_CHECK(cudaEventCreate(&ev0)); CUDA_CHECK(cudaEventCreate(&ev1));
     while (!sh.stop) {
@@ -612,6 +641,9 @@ static void gpu_worker(Shared &sh, GpuCfg cfg) {
         uint64_t done = stride * cfg.iters;
         nonce += done;
         sh.attempts += done; local_attempts += done;
+        // A batch that finishes after a job change cannot submit its hits.
+        // Keep this separate from the raw rate when evaluating launch sizes.
+        { std::lock_guard<std::mutex> l(sh.mu); if (sh.job.id == j.id && !sh.job.stale) current_job_attempts += done; }
         unsigned n = 0; CUDA_CHECK(cudaMemcpy(&n, d_n, sizeof n, cudaMemcpyDeviceToHost));
         if (n > 0) {
             if (n > MAX_HITS) n = MAX_HITS;
@@ -627,14 +659,14 @@ static void gpu_worker(Shared &sh, GpuCfg cfg) {
         auto now = std::chrono::steady_clock::now();
         if (now - t_last >= std::chrono::seconds(30)) {
             double s = std::chrono::duration<double>(now - t_last).count();
-            char line[300]; snprintf(line, sizeof line, "GPU %d: %.2f MH/s avg over %.0fs | in kernel %.0f%% (%d launches, %.1f ms each, %.2f MH/s in-kernel) | idle: no job %.0f%%, stale %.0f%%",
+            char line[400]; snprintf(line, sizeof line, "GPU %d: %.2f MH/s avg over %.0fs | in kernel %.0f%% (%d launches, %.1f ms each, %.2f MH/s in-kernel) | idle: no job %.0f%%, stale %.0f%% | completed on current jobs %.2f MH/s",
                 cfg.dev, local_attempts / s / 1e6, s, kernel_ms / 10 / s, launches, launches ? gpu_ms / launches : 0,
-                gpu_ms > 0 ? (double)launches * stride * cfg.iters / (gpu_ms / 1000.0) / 1e6 : 0, idle_nojob / 10 / s, idle_stale / 10 / s);
+                gpu_ms > 0 ? (double)launches * stride * cfg.iters / (gpu_ms / 1000.0) / 1e6 : 0, idle_nojob / 10 / s, idle_stale / 10 / s, current_job_attempts / s / 1e6);
             std::string bus; { std::lock_guard<std::mutex> l(sh.mu); if ((size_t)cfg.ordinal < sh.gpus.size()) bus = sh.gpus[cfg.ordinal].bus; }
             GpuSensors se = read_sensors(bus);
             logln(line + sensors_str(se));
             { std::lock_guard<std::mutex> l(sh.mu); if ((size_t)cfg.ordinal < sh.gpus.size()) { sh.gpus[cfg.ordinal].rate = local_attempts / s; sh.gpus[cfg.ordinal].sens = se; } }
-            t_last = now; local_attempts = 0; idle_nojob = idle_stale = kernel_ms = gpu_ms = 0; launches = 0;
+            t_last = now; local_attempts = current_job_attempts = 0; idle_nojob = idle_stale = kernel_ms = gpu_ms = 0; launches = 0;
         }
     }
 }
@@ -842,6 +874,61 @@ static void saveTuned(const cudaDeviceProp &prop, const GpuCfg &cfg) {
 }
 
 
+// Compare complete outputs for small, awkward launch shapes. The compacted
+// reference has the same bounded hash-to-curve retry policy as the candidates.
+// k=0 retains every point that the pipeline computes, rather than sampling hits.
+static int run_pipeline_edges(const uint8_t pk[32], int dev) {
+    CUDA_CHECK(cudaSetDevice(dev));
+    const VariantOps *reference = variantByName("fe32_w4_lb2_c");
+    if (!reference) return 2;
+    struct Shape { int blocks, threads, iters; };
+    std::vector<Shape> shapes;
+    for (int n : {1,2,3,7,8,9,15,16,17,31,32,33,63,64,65,127,128,129,191,192,193,255,256}) {
+        shapes.push_back({1,n,1});
+        shapes.push_back({n,1,1});
+    }
+    for (int it : {1,2,3,7,8}) shapes.push_back({1,32,it});
+    for (int it : {1,3,7,11}) shapes.push_back({3,7,it});
+    for (int it : {1,3,7}) shapes.push_back({7,5,it});
+    std::vector<const VariantOps *> opslist{reference};
+    for (int v=0;v<NVARIANTS;v++) if (VARIANTS[v]->compact && VARIANTS[v]!=reference) opslist.push_back(VARIANTS[v]);
+    JobDev *d_job; Hit *d_hits; unsigned *d_n;
+    CUDA_CHECK(cudaMalloc(&d_job,sizeof(JobDev)));
+    CUDA_CHECK(cudaMalloc(&d_hits,sizeof(Hit)*MAX_HITS));
+    CUDA_CHECK(cudaMalloc(&d_n,sizeof(unsigned)));
+    std::vector<std::vector<std::string>> expected(shapes.size());
+    int rc=0;
+    for (const VariantOps *ops : opslist) {
+        uint8_t pk2[32]; if(ops->init(g_scalar,pk2)!=1 || memcmp(pk,pk2,32)) {rc=1;continue;}
+        size_t points=0;
+        for (size_t c=0;c<shapes.size();c++) {
+            Shape s=shapes[c]; uint64_t stride=(uint64_t)s.blocks*s.threads;
+            size_t count=stride*s.iters;
+            if(count>MAX_HITS) {rc=1;continue;}
+            JobDev jd{};jd.prefix_len=37;jd.k=0;memcpy(jd.pk,pk,32);memset(jd.beat,255,64);
+            for(int i=0;i<37;i++)jd.prefix[i]=(uint8_t)(i*31+7+c*19);
+            CUDA_CHECK(cudaMemcpy(d_job,&jd,sizeof jd,cudaMemcpyHostToDevice));
+            CUDA_CHECK(cudaMemset(d_n,0,sizeof(unsigned)));
+            void *scratch=ops->alloc(count);
+            ops->mine(s.blocks,s.threads,d_job,0xabcdef0000ULL+c*1009,stride,s.iters,d_hits,d_n,scratch);
+            CUDA_CHECK(cudaGetLastError());CUDA_CHECK(cudaDeviceSynchronize());
+            unsigned n=0;CUDA_CHECK(cudaMemcpy(&n,d_n,sizeof n,cudaMemcpyDeviceToHost));
+            if(n>MAX_HITS){fprintf(stderr,"[%s] pipeline edge overflow\n",ops->name);ops->free_(scratch);rc=1;continue;}
+            std::vector<Hit> hits(n);if(n)CUDA_CHECK(cudaMemcpy(hits.data(),d_hits,n*sizeof(Hit),cudaMemcpyDeviceToHost));
+            ops->free_(scratch);
+            std::vector<std::string> found;
+            for(auto &hit:hits)found.push_back(std::to_string(hit.nonce)+":"+hexs(hit.beta,64));
+            std::sort(found.begin(),found.end());points+=found.size();
+            if(ops==reference)expected[c]=found;
+            else if(found!=expected[c]){fprintf(stderr,"[%s] pipeline edge %zu (%dx%dx%d) DIFFERENT\n",ops->name,c,s.blocks,s.threads,s.iters);rc=1;}
+        }
+        fprintf(stderr,"[%s] pipeline edges: %zu shapes, %zu complete outputs%s\n",ops->name,shapes.size(),points,ops==reference?" (reference)":" compared");
+    }
+    cudaFree(d_job);cudaFree(d_hits);cudaFree(d_n);
+    return rc;
+}
+
+
 // verify: every variant over the same nonce range at low difficulty must find exactly the same hits
 static int run_verify(const uint8_t pk[32], int dev) {
     CUDA_CHECK(cudaSetDevice(dev));
@@ -953,7 +1040,8 @@ int main(int argc, char **argv) {
     if (verify) {
         CUDA_CHECK(cudaSetDevice(devs[0]));
         uint8_t pk2[32]; if (VARIANTS[0]->init(scalar, pk2) != 1) { fprintf(stderr, "init failed\n"); return 2; }
-        return run_verify(pk2, devs[0]);
+        int edge_rc = run_pipeline_edges(pk2, devs[0]);
+        return edge_rc | run_verify(pk2, devs[0]);
     }
     if (!selftest.empty() || fetest) {
         CUDA_CHECK(cudaSetDevice(devs[0]));

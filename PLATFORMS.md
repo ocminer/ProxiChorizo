@@ -417,3 +417,50 @@ Pool-mining rates (miner's 30-second line, 8-sample average, same launch paramet
 | RTX 3070 (sm_86, 238 W), 2 cards | 7.34 / 7.41 MH/s | 7.61 / 7.67 MH/s | +3.6 % |
 
 Power and temperature unchanged. The OpenCL miner (RX 7900 XTX 11.0 MH/s) is not affected by 0.5.6.
+
+## Datacenter profiles: A100 and H100 (2026-10-24)
+
+Separate model-specific defaults now select `fe32_wnaf_split16_c` on A100 and
+`fe32_w4_linear_split8_c` on H100. Both use 256 threads, one nonce per thread and
+128 blocks per SM. Selection is per device and checks both the model and compute
+capability, so the CMP 170HX retains its existing SM80 profile and RTX PRO 6000
+retains its Blackwell profile. MIG partitions keep the generation defaults.
+
+Matched measurements on one reserved GPU per eight-GPU host, with the other seven
+GPUs mining throughout: CUDA 13.4, driver 580.178.04, four 45-second A/B/B/A trials,
+the same nonzero mining scalar in both builds, and no power or clock changes.
+The control is the current 0.5.6 source compiled natively for each architecture.
+
+| GPU | Baseline MH/s | Optimized MH/s | Gain | SM / memory MHz | Power cap | Mean measured GPU power, baseline / optimized |
+|---|---:|---:|---:|---:|---:|---:|
+| A100-SXM4-80GB, 108 SMs | 11.329 | 12.699 | +12.09% | 1410 / 1593 | 400 W | 259.5 / 277.4 W |
+| H100 80GB HBM3, 132 SMs | 21.181 | 21.626 | +2.10% | 1980 / 2619 | 700 W | 476.7 / 465.4 W |
+
+A100 trial order: 11.328, 12.698, 12.700, 11.330 MH/s; H100: 21.180, 21.629,
+21.622, 21.182 MH/s. Control spreads were 0.018% and 0.009%, respectively. These
+are benchmark rates; pool rates also depend on job changes and idle intervals.
+Live 128/64/64/128-blocks-per-SM trials, 105 seconds each, did not improve completed
+current-job work with the smaller launch. Retain 128. Each GPU submitted two
+accepted shares with no rejects during this live qualification.
+
+The new scalar stage keeps one point per thread and writes projective coordinates
+for a separate normalization stage. Sharing each inversion over 16 points benefits
+A100. H100 uses batches of eight with a directly constructed cached 4-bit table;
+batches of sixteen did not provide a repeatable additional gain there. The original
+field arithmetic and bounded hash-to-curve retry policy are unchanged. The extra
+scratch storage is approximately 112 bytes per nonce.
+
+Correctness checks on both final artifacts: 512 independent VRF vectors across
+256 keys for each of eight variants; 58 dense boundary/partial-batch cases with
+5,189 complete outputs per compacted variant; and matching reference hit sets.
+The dense checks compare against the existing compacted pipeline, including its
+12-pass retry bound. Existing SM80 and SM120 device function bodies compare
+identically after removing debug metadata (51 and 50 functions). The OpenCL shared
+host code is unchanged. CPU-only profile tests are in `tests/platform_profiles.cpp`.
+
+The published 0.5.6 Linux archive lacked an SM90 image and carried only compute120
+PTX; it reproduced a no-kernel-image error on H100. Native SM90 is now included in
+the Makefile and Linux/Windows release build matrix. This packaging issue is
+separate from the prior native H100 performance results above. The benchmark's
+keyless SHA512 digest buffer was also corrected to hold all 64 output bytes before
+copying the intended 32-byte seed.

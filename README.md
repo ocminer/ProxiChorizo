@@ -30,7 +30,7 @@ set by whoever builds the transit.
 
 ## Which kernel runs on which card
 
-The platform table in `proxichorizo.cu` (NVIDIA) and `opencl/proxichorizo_cl.cpp` (AMD) holds the
+The platform table in `platform_profiles.h` (NVIDIA) and `opencl/proxichorizo_cl.cpp` (AMD) holds the
 measured default per GPU generation: Blackwell, Ampere GA10x, GA100 and RDNA3 / Vega were
 benchmarked (see PLATFORMS.md). A generation without measurements (Ada, Turing, RDNA2/4, anything
 unknown) is **tuned on the card itself at the first start**: the two candidate kernels are measured
@@ -38,6 +38,11 @@ for about 15 s and the winner is written to `proxichorizo-autotune.cache` next t
 card and miner version, so later starts (and every new release) use or refresh it. `--autotune`
 measures every kernel and shape, `--variant` / `--blocks` / `--iters` override everything; the
 start-up line `GPU n ...: <variant>, <blocks>x<threads>x<iters> — <reason>` says what was chosen and why.
+
+A100 and H100 have separate measured profiles, selected automatically by model and compute
+capability for each GPU. The CMP 170HX and RTX PRO 6000 retain their existing profiles;
+MIG partitions retain the generation defaults. The distribution build includes native SM90
+code for H100. See the datacenter measurements in `PLATFORMS.md` for the tested configurations.
 
 ## Download
 [GitHub Releases](https://github.com/ocminer/ProxiChorizo/releases) (Linux binary mirrored at https://proxi.suprnova.cc/downloads/):
@@ -83,7 +88,8 @@ RTX 3070 ≈ 7.4 MH/s, CMP 170HX ≈ 7 MH/s, one CPU core of the reference Rust 
 
 ## Layout
 
-- `proxichorizo.cu` — host: seeker protocol client, variant/platform tables, autotune, tests.
+- `proxichorizo.cu` — host: seeker protocol client, variants, autotune, tests.
+- `platform_profiles.h` — per-GPU defaults; `tests/platform_profiles.cpp` checks model selection and preservation of existing profiles without requiring a GPU.
 - `proxichorizo_device.cuh` — device: field arithmetic (5×51 and 8×32), Ed25519 points, SHA-512,
   the VRF attempt, the kernels. Included once per variant from `proxichorizo.cu`.
 - `vectors.json`, `tools/vrfvec/` — test vectors generated with the Proxima node's own

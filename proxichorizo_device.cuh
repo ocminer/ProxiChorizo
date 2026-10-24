@@ -785,6 +785,22 @@ __device__ void ge_scalarmult_const(ge &r, const ge &p) {
 // fixed 4-bit windows over the constant scalar: 7 dbl + 7 add for the table,
 // then 63 x (4 dbl + <=1 add). The window values are uniform across the grid.
 __device__ void ge_scalarmult_const(ge &r, const ge &p) {
+#ifdef PX_LINEAR_W4
+    // Construct cached multiples directly; the uncached 16-point table is
+    // unnecessary. One doubling and thirteen cached additions replace seven
+    // doublings and seven uncached additions while halving table storage.
+    geCached C[16];
+    ge acc; ge_copy(acc, p);
+    ge_cache(C[1], acc);
+    int w = (c_scalar[31] >> 4) & 15;
+    #pragma unroll 1
+    for (int i = 2; i < 16; ++i) {
+        if (i == 2) ge_dbl(acc, acc);
+        else ge_add_cached(acc, acc, C[1], false);
+        ge_cache(C[i], acc);
+        if (i == w) ge_copy(r, acc);
+    }
+#else
     ge T[16];
     ge_copy(T[1], p);
     for (int i = 2; i < 16; i++) {
@@ -796,6 +812,7 @@ __device__ void ge_scalarmult_const(ge &r, const ge &p) {
     // the table in cached form: 8 instead of 9 multiplications per addition (H100 +1.7 %)
     geCached C[16];
     for (int i = 1; i < 16; i++) ge_cache(C[i], T[i]);
+#endif
     for (int i = 62; i >= 0; i--) {
         w = (c_scalar[i >> 1] >> ((i & 1) * 4)) & 0xF;
         ge_dbl_noT(r, r); ge_dbl_noT(r, r); ge_dbl_noT(r, r);
@@ -978,7 +995,14 @@ __global__ void __launch_bounds__(PX_LB_THREADS, PX_LB_BLOCKS) mine_kernel(const
 // few microseconds.
 // ----------------------------------------------------------------------------
 struct HPoint { fe X, Y; uint64_t nonce; };
-struct Scratch { HPoint *pts; uint64_t *nonce[2]; uint8_t *ctr[2]; unsigned *cnt; size_t n; };
+#ifdef PX_SPLIT_FINISH
+struct ProjectivePoint { fe X,Y,Z; uint64_t nonce; unsigned valid; };
+#endif
+struct Scratch {
+#ifdef PX_SPLIT_FINISH
+    ProjectivePoint *projective;
+#endif
+    HPoint *pts; uint64_t *nonce[2]; uint8_t *ctr[2]; unsigned *cnt; size_t n; };
 #define PX_MAX_PASSES 12
 
 __global__ void __launch_bounds__(256) h2c_kernel(const JobDev *job, uint64_t nonce_base, const uint64_t *in_nonce, const uint8_t *in_ctr, const unsigned *n_in_ptr,
@@ -1081,6 +1105,43 @@ __global__ void __launch_bounds__(PX_LB_THREADS, PX_LB_MULT_BLOCKS) mult_kernel(
     }
 #endif
 }
+#ifdef PX_SPLIT_FINISH
+// Keep only one point live in the expensive scalar stage. Normalization is
+// a separate stage so a larger inversion batch needs no parked scalar tables.
+__global__ void __launch_bounds__(256, 2) scalar_kernel(const HPoint *pts,const unsigned *n_ptr,ProjectivePoint *out) {
+    unsigned n=*n_ptr;
+    for(unsigned i=blockIdx.x*blockDim.x+threadIdx.x;i<n;i+=gridDim.x*blockDim.x) {
+        ge G; bool ok=mult_point(G,pts[i]);
+        out[i].valid=ok;out[i].nonce=pts[i].nonce;
+        if(ok){fe_copy(out[i].X,G.X);fe_copy(out[i].Y,G.Y);fe_copy(out[i].Z,G.Z);}
+        else fe_1(out[i].Z);
+    }
+}
+__global__ void __launch_bounds__(256, 1) finish_batch_kernel(const JobDev *job,const ProjectivePoint *pts,const unsigned *n_ptr,Hit *hits,unsigned *nhits) {
+    unsigned n=*n_ptr,total=gridDim.x*blockDim.x;
+    for(unsigned base=blockIdx.x*blockDim.x+threadIdx.x;base<n;base+=total*PX_SPLIT_FINISH) {
+        fe prefix[PX_SPLIT_FINISH],prod;fe_1(prod);
+        #pragma unroll
+        for(int k=0;k<PX_SPLIT_FINISH;k++) {
+            unsigned i=base+(unsigned)k*total;
+            fe_copy(prefix[k],prod);
+            if(i<n) fe_mul(prod,prod,pts[i].Z);
+        }
+        fe inv;fe_invert(inv,prod);
+        #pragma unroll
+        for(int k=PX_SPLIT_FINISH-1;k>=0;k--) {
+            unsigned i=base+(unsigned)k*total;
+            if(i<n) {
+                fe zi;fe_mul(zi,inv,prefix[k]);fe_mul(inv,inv,pts[i].Z);
+                if(pts[i].valid) {
+                    ge G;fe_copy(G.X,pts[i].X);fe_copy(G.Y,pts[i].Y);
+                    finish_point(job,G,zi,pts[i].nonce,hits,nhits);
+                }
+            }
+        }
+    }
+}
+#endif
 // self-test: beta for a complete alpha (= prefix 37 + nonce 8) plus intermediates
 __global__ void test_kernel(const JobDev *job, uint64_t nonce, uint8_t *out_beta, uint8_t *out_h, uint8_t *out_cg, int *ok) {
     *ok = vrf_beta(*job, nonce, out_beta, out_h, out_cg) ? 1 : 0;
@@ -1238,6 +1299,9 @@ static void *v_alloc(size_t n) {
 #if PX_COMPACT
     Scratch *sc = new Scratch(); sc->n = n;
     CUDA_CHECK(cudaMalloc(&sc->pts, n * sizeof(HPoint)));
+#ifdef PX_SPLIT_FINISH
+    CUDA_CHECK(cudaMalloc(&sc->projective,n*sizeof(ProjectivePoint)));
+#endif
     for (int b = 0; b < 2; b++) { CUDA_CHECK(cudaMalloc(&sc->nonce[b], n * sizeof(uint64_t))); CUDA_CHECK(cudaMalloc(&sc->ctr[b], n)); }
     CUDA_CHECK(cudaMalloc(&sc->cnt, (PX_MAX_PASSES + 2) * sizeof(unsigned)));
     unsigned N = (unsigned)n; CUDA_CHECK(cudaMemcpy(sc->cnt + PX_MAX_PASSES + 1, &N, sizeof N, cudaMemcpyHostToDevice));
@@ -1249,6 +1313,9 @@ static void *v_alloc(size_t n) {
 static void v_free(void *scratch) {
 #if PX_COMPACT
     Scratch *sc = (Scratch *)scratch; if (!sc) return;
+#ifdef PX_SPLIT_FINISH
+    cudaFree(sc->projective);
+#endif
     cudaFree(sc->pts); for (int b = 0; b < 2; b++) { cudaFree(sc->nonce[b]); cudaFree(sc->ctr[b]); } cudaFree(sc->cnt); delete sc;
 #else
     (void)scratch;
@@ -1267,7 +1334,12 @@ static void v_mine(int blocks, int threads, const JobDev *job, uint64_t nonce_ba
         int gp = max(1, g1 >> p); // the queue halves every pass
         h2c_kernel<<<gp, 256>>>(job, nonce_base, sc->nonce[in], sc->ctr[in], sc->cnt + p, sc->pts, sc->cnt, sc->nonce[out], sc->ctr[out], sc->cnt + p + 1);
     }
+#ifdef PX_SPLIT_FINISH
+    scalar_kernel<<<blocks,threads>>>(sc->pts,sc->cnt,sc->projective);
+    finish_batch_kernel<<<(blocks+PX_SPLIT_FINISH-1)/PX_SPLIT_FINISH,threads>>>(job,sc->projective,sc->cnt,hits,nhits);
+#else
     mult_kernel<<<(blocks + PX_INV_BATCH - 1) / PX_INV_BATCH, threads>>>(job, sc->pts, sc->cnt, hits, nhits);
+#endif
 #else
     (void)scratch;
     mine_kernel<<<blocks, threads>>>(job, nonce_base, stride, iters, hits, nhits);
