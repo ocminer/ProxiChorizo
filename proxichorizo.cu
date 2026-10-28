@@ -81,6 +81,8 @@ struct VariantOps {
     int (*fetest)(uint32_t seed, int n, uint8_t dump[128]);
 };
 
+// PX_LEAN: development builds compile only the shipped Blackwell variant and the comba variant (minutes instead of ~7 per arch)
+#ifndef PX_LEAN
 #define PX_FE32 1
 #define PX_WINDOW 0
 #define PX_LB_BLOCKS 2
@@ -153,6 +155,7 @@ namespace v_fe32_w4_lb2_c {
 #undef PX_LB_THREADS
 #undef PX_COMPACT
 
+#endif // PX_LEAN
 #define PX_FE32 1
 #define PX_WINDOW 5
 #define PX_LB_BLOCKS 2
@@ -168,6 +171,24 @@ namespace v_fe32_wnaf_lb2_c {
 #undef PX_VARIANT_NAME
 #undef PX_LB_THREADS
 
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WINDOW 5
+#define PX_LB_BLOCKS 2
+#define PX_COMPACT 1
+#define PX_VARIANT_NAME "fe32c_wnaf_lb2_c"
+namespace v_fe32c_wnaf_lb2_c {
+#include "proxichorizo_device.cuh"
+}
+#undef PX_FE32
+#undef PX_COMBA
+#undef PX_WINDOW
+#undef PX_LB_BLOCKS
+#undef PX_COMPACT
+#undef PX_VARIANT_NAME
+#undef PX_LB_THREADS
+
+#ifndef PX_LEAN
 #define PX_FE32 1
 #define PX_WINDOW 5
 #define PX_LB_BLOCKS 2
@@ -207,7 +228,12 @@ namespace v_fe32_w4_linear_split8_c {
 #undef PX_SPLIT_FINISH
 #undef PX_LINEAR_W4
 
-static const VariantOps *VARIANTS[] = { &v_fe32_w0_lb2::ops, &v_fe32_w4_lb2::ops, &v_fe32_w0_lb2_c::ops, &v_fe32_w4_lb2_c::ops, &v_fe32_wnaf_lb2_c::ops, &v_fe51_w4_lb1::ops, &v_fe32_wnaf_split16_c::ops, &v_fe32_w4_linear_split8_c::ops };
+#endif // PX_LEAN
+#ifdef PX_LEAN
+static const VariantOps *VARIANTS[] = { &v_fe32_wnaf_lb2_c::ops, &v_fe32c_wnaf_lb2_c::ops };
+#else
+static const VariantOps *VARIANTS[] = { &v_fe32_w0_lb2::ops, &v_fe32_w4_lb2::ops, &v_fe32_w0_lb2_c::ops, &v_fe32_w4_lb2_c::ops, &v_fe32_wnaf_lb2_c::ops, &v_fe51_w4_lb1::ops, &v_fe32_wnaf_split16_c::ops, &v_fe32_w4_linear_split8_c::ops, &v_fe32c_wnaf_lb2_c::ops };
+#endif
 static const int NVARIANTS = sizeof(VARIANTS) / sizeof(VARIANTS[0]);
 
 // platform table: compute capability -> default variant and launch geometry,
@@ -880,6 +906,7 @@ static void saveTuned(const cudaDeviceProp &prop, const GpuCfg &cfg) {
 static int run_pipeline_edges(const uint8_t pk[32], int dev) {
     CUDA_CHECK(cudaSetDevice(dev));
     const VariantOps *reference = variantByName("fe32_w4_lb2_c");
+    if (!reference) for (int v = 0; v < NVARIANTS && !reference; v++) if (VARIANTS[v]->compact) reference = VARIANTS[v];
     if (!reference) return 2;
     struct Shape { int blocks, threads, iters; };
     std::vector<Shape> shapes;
@@ -971,6 +998,7 @@ static void usage() {
         "ProxiChorizo " PX_VERSION " — CUDA nonce seeker for Proxima (suprnova.cc)\n"
         "  --proxi URL        job server of the pool or of `proxi node mine` (e.g. http://proxi.suprnova.cc:8100)\n"
         "  --token T          bearer token (pool registration / mine.seeker.token)\n"
+        "  --token-file FILE  read the bearer token from FILE (first line; keeps it off the command line), or PROXI_TOKEN in the environment\n"
         "  --key-file FILE    unencrypted proxima.key (or --seed-hex HEX / NONCE_SEEKER_SEED)\n"
         "  --seed-hex HEX     32-byte seed\n"
         "  --name NAME        seeker name in the pool's statistics (default ProxiChorizo-<pid>)\n"
@@ -986,7 +1014,7 @@ static void usage() {
 }
 
 int main(int argc, char **argv) {
-    std::string proxi, token, keyfile, seedhex, name, selftest, gpus, variant, apiBind;
+    std::string proxi, token, tokenFile, keyfile, seedhex, name, selftest, gpus, variant, apiBind;
     sock_init();
     int blocks = 0, threads = 0, iters = 0; double bench = 0, autotuneSecs = 0; bool fetest = false, listVariants = false, verify = false;
     for (int i = 1; i < argc; i++) {
@@ -996,6 +1024,7 @@ int main(int argc, char **argv) {
         if (a == "--help" || a == "-h") { usage(); return 0; }
         else if (a == "--proxi") next(proxi);
         else if (a == "--token") next(token);
+        else if (a == "--token-file") next(tokenFile);
         else if (a == "--key-file") next(keyfile);
         else if (a == "--seed-hex") next(seedhex);
         else if (a == "--name") next(name);
@@ -1014,6 +1043,11 @@ int main(int argc, char **argv) {
         else { usage(); return 1; }
     }
     if (listVariants) { for (int v = 0; v < NVARIANTS; v++) fprintf(stderr, "%s\n", VARIANTS[v]->name); return 0; }
+    if (token.empty() && !tokenFile.empty()) {
+        std::ifstream tf(tokenFile); if (!tf) { fprintf(stderr, "cannot open token file %s\n", tokenFile.c_str()); return 1; }
+        std::getline(tf, token); while (!token.empty() && (token.back() == '\r' || token.back() == '\n' || token.back() == ' ')) token.pop_back();
+    }
+    if (token.empty()) { const char *e = getenv("PROXI_TOKEN"); if (e) token = e; }
     int ndev = 0; CUDA_CHECK(cudaGetDeviceCount(&ndev));
     if (ndev == 0) { fprintf(stderr, "no CUDA devices\n"); return 2; }
     std::vector<int> devs;

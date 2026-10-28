@@ -353,6 +353,122 @@ __device__ __forceinline__ void fe_fold512(fe &h, uint32_t r[18]) {
     }
 }
 
+#ifdef PX_COMBA
+// ----------------------------------------------------------------------------
+// Product scanning (comba) over 32-bit limbs. Each 32x32 product is accumulated
+// into a three-word column with "mad.lo.cc / madc.hi.cc / addc", which ptxas
+// fuses into one IMAD.WIDE.U32 with a predicate carry-out plus one IADD.X; no
+// mad.hi (which runs at a third of the IMAD rate on sm_120) and no long chain
+// through a single carry flag. The 2^256 = 38 fold is done inside the low
+// columns: the high words are computed first and each low column k is seeded
+// with 38 * word(8+k). Measured 1.4-1.6x the shipped row/carry-chain version
+// per field operation on an RTX 5090 (PLATFORMS.md).
+// ----------------------------------------------------------------------------
+// (c2:c1:c0) += a*b
+#define PX_CSTEP(c0, c1, c2, a, b) asm("mad.lo.cc.u32 %0, %3, %4, %0;\n\tmadc.hi.cc.u32 %1, %3, %4, %1;\n\taddc.u32 %2, %2, 0;" : "+r"(c0), "+r"(c1), "+r"(c2) : "r"(a), "r"(b))
+// (c1:c0) += a*b, no third word (a column that cannot overflow two words)
+#define PX_CSTEP2(c0, c1, a, b) asm("mad.lo.cc.u32 %0, %2, %3, %0;\n\tmadc.hi.u32 %1, %2, %3, %1;" : "+r"(c0), "+r"(c1) : "r"(a), "r"(b))
+#define PX_CSHIFT(c0, c1, c2) do { c0 = c1; c1 = c2; c2 = 0; } while (0)
+// h += (t1:t0) at words 0,1 with the carry propagated; a wrap past 2^256 is folded as 38
+__device__ __forceinline__ void fe_addtop(fe &h, uint32_t t0, uint32_t t1) {
+    uint32_t c;
+    asm("add.cc.u32 %0, %0, %9;\n\taddc.cc.u32 %1, %1, %10;\n\taddc.cc.u32 %2, %2, 0;\n\taddc.cc.u32 %3, %3, 0;\n\t"
+        "addc.cc.u32 %4, %4, 0;\n\taddc.cc.u32 %5, %5, 0;\n\taddc.cc.u32 %6, %6, 0;\n\taddc.cc.u32 %7, %7, 0;\n\taddc.u32 %8, 0, 0;"
+        : "+r"(h.v[0]), "+r"(h.v[1]), "+r"(h.v[2]), "+r"(h.v[3]), "+r"(h.v[4]), "+r"(h.v[5]), "+r"(h.v[6]), "+r"(h.v[7]), "=&r"(c) : "r"(t0), "r"(t1));
+    if (c) fe_addsmall(h, 38u);
+}
+// h = f * g
+__device__ void fe_mul(fe &h, const fe &f, const fe &g) {
+    const uint32_t *a = f.v, *b = g.v;
+    uint32_t r[8];                      // words 8..15 of the product
+    uint32_t o[8];                      // output kept apart: h may alias f or g (fe_mul(x, x, y))
+    uint32_t c0 = 0, c1 = 0, c2 = 0;
+    // high columns k = 8..14
+    PX_CSTEP(c0, c1, c2, a[1], b[7]); PX_CSTEP(c0, c1, c2, a[2], b[6]); PX_CSTEP(c0, c1, c2, a[3], b[5]); PX_CSTEP(c0, c1, c2, a[4], b[4]); PX_CSTEP(c0, c1, c2, a[5], b[3]); PX_CSTEP(c0, c1, c2, a[6], b[2]); PX_CSTEP(c0, c1, c2, a[7], b[1]);
+    r[0] = c0; PX_CSHIFT(c0, c1, c2);
+    PX_CSTEP(c0, c1, c2, a[2], b[7]); PX_CSTEP(c0, c1, c2, a[3], b[6]); PX_CSTEP(c0, c1, c2, a[4], b[5]); PX_CSTEP(c0, c1, c2, a[5], b[4]); PX_CSTEP(c0, c1, c2, a[6], b[3]); PX_CSTEP(c0, c1, c2, a[7], b[2]);
+    r[1] = c0; PX_CSHIFT(c0, c1, c2);
+    PX_CSTEP(c0, c1, c2, a[3], b[7]); PX_CSTEP(c0, c1, c2, a[4], b[6]); PX_CSTEP(c0, c1, c2, a[5], b[5]); PX_CSTEP(c0, c1, c2, a[6], b[4]); PX_CSTEP(c0, c1, c2, a[7], b[3]);
+    r[2] = c0; PX_CSHIFT(c0, c1, c2);
+    PX_CSTEP(c0, c1, c2, a[4], b[7]); PX_CSTEP(c0, c1, c2, a[5], b[6]); PX_CSTEP(c0, c1, c2, a[6], b[5]); PX_CSTEP(c0, c1, c2, a[7], b[4]);
+    r[3] = c0; PX_CSHIFT(c0, c1, c2);
+    PX_CSTEP(c0, c1, c2, a[5], b[7]); PX_CSTEP(c0, c1, c2, a[6], b[6]); PX_CSTEP(c0, c1, c2, a[7], b[5]);
+    r[4] = c0; PX_CSHIFT(c0, c1, c2);
+    PX_CSTEP(c0, c1, c2, a[6], b[7]); PX_CSTEP(c0, c1, c2, a[7], b[6]);
+    r[5] = c0; PX_CSHIFT(c0, c1, c2);
+    PX_CSTEP2(c0, c1, a[7], b[7]);
+    r[6] = c0; r[7] = c1;
+    // low columns k = 0..7, each seeded with 38 * word(8+k)
+    c0 = c1 = c2 = 0;
+    PX_CSTEP(c0, c1, c2, r[0], 38u); PX_CSTEP(c0, c1, c2, a[0], b[0]);
+    o[0] = c0; PX_CSHIFT(c0, c1, c2);
+    PX_CSTEP(c0, c1, c2, r[1], 38u); PX_CSTEP(c0, c1, c2, a[0], b[1]); PX_CSTEP(c0, c1, c2, a[1], b[0]);
+    o[1] = c0; PX_CSHIFT(c0, c1, c2);
+    PX_CSTEP(c0, c1, c2, r[2], 38u); PX_CSTEP(c0, c1, c2, a[0], b[2]); PX_CSTEP(c0, c1, c2, a[1], b[1]); PX_CSTEP(c0, c1, c2, a[2], b[0]);
+    o[2] = c0; PX_CSHIFT(c0, c1, c2);
+    PX_CSTEP(c0, c1, c2, r[3], 38u); PX_CSTEP(c0, c1, c2, a[0], b[3]); PX_CSTEP(c0, c1, c2, a[1], b[2]); PX_CSTEP(c0, c1, c2, a[2], b[1]); PX_CSTEP(c0, c1, c2, a[3], b[0]);
+    o[3] = c0; PX_CSHIFT(c0, c1, c2);
+    PX_CSTEP(c0, c1, c2, r[4], 38u); PX_CSTEP(c0, c1, c2, a[0], b[4]); PX_CSTEP(c0, c1, c2, a[1], b[3]); PX_CSTEP(c0, c1, c2, a[2], b[2]); PX_CSTEP(c0, c1, c2, a[3], b[1]); PX_CSTEP(c0, c1, c2, a[4], b[0]);
+    o[4] = c0; PX_CSHIFT(c0, c1, c2);
+    PX_CSTEP(c0, c1, c2, r[5], 38u); PX_CSTEP(c0, c1, c2, a[0], b[5]); PX_CSTEP(c0, c1, c2, a[1], b[4]); PX_CSTEP(c0, c1, c2, a[2], b[3]); PX_CSTEP(c0, c1, c2, a[3], b[2]); PX_CSTEP(c0, c1, c2, a[4], b[1]); PX_CSTEP(c0, c1, c2, a[5], b[0]);
+    o[5] = c0; PX_CSHIFT(c0, c1, c2);
+    PX_CSTEP(c0, c1, c2, r[6], 38u); PX_CSTEP(c0, c1, c2, a[0], b[6]); PX_CSTEP(c0, c1, c2, a[1], b[5]); PX_CSTEP(c0, c1, c2, a[2], b[4]); PX_CSTEP(c0, c1, c2, a[3], b[3]); PX_CSTEP(c0, c1, c2, a[4], b[2]); PX_CSTEP(c0, c1, c2, a[5], b[1]); PX_CSTEP(c0, c1, c2, a[6], b[0]);
+    o[6] = c0; PX_CSHIFT(c0, c1, c2);
+    PX_CSTEP(c0, c1, c2, r[7], 38u); PX_CSTEP(c0, c1, c2, a[0], b[7]); PX_CSTEP(c0, c1, c2, a[1], b[6]); PX_CSTEP(c0, c1, c2, a[2], b[5]); PX_CSTEP(c0, c1, c2, a[3], b[4]); PX_CSTEP(c0, c1, c2, a[4], b[3]); PX_CSTEP(c0, c1, c2, a[5], b[2]); PX_CSTEP(c0, c1, c2, a[6], b[1]); PX_CSTEP(c0, c1, c2, a[7], b[0]);
+    o[7] = c0;
+    // (c2:c1) is the part above 2^256 (< 2^36: the low columns carry up to 2^35 past 2^256); times 38 it spans words 0 and 1
+    uint64_t t; asm("mul.wide.u32 %0, %1, 38;" : "=l"(t) : "r"(c1));
+    for (int i = 0; i < 8; i++) h.v[i] = o[i];
+    fe_addtop(h, (uint32_t)t, (uint32_t)(t >> 32) + c2 * 38u);
+}
+// h = f^2: the 28 cross products once (comba), doubled by a 16-word shift, the 8 squares added in one
+// carry chain of fused wide multiplies, then the 38-fold over exact words
+__device__ void fe_sq(fe &h, const fe &f) {
+    const uint32_t *a = f.v;
+    uint32_t s[16], o[8];
+    uint32_t c0 = 0, c1 = 0, c2 = 0;
+    s[0] = 0;
+    PX_CSTEP(c0, c1, c2, a[0], a[1]); s[1] = c0; PX_CSHIFT(c0, c1, c2);
+    PX_CSTEP(c0, c1, c2, a[0], a[2]); s[2] = c0; PX_CSHIFT(c0, c1, c2);
+    PX_CSTEP(c0, c1, c2, a[0], a[3]); PX_CSTEP(c0, c1, c2, a[1], a[2]); s[3] = c0; PX_CSHIFT(c0, c1, c2);
+    PX_CSTEP(c0, c1, c2, a[0], a[4]); PX_CSTEP(c0, c1, c2, a[1], a[3]); s[4] = c0; PX_CSHIFT(c0, c1, c2);
+    PX_CSTEP(c0, c1, c2, a[0], a[5]); PX_CSTEP(c0, c1, c2, a[1], a[4]); PX_CSTEP(c0, c1, c2, a[2], a[3]); s[5] = c0; PX_CSHIFT(c0, c1, c2);
+    PX_CSTEP(c0, c1, c2, a[0], a[6]); PX_CSTEP(c0, c1, c2, a[1], a[5]); PX_CSTEP(c0, c1, c2, a[2], a[4]); s[6] = c0; PX_CSHIFT(c0, c1, c2);
+    PX_CSTEP(c0, c1, c2, a[0], a[7]); PX_CSTEP(c0, c1, c2, a[1], a[6]); PX_CSTEP(c0, c1, c2, a[2], a[5]); PX_CSTEP(c0, c1, c2, a[3], a[4]); s[7] = c0; PX_CSHIFT(c0, c1, c2);
+    PX_CSTEP(c0, c1, c2, a[1], a[7]); PX_CSTEP(c0, c1, c2, a[2], a[6]); PX_CSTEP(c0, c1, c2, a[3], a[5]); s[8] = c0; PX_CSHIFT(c0, c1, c2);
+    PX_CSTEP(c0, c1, c2, a[2], a[7]); PX_CSTEP(c0, c1, c2, a[3], a[6]); PX_CSTEP(c0, c1, c2, a[4], a[5]); s[9] = c0; PX_CSHIFT(c0, c1, c2);
+    PX_CSTEP(c0, c1, c2, a[3], a[7]); PX_CSTEP(c0, c1, c2, a[4], a[6]); s[10] = c0; PX_CSHIFT(c0, c1, c2);
+    PX_CSTEP(c0, c1, c2, a[4], a[7]); PX_CSTEP(c0, c1, c2, a[5], a[6]); s[11] = c0; PX_CSHIFT(c0, c1, c2);
+    PX_CSTEP(c0, c1, c2, a[5], a[7]); s[12] = c0; PX_CSHIFT(c0, c1, c2);
+    PX_CSTEP2(c0, c1, a[6], a[7]); s[13] = c0; s[14] = c1; s[15] = 0;
+    #pragma unroll
+    for (int k = 15; k > 0; k--) s[k] = (s[k] << 1) | (s[k - 1] >> 31);   // the cross sum is < 2^480: nothing lost
+    s[0] <<= 1;
+    // one statement per limb pair with the carry in a register: a single 16-operand statement let the
+    // compiler coalesce equal-valued (zero) operands and the writes collided (PLATFORMS.md, round 1 lesson)
+    { uint32_t cin = 0;
+      #pragma unroll
+      for (int i = 0; i < 8; i++) {
+          uint32_t cout;
+          asm("add.cc.u32 %0, %0, %4;\n\tmadc.lo.cc.u32 %0, %3, %3, %0;\n\tmadc.hi.cc.u32 %1, %3, %3, %1;\n\taddc.u32 %2, 0, 0;"
+              : "+r"(s[2 * i]), "+r"(s[2 * i + 1]), "=&r"(cout) : "r"(a[i]), "r"(cin));
+          cin = cout;
+      } }
+    // fold: h = s_lo + 38 * s_hi over the exact words, so the part above 2^256 is < 39
+    c0 = c1 = c2 = 0;
+    #pragma unroll
+    for (int k = 0; k < 7; k++) {
+        asm("add.cc.u32 %0, %0, %2;\n\taddc.u32 %1, %1, 0;" : "+r"(c0), "+r"(c1) : "r"(s[k]));
+        PX_CSTEP(c0, c1, c2, s[8 + k], 38u);
+        o[k] = c0; PX_CSHIFT(c0, c1, c2);
+    }
+    asm("add.cc.u32 %0, %0, %2;\n\taddc.u32 %1, %1, 0;" : "+r"(c0), "+r"(c1) : "r"(s[7]));
+    PX_CSTEP2(c0, c1, s[15], 38u);
+    o[7] = c0;
+    for (int i = 0; i < 8; i++) h.v[i] = o[i];
+    fe_addtop(h, c1 * 38u, 0u);
+}
+#else
 // h = f * g: 512-bit schoolbook product, then folded
 __device__ void fe_mul(fe &h, const fe &f, const fe &g) {
     uint32_t r[18];
@@ -394,6 +510,7 @@ __device__ void fe_sq(fe &h, const fe &f) {
     fe_fold512(h, r);
 }
 #endif
+#endif // PX_COMBA
 
 __device__ __forceinline__ void fe_pow2k(fe &h, const fe &f, int k) { fe_copy(h, f); for (int i = 0; i < k; i++) fe_sq(h, h); }
 
@@ -1374,3 +1491,6 @@ static const VariantOps ops = { PX_VARIANT_NAME,
 #undef PX_INV_BATCH
 #undef PX_PREFETCH
 #undef PX_FE26
+#undef PX_CSTEP
+#undef PX_CSTEP2
+#undef PX_CSHIFT
