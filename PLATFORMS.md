@@ -502,8 +502,9 @@ multiply-add and a predicate carry; the shipped row form needed a 32-bit multipl
 multiply (a third-rate instruction on sm_120) and two carry adds per product, all serialised
 through one carry flag. The 2^256 = 38 fold happens inside the low columns. Squaring computes
 the 28 cross products once, doubles them by a word shift and adds the 8 squares in one chain.
-In isolation on an RTX 5090: multiply 106 → 167 G/s, square 164 → 228 G/s (`tools/`-style
-microbenchmark, 0 mismatches over 52 M full-range operand pairs against the shipped arithmetic).
+In isolation on an RTX 5090: multiply 106 → 167 G/s, square 164 → 228 G/s (`tools/febench.cu`,
+0 mismatches over 52 M full-range operand pairs against the shipped arithmetic; `tools/pipebench.cu` measures the
+instruction rates the design rests on). `scripts/independent-vectors.py` generates the 512 independent VRF vectors (needs PyNaCl).
 
 On top of that the shipped `fe32c_wnaf_s16_c` variant folds both ×8 cofactor steps into the
 fixed scalar (64·x mod 8L: six doublings fewer per nonce, the torsion component of H is still
