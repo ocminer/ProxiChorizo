@@ -137,6 +137,7 @@ about half of that). `--iters 8` is the best launch geometry on every AMD card m
 ```
 --proxi URL          job server: pool (http://proxi.suprnova.cc:8100) or your proxi node mine
 --token T            bearer token from the pool registration / mine.seeker.token
+--token-file FILE    read the token from a file instead (keeps it off the command line); PROXI_TOKEN in the environment works too
 --key-file FILE      unencrypted proxima.key (or --seed-hex HEX, or env NONCE_SEEKER_SEED)
 --name NAME          worker name shown by the pool (default proxichorizo-<pid>)
 --gpus 0,1           GPUs to use (default all; CUDA order, set CUDA_DEVICE_ORDER=PCI_BUS_ID for PCI order)

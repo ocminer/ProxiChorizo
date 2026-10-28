@@ -178,6 +178,20 @@ __device__ __forceinline__ uint32_t fe_subsmall(fe &h, uint32_t a) {
     return b & 1u;
 }
 
+// carry (borrow) out of limb 1 propagated upward, with a wrap past 2^256 folded as 38: the fold of c*38 into
+// limb 0 overflows limb 1 only when limb 0 is within 38 of 2^32, so callers branch here about once in 10^8
+__device__ __forceinline__ void fe_inc2(fe &h) {
+    uint32_t c;
+    asm("add.cc.u32 %0, %0, 1;\n\taddc.cc.u32 %1, %1, 0;\n\taddc.cc.u32 %2, %2, 0;\n\taddc.cc.u32 %3, %3, 0;\n\taddc.cc.u32 %4, %4, 0;\n\taddc.cc.u32 %5, %5, 0;\n\taddc.u32 %6, 0, 0;"
+        : "+r"(h.v[2]), "+r"(h.v[3]), "+r"(h.v[4]), "+r"(h.v[5]), "+r"(h.v[6]), "+r"(h.v[7]), "=&r"(c));
+    if (c) fe_addsmall(h, 38u);
+}
+__device__ __forceinline__ void fe_dec2(fe &h) {
+    uint32_t b;
+    asm("sub.cc.u32 %0, %0, 1;\n\tsubc.cc.u32 %1, %1, 0;\n\tsubc.cc.u32 %2, %2, 0;\n\tsubc.cc.u32 %3, %3, 0;\n\tsubc.cc.u32 %4, %4, 0;\n\tsubc.cc.u32 %5, %5, 0;\n\tsubc.u32 %6, 0, 0;"
+        : "+r"(h.v[2]), "+r"(h.v[3]), "+r"(h.v[4]), "+r"(h.v[5]), "+r"(h.v[6]), "+r"(h.v[7]), "=&r"(b));
+    if (b & 1u) fe_subsmall(h, 38u);
+}
 // h = f + g
 __device__ __forceinline__ void fe_add(fe &h, const fe &f, const fe &g) {
     uint32_t c;
@@ -192,6 +206,12 @@ __device__ __forceinline__ void fe_add(fe &h, const fe &f, const fe &g) {
     // the carry out is set in about half the lanes, so a branch around the
     // fix-up diverges nearly every time and the body runs anyway: fold c*38 in
     // unconditionally (H100 +7 %, RTX PRO 6000 +3.4 %, RTX A6000 +3.5 %)
+#ifdef PX_COMBA
+    // the carry out of limb 1 is rarer than one in 10^8: propagate it off the hot path
+    { uint32_t c2;
+      asm("mad.lo.cc.u32 %0, %3, 38, %0;\n\taddc.cc.u32 %1, %1, 0;\n\taddc.u32 %2, 0, 0;" : "+r"(h.v[0]), "+r"(h.v[1]), "=&r"(c2) : "r"(c));
+      if (c2) fe_inc2(h); }
+#else
     { uint32_t k = 38u, c2;
       asm("mad.lo.cc.u32 %0, %9, %10, %0;\n\t"
           "addc.cc.u32 %1, %1, 0;\n\t" "addc.cc.u32 %2, %2, 0;\n\t" "addc.cc.u32 %3, %3, 0;\n\t"
@@ -200,6 +220,7 @@ __device__ __forceinline__ void fe_add(fe &h, const fe &f, const fe &g) {
           : "+r"(h.v[0]), "+r"(h.v[1]), "+r"(h.v[2]), "+r"(h.v[3]), "+r"(h.v[4]), "+r"(h.v[5]), "+r"(h.v[6]), "+r"(h.v[7]), "=&r"(c2)
           : "r"(c), "r"(k));
       if (c2) fe_addsmall(h, 38u); }
+#endif
 }
 // h = f - g
 __device__ __forceinline__ void fe_sub(fe &h, const fe &f, const fe &g) {
@@ -214,6 +235,11 @@ __device__ __forceinline__ void fe_sub(fe &h, const fe &f, const fe &g) {
           "r"(g.v[0]), "r"(g.v[1]), "r"(g.v[2]), "r"(g.v[3]), "r"(g.v[4]), "r"(g.v[5]), "r"(g.v[6]), "r"(g.v[7]));
     // a wrap past zero added 2^256 = 38 too much; subtract it unconditionally
     // (same reasoning as in fe_add: the borrow is set in about half the lanes)
+#ifdef PX_COMBA
+    { uint32_t t = (b & 1u) * 38u, b2;
+      asm("sub.cc.u32 %0, %0, %3;\n\tsubc.cc.u32 %1, %1, 0;\n\tsubc.u32 %2, 0, 0;" : "+r"(h.v[0]), "+r"(h.v[1]), "=&r"(b2) : "r"(t));
+      if (b2 & 1u) fe_dec2(h); }
+#else
     { uint32_t t = (b & 1u) * 38u, b2;
       asm("sub.cc.u32 %0, %0, %9;\n\t"
           "subc.cc.u32 %1, %1, 0;\n\t" "subc.cc.u32 %2, %2, 0;\n\t" "subc.cc.u32 %3, %3, 0;\n\t"
@@ -222,6 +248,7 @@ __device__ __forceinline__ void fe_sub(fe &h, const fe &f, const fe &g) {
           : "+r"(h.v[0]), "+r"(h.v[1]), "+r"(h.v[2]), "+r"(h.v[3]), "+r"(h.v[4]), "+r"(h.v[5]), "+r"(h.v[6]), "+r"(h.v[7]), "=&r"(b2)
           : "r"(t));
       if (b2 & 1u) fe_subsmall(h, 38u); }
+#endif
 }
 __device__ __forceinline__ void fe_neg(fe &h, const fe &f) { fe z; fe_0(z); fe_sub(h, z, f); }
 
@@ -371,11 +398,9 @@ __device__ __forceinline__ void fe_fold512(fe &h, uint32_t r[18]) {
 #define PX_CSHIFT(c0, c1, c2) do { c0 = c1; c1 = c2; c2 = 0; } while (0)
 // h += (t1:t0) at words 0,1 with the carry propagated; a wrap past 2^256 is folded as 38
 __device__ __forceinline__ void fe_addtop(fe &h, uint32_t t0, uint32_t t1) {
-    uint32_t c;
-    asm("add.cc.u32 %0, %0, %9;\n\taddc.cc.u32 %1, %1, %10;\n\taddc.cc.u32 %2, %2, 0;\n\taddc.cc.u32 %3, %3, 0;\n\t"
-        "addc.cc.u32 %4, %4, 0;\n\taddc.cc.u32 %5, %5, 0;\n\taddc.cc.u32 %6, %6, 0;\n\taddc.cc.u32 %7, %7, 0;\n\taddc.u32 %8, 0, 0;"
-        : "+r"(h.v[0]), "+r"(h.v[1]), "+r"(h.v[2]), "+r"(h.v[3]), "+r"(h.v[4]), "+r"(h.v[5]), "+r"(h.v[6]), "+r"(h.v[7]), "=&r"(c) : "r"(t0), "r"(t1));
-    if (c) fe_addsmall(h, 38u);
+    uint32_t c;   // t1 < 2^11: the carry out of limb 1 is rare, propagate it off the hot path
+    asm("add.cc.u32 %0, %0, %3;\n\taddc.cc.u32 %1, %1, %4;\n\taddc.u32 %2, 0, 0;" : "+r"(h.v[0]), "+r"(h.v[1]), "=&r"(c) : "r"(t0), "r"(t1));
+    if (c) fe_inc2(h);
 }
 // h = f * g
 __device__ void fe_mul(fe &h, const fe &f, const fe &g) {
@@ -444,6 +469,24 @@ __device__ void fe_sq(fe &h, const fe &f) {
     #pragma unroll
     for (int k = 15; k > 0; k--) s[k] = (s[k] << 1) | (s[k - 1] >> 31);   // the cross sum is < 2^480: nothing lost
     s[0] <<= 1;
+#ifndef PX_SQCHAIN
+#define PX_SQCHAIN 1
+#endif
+#if PX_SQCHAIN
+    // the 8 squares in one carry chain through the flags. s[0] is written, not read (it is zero here), so no
+    // two operands of the statement hold a provably equal value: the round-1 operand-coalescing hazard needs
+    // equal-valued read-write operands. Checked by --fetest (x = 121666 and the pow22501 replay) and the vectors.
+    asm("mad.lo.cc.u32 %0, %16, %16, 0;\n\tmadc.hi.cc.u32 %1, %16, %16, %1;\n\t"
+        "madc.lo.cc.u32 %2, %17, %17, %2;\n\tmadc.hi.cc.u32 %3, %17, %17, %3;\n\t"
+        "madc.lo.cc.u32 %4, %18, %18, %4;\n\tmadc.hi.cc.u32 %5, %18, %18, %5;\n\t"
+        "madc.lo.cc.u32 %6, %19, %19, %6;\n\tmadc.hi.cc.u32 %7, %19, %19, %7;\n\t"
+        "madc.lo.cc.u32 %8, %20, %20, %8;\n\tmadc.hi.cc.u32 %9, %20, %20, %9;\n\t"
+        "madc.lo.cc.u32 %10, %21, %21, %10;\n\tmadc.hi.cc.u32 %11, %21, %21, %11;\n\t"
+        "madc.lo.cc.u32 %12, %22, %22, %12;\n\tmadc.hi.cc.u32 %13, %22, %22, %13;\n\t"
+        "madc.lo.cc.u32 %14, %23, %23, %14;\n\tmadc.hi.u32 %15, %23, %23, %15;"
+        : "=&r"(s[0]), "+r"(s[1]), "+r"(s[2]), "+r"(s[3]), "+r"(s[4]), "+r"(s[5]), "+r"(s[6]), "+r"(s[7]), "+r"(s[8]), "+r"(s[9]), "+r"(s[10]), "+r"(s[11]), "+r"(s[12]), "+r"(s[13]), "+r"(s[14]), "+r"(s[15])
+        : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(a[4]), "r"(a[5]), "r"(a[6]), "r"(a[7]));
+#else
     // one statement per limb pair with the carry in a register: a single 16-operand statement let the
     // compiler coalesce equal-valued (zero) operands and the writes collided (PLATFORMS.md, round 1 lesson)
     { uint32_t cin = 0;
@@ -454,19 +497,18 @@ __device__ void fe_sq(fe &h, const fe &f) {
               : "+r"(s[2 * i]), "+r"(s[2 * i + 1]), "=&r"(cout) : "r"(a[i]), "r"(cin));
           cin = cout;
       } }
-    // fold: h = s_lo + 38 * s_hi over the exact words, so the part above 2^256 is < 39
-    c0 = c1 = c2 = 0;
+#endif
+    // fold: h = s_lo + 38 * s_hi over the exact words: column k = 38*s[8+k] + s[k] + carry, which never
+    // exceeds two words, so one wide multiply with s[k] as its addend and a two-limb carry add per column
+    uint32_t cin = 0;
     #pragma unroll
-    for (int k = 0; k < 7; k++) {
-        asm("add.cc.u32 %0, %0, %2;\n\taddc.u32 %1, %1, 0;" : "+r"(c0), "+r"(c1) : "r"(s[k]));
-        PX_CSTEP(c0, c1, c2, s[8 + k], 38u);
-        o[k] = c0; PX_CSHIFT(c0, c1, c2);
+    for (int k = 0; k < 8; k++) {
+        asm("mad.lo.cc.u32 %0, %2, 38, %3;\n\tmadc.hi.u32 %1, %2, 38, 0;\n\tadd.cc.u32 %0, %0, %4;\n\taddc.u32 %1, %1, 0;"
+            : "=&r"(c0), "=&r"(c1) : "r"(s[8 + k]), "r"(s[k]), "r"(cin));
+        o[k] = c0; cin = c1;
     }
-    asm("add.cc.u32 %0, %0, %2;\n\taddc.u32 %1, %1, 0;" : "+r"(c0), "+r"(c1) : "r"(s[7]));
-    PX_CSTEP2(c0, c1, s[15], 38u);
-    o[7] = c0;
     for (int i = 0; i < 8; i++) h.v[i] = o[i];
-    fe_addtop(h, c1 * 38u, 0u);
+    fe_addtop(h, cin * 38u, 0u);   // cin < 39
 }
 #else
 // h = f * g: 512-bit schoolbook product, then folded
@@ -823,6 +865,17 @@ __constant__ int8_t c_wnaf_next[260];
 #ifndef PX_PREFETCH
 #define PX_PREFETCH 0
 #endif
+// PX_MERGE8: the two cofactor multiplications (x8 before and after the scalar multiplication) are
+// folded into the fixed scalar: 8*(x*(8H)) = (64x mod L)*H for every decompressed point H, because the
+// cofactor kills the torsion part of H either way. Saves six doublings and one scalar bit per nonce.
+// A torsion point H (8H = identity) gives the identity after the multiplication and is rejected there.
+// wNAF only: the plain and 4-bit windows assume a clamped scalar with bit 254 set.
+#ifndef PX_MERGE8
+#define PX_MERGE8 0
+#endif
+#if PX_MERGE8 && PX_WINDOW != 5
+#error PX_MERGE8 requires the wNAF scalar multiplication
+#endif
 
 // a point cached for mixed addition: Y+X, Y-X, 2d*T, 2Z
 struct geCached { fe YpX, YmX, T2d, Z2; };
@@ -1052,6 +1105,20 @@ __device__ bool vrf_beta(const JobDev &job, uint64_t nonce, uint8_t beta[64], ui
     int ctrpos = n; n += 2;
     ge H;
     bool found = false;
+    ge G;
+#if PX_MERGE8
+    for (int ctr = 0; ctr < 256 && !found; ctr++) {
+        msg[ctrpos] = (uint8_t)ctr; msg[ctrpos + 1] = 0;
+        uint8_t dg[64];
+        sha512_single(msg, n, dg);
+        if (!ge_frombytes(H, dg)) continue;
+        ge_scalarmult_const(G, H);           // (64x mod L) * H = 8 * (x * (8H))
+        if (ge_is_identity(G)) continue;     // H was a torsion point
+        found = true;
+    }
+    if (!found) return false;
+    if (dbgH) { ge t; ge_mul8(t, H); ge_tobytes(dbgH, t); }
+#else
     for (int ctr = 0; ctr < 256 && !found; ctr++) {
         msg[ctrpos] = (uint8_t)ctr; msg[ctrpos + 1] = 0;
         uint8_t dg[64];
@@ -1063,9 +1130,9 @@ __device__ bool vrf_beta(const JobDev &job, uint64_t nonce, uint8_t beta[64], ui
     }
     if (!found) return false;
     if (dbgH) ge_tobytes(dbgH, H);
-    ge G;
     ge_scalarmult_const(G, H);
     ge_mul8(G, G);
+#endif
     uint8_t m2[35];
     m2[0] = 0x03; m2[1] = 0x03;
     ge_tobytes(m2 + 2, G);
@@ -1122,7 +1189,10 @@ struct Scratch {
     HPoint *pts; uint64_t *nonce[2]; uint8_t *ctr[2]; unsigned *cnt; size_t n; };
 #define PX_MAX_PASSES 12
 
-__global__ void __launch_bounds__(256) h2c_kernel(const JobDev *job, uint64_t nonce_base, const uint64_t *in_nonce, const uint8_t *in_ctr, const unsigned *n_in_ptr,
+#ifndef PX_LB_H2C
+#define PX_LB_H2C 1
+#endif
+__global__ void __launch_bounds__(256, PX_LB_H2C) h2c_kernel(const JobDev *job, uint64_t nonce_base, const uint64_t *in_nonce, const uint8_t *in_ctr, const unsigned *n_in_ptr,
                                                   HPoint *pts, unsigned *n_pts, uint64_t *out_nonce, uint8_t *out_ctr, unsigned *n_out) {
     unsigned n_in = *n_in_ptr;
     unsigned gid = blockIdx.x * blockDim.x + threadIdx.x, total = gridDim.x * blockDim.x;
@@ -1153,12 +1223,18 @@ __global__ void __launch_bounds__(256) h2c_kernel(const JobDev *job, uint64_t no
 // one point: cofactor, scalar multiplication, cofactor; false for the identity
 __device__ __forceinline__ bool mult_point(ge &G, const HPoint &pt) {
     ge H;
+#if PX_MERGE8
+    fe_copy(H.X, pt.X); fe_copy(H.Y, pt.Y); fe_1(H.Z); fe_mul(H.T, pt.X, pt.Y); // affine: T = X*Y
+    ge_scalarmult_const(G, H);           // (64x mod L) * H
+    return !ge_is_identity(G);           // identity only for a torsion H
+#else
     fe_copy(H.X, pt.X); fe_copy(H.Y, pt.Y); fe_1(H.Z); // T is not read by the doublings
     ge_mul8(H, H);
     if (ge_is_identity(H)) return false;
     ge_scalarmult_const(G, H);
     ge_mul8(G, G);
     return true;
+#endif
 }
 // compress with a precomputed 1/Z, hash, test
 __device__ __forceinline__ void finish_point(const JobDev *job, const ge &G, const fe &zi, uint64_t nonce, Hit *hits, unsigned *nhits) {
@@ -1374,7 +1450,35 @@ __global__ void init_kernel(const uint8_t *scalar, uint8_t *pk_out, int *ok) {
 // ---- host-side adapter for this variant --------------------------------------
 // width-5 wNAF of the little-endian 256-bit scalar: digits are odd and at most one
 // in any 5 consecutive positions, so ~1/6 of the positions carry an addition
-static void v_set_scalar(const uint8_t *scalar) {
+#if PX_MERGE8
+// (64 * scalar) mod 8L, L = 2^252 + 27742317777372353535851937790883648493 (the group order), as 32 little-endian
+// bytes. Reducing modulo 8L (not L) keeps the result divisible by 8, so the torsion part of H is still killed.
+static void v_merged_scalar(const uint8_t *scalar, uint8_t out[32]) {
+    static const uint8_t Lb[32] = { 0xed, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58, 0xd6, 0x9c, 0xf7, 0xa2, 0xde, 0xf9, 0xde, 0x14,
+                                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10 };
+    // t = scalar << 6 in 40 bytes
+    uint8_t t[40]; memset(t, 0, sizeof t);
+    for (int i = 0; i < 32; i++) { unsigned v = (unsigned)scalar[i] << 6; t[i] |= v & 0xff; t[i + 1] |= (v >> 8) & 0xff; }
+    // subtract 8L << sh while t >= 8L << sh, for sh = 16..0 bits (64x < 2^262 = 2^7 * 8L, so 16 shifts are plenty)
+    for (int sh = 16; sh >= 0; sh--) {
+        uint8_t m[40]; memset(m, 0, sizeof m);
+        for (int i = 0; i < 32; i++) { unsigned v = (unsigned)Lb[i] << ((sh + 3) & 7); int o = i + ((sh + 3) >> 3); m[o] |= v & 0xff; m[o + 1] |= (v >> 8) & 0xff; }
+        for (;;) {
+            int ge = 0; for (int i = 39; i >= 0; i--) { if (t[i] != m[i]) { ge = t[i] > m[i]; break; } if (i == 0) ge = 1; }
+            if (!ge) break;
+            int b = 0; for (int i = 0; i < 40; i++) { int d = (int)t[i] - (int)m[i] - b; b = d < 0; t[i] = (uint8_t)(d + (b ? 256 : 0)); }
+        }
+    }
+    memcpy(out, t, 32);
+}
+#endif
+static void v_set_scalar(const uint8_t *scalar_in) {
+#if PX_MERGE8
+    uint8_t merged[32]; v_merged_scalar(scalar_in, merged);
+    const uint8_t *scalar = merged;
+#else
+    const uint8_t *scalar = scalar_in;
+#endif
     CUDA_CHECK(cudaMemcpyToSymbol(c_scalar, scalar, 32));
     uint8_t k[40]; memset(k, 0, sizeof k); memcpy(k, scalar, 32);
     int8_t digits[260]; memset(digits, 0, sizeof digits);
@@ -1494,3 +1598,6 @@ static const VariantOps ops = { PX_VARIANT_NAME,
 #undef PX_CSTEP
 #undef PX_CSTEP2
 #undef PX_CSHIFT
+#undef PX_MERGE8
+#undef PX_SQCHAIN
+#undef PX_LB_H2C

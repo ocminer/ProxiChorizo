@@ -31,7 +31,11 @@ int main() {
     for(int i=0;i<20;i++) {
         assert(&platformFor(8,0,"NVIDIA A100-SXM4-80GB")==&a);
         assert(&platformFor(9,0,"NVIDIA H100 80GB HBM3")==&h);
-        assert(std::strcmp(platformFor(8,0,"NVIDIA CMP 170HX").variant,"fe32_wnaf_lb2_c")==0);
+        assert(std::strcmp(platformFor(8,0,"NVIDIA CMP 170HX").variant,"fe32c_wnaf_s16_c")==0);
     }
+    // 0.5.8: every consumer/CMP generation defaults to the comba variant, datacenter rows are unchanged
+    assert(std::strcmp(platformFor(12,0,"NVIDIA GeForce RTX 5090").variant,"fe32c_wnaf_s16_c")==0);
+    assert(std::strcmp(platformFor(8,6,"NVIDIA GeForce RTX 3070").variant,"fe32c_wnaf_s16_c")==0);
+    assert(platformFor(8,9,"NVIDIA GeForce RTX 4090").measured==false);
     puts("PASS model-specific datacenter selection and unchanged legacy/MIG profiles");
 }

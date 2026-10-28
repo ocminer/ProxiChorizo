@@ -143,6 +143,8 @@ once per variant inside a namespace with the macros set. Variants compiled in:
 | `fe32_w0_lb2_c` | 8×32 + sq, compacted pipeline | plain | 256, 2 |
 | `fe32_w4_lb2_c` | 8×32 + sq, compacted pipeline | 4-bit table | 256, 2 |
 | `fe32_wnaf_lb2_c` | 8×32 + sq, compacted pipeline | width-5 wNAF, cached mixed adds | 256, 2 |
+| `fe32c_wnaf_lb2_c` | 8×32 product-scanning (comba) multiply and square, compacted pipeline | width-5 wNAF | 256, 2 |
+| `fe32c_wnaf_s16_c` | comba, cofactor folded into the scalar, split normalisation (16 points per inversion), h2c kernel 3 blocks/SM | width-5 wNAF | 256, 2 |
 
 Selection: `PLATFORMS[]` in proxichorizo.cu maps compute capability → variant and
 geometry (12.x → fe32_w4_lb2; 8.x/7.5 → fe32_w0_lb2); `--variant NAME` forces one
@@ -491,3 +493,55 @@ and 70 dense pipeline cases comparing 83,393 complete outputs per implementation
 The new profile also checks its actual mining pipeline against embedded vectors at
 startup. Run `./proxichorizo-cl --verify-pipeline` for the dense checks, or
 `make -C opencl test-profiles` for the CPU-only model-selection regression.
+
+## Round 10: product-scanning field arithmetic — 2026-10-28 (RTX 5090, RTX 5080, RTX 3070, CMP 170HX)
+
+The 8×32 field multiply was rewritten as product scanning (comba) over three-word columns
+(`PX_COMBA`, variants `fe32c_*`). Each 32×32 product is accumulated with a fused wide
+multiply-add and a predicate carry; the shipped row form needed a 32-bit multiply, a high
+multiply (a third-rate instruction on sm_120) and two carry adds per product, all serialised
+through one carry flag. The 2^256 = 38 fold happens inside the low columns. Squaring computes
+the 28 cross products once, doubles them by a word shift and adds the 8 squares in one chain.
+In isolation on an RTX 5090: multiply 106 → 167 G/s, square 164 → 228 G/s (`tools/`-style
+microbenchmark, 0 mismatches over 52 M full-range operand pairs against the shipped arithmetic).
+
+On top of that the shipped `fe32c_wnaf_s16_c` variant folds both ×8 cofactor steps into the
+fixed scalar (64·x mod 8L: six doublings fewer per nonce, the torsion component of H is still
+killed), normalises in a separate stage sharing one inversion over 16 points (the `split16`
+pipeline from the A100 profile), and runs the hash-to-curve kernel at 3 blocks per SM.
+
+Matched A/B/B/A `--bench 45` (30 s per arm in the series below), same card, same cap, 0.5.7 release source
+compiled for the card's architecture with the same CUDA toolkit, driver-reported power/clock:
+
+| GPU | Power cap | 0.5.7 default | 0.5.8 default | Gain | SM clock 0.5.7 → 0.5.8 | Power 0.5.7 → 0.5.8 |
+|---|---:|---:|---:|---:|---|---|
+| RTX 5090 (sm_120) | 600 W | 42.3 MH/s | **63.7 MH/s** | +51 % | 2660 → 2715 MHz (capped) | 600 → 600 W |
+| RTX 5090 | 420 W | 32.8 MH/s | **46.9 MH/s** | +43 % | 2050 → 2125 MHz (capped) | 420 → 420 W |
+| RTX 5080 (sm_120) | 360 W | 22.1 MH/s | **33.0 MH/s** | +50 % | 2775 → 2790 MHz | 350 → 339 W |
+| RTX 3070 (sm_86) | 240 W | 7.6 MH/s | **11.5 MH/s** | +51 % | 1826 → 1861 MHz (capped) | 239 → 239 W |
+| CMP 170HX (sm_80, 74 SMs) | 250 W | 7.6 MH/s | **13.3 MH/s** | +75 % | 1410 → 1410 MHz | 179 → 199 W |
+
+Series on the RTX 5090 at 600 W, `--bench 30`: comba alone (`fe32c_wnaf_lb2_c`) 59.0–60.5; + cofactor fold
+60.3–60.6; + split normalisation 62.4–63.1; + single-chain squares 63.9–64.2; h2c kernel 3 blocks/SM 63.7–64.0 vs
+1 block/SM 62.0–62.7 (ABBA 45 s); 2 or 4 h2c blocks/SM no better. Launch 64/128/256 blocks per SM: 63.4–63.7 / 63.8 / 64.1–64.3 —
+128 kept. Per-card the same ladder holds: RTX 3070 10.9 → 11.2 → 11.5; CMP 170HX 11.3 → 11.9 → 13.3; RTX 5080 30.6 → 31.8 → 33.0.
+
+Nsight Compute on the comba multiply kernel (5090, 600 W): SM busy 82 %, issue slots 53 %, IPC 2.1, occupancy 33 %
+(128 registers); stalls per issue: math-pipe throttle 2.4 (the shared heavy pipe), wait 1.6, not selected 1.3, no
+instruction 0.1 — the kernel is now bound by the wide-multiply pipe, not by instruction fetch or carry chains.
+
+Tried and dropped (RTX 5090 unless noted):
+- Karatsuba (three 4×4 comba products, 48 wide multiplies instead of 64): 145 vs 165 G multiplies/s in isolation — the
+  extra 129-bit sums and two 10-word subtractions cost more issue slots than the 16 saved multiplies.
+- A 10×26-bit limb representation with 64-bit column accumulators and no carries: the wide multiply issues at half rate on
+  sm_120, so 100 of them plus a carry pass lose to 64 fused products with predicate carries (not built; counted from the pipe microbenchmark).
+- Multiply kernel at 1 block/SM (192 registers, no spills): 57.1–57.2 vs 59.0–59.6 MH/s — occupancy still beats registers.
+- Inversion batch of 4 inside the multiply kernel: +1 %; the split stage with 16 points: +4 %.
+- `__noinline__` rare-path helpers (fold carry propagation): 18 MH/s — the call overhead is prohibitive; everything stays inline.
+
+Correctness for every variant on each architecture (sm_120 on the 5090 and 5080, sm_86 on the 3070, sm_80 on the CMP 170HX):
+the 16 node vectors, `--fetest` (128,000 random field checks), 512 independent VRF vectors across 256 keys through the real
+pipeline, `--verify` (identical hit sets, 58 dense launch shapes / 5,189 complete outputs against the bounded reference
+with its 12-pass retry policy) and live pool mining with accepted shares and no rejects. The A100 and H100 keep their 0.5.7
+profiles: the new kernels were not measured there (`--autotune` or `--variant fe32c_wnaf_s16_c` tries them).
+Ada and Turing default to the new variant with the first-start quick tune, which now also includes it.

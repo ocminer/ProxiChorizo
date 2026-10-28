@@ -55,13 +55,13 @@ code for H100. See the datacenter measurements in `PLATFORMS.md` for the tested 
 
 ## Usage
 ```
-./proxichorizo --proxi http://proxi.suprnova.cc:8100 --token YOUR_TOKEN --key-file proxima.key --name rig1     # pool
+./proxichorizo --proxi http://proxi.suprnova.cc:8100 --token YOUR_TOKEN --key-file proxima.key --name rig1     # pool (or --token-file FILE)
 ./proxichorizo --proxi http://your-node:8200 --token SEEKER_TOKEN --key-file proxima.key                        # solo, see USAGE.md
 ./proxichorizo --autotune --bench 10        # fastest kernel variant per GPU, then its hashrate
 ./proxichorizo --selftest vectors.json      # the math against the Proxima node's VRF vectors
 ./proxichorizo ... --api-bind 127.0.0.1:4078   # JSON statistics at /, mmpOS line at /mmpos
 ```
-Measured (0.5.6): RTX PRO 6000 ≈ 43 MH/s, RTX 5090 ≈ 29 MH/s, H100 SXM ≈ 21 MH/s, RTX 5080 ≈ 21 MH/s, RTX A6000 ≈ 12 MH/s, RTX 3070 ≈ 7.4 MH/s, CMP 170HX ≈ 7 MH/s; one CPU core of the reference seeker ≈ 37 kH/s.
+Measured (0.5.8, `--bench`, platform defaults): RTX 5090 ≈ 64 MH/s at 600 W / ≈ 47 at 420 W, RTX 5080 ≈ 33 MH/s, CMP 170HX ≈ 13 MH/s, RTX 3070 ≈ 11.5 MH/s; unchanged from earlier releases: RTX PRO 6000 ≈ 43 MH/s (0.5.6), H100 SXM ≈ 21.6 MH/s (0.5.7), A100 ≈ 12.7 MH/s (0.5.7), RTX A6000 ≈ 12 MH/s (0.5.6); one CPU core of the reference seeker ≈ 37 kH/s. See the [benchmarks](#benchmarks) below.
 **[USAGE.md](USAGE.md)** has the full guide: registering at the pool, solo mining with `proxi node mine`, HiveOS / MMPOS / SMOS flight sheets, Docker, Windows, every option, troubleshooting.
 
 ## Build
@@ -83,14 +83,32 @@ glibc 2.31 so they run on HiveOS and mmpOS images.
 Per attempt: SHA-512, try-and-increment hash-to-curve (one field exponentiation per try),
 a 254-bit scalar multiplication on Ed25519, cofactor ×8, compression (one inversion),
 SHA-512. See `PLATFORMS.md` for the measured variants and why each exists.
-Reference points (the same binary, platform defaults): RTX 5090 ≈ 29 MH/s, RTX 5080 ≈ 21 MH/s,
-RTX 3070 ≈ 7.4 MH/s, CMP 170HX ≈ 7 MH/s, one CPU core of the reference Rust seeker ≈ 37 kH/s.
+Reference points (the same binary, platform defaults): RTX 5090 ≈ 64 MH/s (600 W), RTX 5080 ≈ 33 MH/s,
+CMP 170HX ≈ 13 MH/s, RTX 3070 ≈ 11.5 MH/s, one CPU core of the reference Rust seeker ≈ 37 kH/s.
+
+## Benchmarks
+
+`--bench 45` on our own cards, platform defaults, driver-reported power; 0.5.8 numbers are matched A/B/B/A
+against the 0.5.7 release binary on the same card and power cap (details and raw series in PLATFORMS.md, round 10).
+Other cards keep the rates measured with the release noted; pool rates are a little lower (job changes, idle gaps).
+
+| GPU | Power cap | 0.5.7 | **0.5.8** | Gain | MH/s per W (0.5.8) |
+|---|---:|---:|---:|---:|---:|
+| RTX 5090 (sm_120, 170 SMs) | 600 W | 42.3 MH/s | **63.7 MH/s** | +51 % | 0.106 |
+| RTX 5090 | 420 W | 32.8 MH/s | **46.9 MH/s** | +43 % | 0.112 |
+| RTX 5080 (sm_120) | 360 W | 22.1 MH/s | **33.0 MH/s** | +50 % | 0.097 |
+| RTX 3070 (sm_86) | 240 W | 7.6 MH/s | **11.5 MH/s** | +51 % | 0.048 |
+| CMP 170HX (sm_80, 74 SMs) | 250 W | 7.6 MH/s | **13.3 MH/s** | +75 % | 0.067 |
+| RTX PRO 6000 Blackwell (0.5.6 kernels) | 600 W | 43.0 MH/s | not re-measured | | |
+| H100 SXM (0.5.7 datacenter profile) | 700 W | 21.6 MH/s | unchanged | | 0.046 |
+| A100-SXM4-80GB (0.5.7 datacenter profile) | 400 W | 12.7 MH/s | unchanged | | 0.046 |
+| RX 7900 XTX (OpenCL, 0.5.7) | 244 W | 11.3 MH/s | unchanged | | 0.046 |
 
 ## Layout
 
 - `proxichorizo.cu` — host: seeker protocol client, variants, autotune, tests.
 - `platform_profiles.h` — per-GPU defaults; `tests/platform_profiles.cpp` checks model selection and preservation of existing profiles without requiring a GPU.
-- `proxichorizo_device.cuh` — device: field arithmetic (5×51 and 8×32), Ed25519 points, SHA-512,
+- `proxichorizo_device.cuh` — device: field arithmetic (5×51, 8×32 row form and 8×32 product-scanning form), Ed25519 points, SHA-512,
   the VRF attempt, the kernels. Included once per variant from `proxichorizo.cu`.
 - `vectors.json`, `tools/vrfvec/` — test vectors generated with the Proxima node's own
   `util/vrf` package (build the tool inside a proxima checkout: `go run ./cmd/vrfvec`).
