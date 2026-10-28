@@ -511,16 +511,17 @@ fixed scalar (64·x mod 8L: six doublings fewer per nonce, the torsion component
 killed), normalises in a separate stage sharing one inversion over 16 points (the `split16`
 pipeline from the A100 profile), and runs the hash-to-curve kernel at 3 blocks per SM.
 
-Matched A/B/B/A `--bench 45` (30 s per arm in the series below), same card, same cap, 0.5.7 release source
-compiled for the card's architecture with the same CUDA toolkit, driver-reported power/clock:
+Matched A/B/B/A `--bench 45` of the final 0.5.8 build against the 0.5.7 release source compiled for the card's
+architecture with the same CUDA toolkit (CUDA 13.4; CUDA 13.3 on the CMP 170HX host), automatic defaults on both
+sides, same card and cap, driver-reported power/clock (the series further down used 30 s arms):
 
 | GPU | Power cap | 0.5.7 default | 0.5.8 default | Gain | SM clock 0.5.7 → 0.5.8 | Power 0.5.7 → 0.5.8 |
 |---|---:|---:|---:|---:|---|---|
-| RTX 5090 (sm_120) | 600 W | 42.3 MH/s | **63.7 MH/s** | +51 % | 2660 → 2715 MHz (capped) | 600 → 600 W |
-| RTX 5090 | 420 W | 32.8 MH/s | **46.9 MH/s** | +43 % | 2050 → 2125 MHz (capped) | 420 → 420 W |
-| RTX 5080 (sm_120) | 360 W | 22.1 MH/s | **33.0 MH/s** | +50 % | 2775 → 2790 MHz | 350 → 339 W |
-| RTX 3070 (sm_86) | 240 W | 7.6 MH/s | **11.5 MH/s** | +51 % | 1826 → 1861 MHz (capped) | 239 → 239 W |
-| CMP 170HX (sm_80, 74 SMs) | 250 W | 7.6 MH/s | **13.3 MH/s** | +75 % | 1410 → 1410 MHz | 179 → 199 W |
+| RTX 5090 (sm_120) | 600 W | 42.3 MH/s | **64.0 MH/s** | +51 % | 2665 → 2700 MHz (capped) | 600 → 600 W |
+| RTX 5090 | 420 W | 32.7 MH/s | **49.9 MH/s** | +53 % | 2045 → 2105 MHz (capped) | 420 → 420 W |
+| RTX 5080 (sm_120) | 360 W | 22.05 MH/s | **33.04 MH/s** | +50 % | 2770 → 2790 MHz | 360 → 339 W |
+| RTX 3070 (sm_86) | 240 W | 7.65 MH/s | **11.49 MH/s** | +50 % | 1828 → 1854 MHz (capped) | 239 → 238 W |
+| CMP 170HX (sm_80, 74 SMs) | 250 W | 7.60 MH/s | **13.34 MH/s** | +76 % | 1410 → 1410 MHz | 180 → 198 W |
 
 Series on the RTX 5090 at 600 W, `--bench 30`: comba alone (`fe32c_wnaf_lb2_c`) 59.0–60.5; + cofactor fold
 60.3–60.6; + split normalisation 62.4–63.1; + single-chain squares 63.9–64.2; h2c kernel 3 blocks/SM 63.7–64.0 vs
@@ -543,6 +544,7 @@ Tried and dropped (RTX 5090 unless noted):
 Correctness for every variant on each architecture (sm_120 on the 5090 and 5080, sm_86 on the 3070, sm_80 on the CMP 170HX):
 the 16 node vectors, `--fetest` (128,000 random field checks), 512 independent VRF vectors across 256 keys through the real
 pipeline, `--verify` (identical hit sets, 58 dense launch shapes / 5,189 complete outputs against the bounded reference
-with its 12-pass retry policy) and live pool mining with accepted shares and no rejects. The A100 and H100 keep their 0.5.7
+with its 12-pass retry policy) and live pool mining with the final build: RTX 5090 at 600 W, 10 minutes, 63.6 MH/s average, 22 shares accepted, 0 rejected;
+RTX 5080, 8 minutes, 32.9 MH/s, 18 accepted, 0 rejected. The A100 and H100 keep their 0.5.7
 profiles: the new kernels were not measured there (`--autotune` or `--variant fe32c_wnaf_s16_c` tries them).
 Ada and Turing default to the new variant with the first-start quick tune, which now also includes it.

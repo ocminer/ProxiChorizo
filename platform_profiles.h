@@ -4,7 +4,7 @@
 
 struct Platform { int major, minor; const char *variant; int threads, iters, blocksPerSM; bool measured; const char *note; };
 static const Platform PLATFORMS[] = {
-    { 12, -1, "fe32c_wnaf_s16_c", 256, 1, 128, true,  "Blackwell (RTX 50xx, RTX PRO 6000): 0.5.8 comba field arithmetic, split normalisation (63.7 MH/s on a 5090 at 600 W, 33.0 on a 5080)" },
+    { 12, -1, "fe32c_wnaf_s16_c", 256, 1, 128, true,  "Blackwell (RTX 50xx, RTX PRO 6000): 0.5.8 comba field arithmetic, split normalisation (64.0 MH/s on a 5090 at 600 W, 33.0 on a 5080)" },
     {  9, -1, "fe32_w4_lb2_c",    256, 1, 128, true,  "Hopper (H100): the 4-bit table beats wNAF here (21.2 vs 19.3 MH/s on an H100 SXM), large launches; 0.5.8 kernels not measured on Hopper" },
     {  8,  9, "fe32c_wnaf_s16_c", 256, 1, 128, false, "Ada (RTX 40xx): not measured here, tuned on first start" },
     {  8,  6, "fe32c_wnaf_s16_c", 256, 1, 128, true,  "Ampere GA10x (RTX 30xx): 0.5.8 comba field arithmetic, split normalisation (11.5 MH/s on a 3070)" },

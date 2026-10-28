@@ -8,11 +8,11 @@ Matched A/B/B/A measurements against the 0.5.7 release source on the same card, 
 
 | GPU | Power cap | 0.5.7 | 0.5.8 | Gain |
 |---|---:|---:|---:|---:|
-| RTX 5090 | 600 W | 42.3 MH/s | 63.7 MH/s | **+51 %** |
-| RTX 5090 | 420 W | 32.8 MH/s | 46.9 MH/s | **+43 %** |
+| RTX 5090 | 600 W | 42.3 MH/s | 64.0 MH/s | **+51 %** |
+| RTX 5090 | 420 W | 32.7 MH/s | 49.9 MH/s | **+53 %** |
 | RTX 5080 | 360 W | 22.1 MH/s | 33.0 MH/s | **+50 %** |
-| RTX 3070 | 240 W | 7.6 MH/s | 11.5 MH/s | **+51 %** |
-| CMP 170HX | 250 W | 7.6 MH/s | 13.3 MH/s | **+75 %** |
+| RTX 3070 | 240 W | 7.65 MH/s | 11.49 MH/s | **+50 %** |
+| CMP 170HX | 250 W | 7.6 MH/s | 13.3 MH/s | **+76 %** |
 
 Benchmark rates (`--bench`) at the listed caps; pool rates vary with job changes, clocks, cooling and the mining key. The 5090 and 3070 run into their power caps; the 5080 and CMP 170HX do not. See PLATFORMS.md (round 10) for the series, the profile and the rejected experiments.
 
@@ -38,4 +38,4 @@ Docker, NVIDIA only: `ocminersupr/proxichorizo:0.5.8` and `:latest`, mirrored at
 
 Replace the miner and remove old `--variant`, `--blocks` and `--iters` overrides to get the new defaults; a cached first-start tune from an older version is re-measured automatically. Linux builds target glibc 2.31; NVIDIA builds need a driver compatible with CUDA 12.9 and the GPU.
 
-Every kernel variant passed, on sm_120 (RTX 5090, RTX 5080), sm_86 (RTX 3070) and sm_80 (CMP 170HX): the node's VRF vectors, 128,000 randomized field checks, 512 independent VRF vectors across 256 keys through the real pipeline, identical hit sets and complete-output comparisons over 58 dense launch shapes, and live pool mining with accepted shares and no rejects. The Windows build is validated by compilation, package checks and executable startup on CI; Windows GPU hardware execution has not been tested.
+Every kernel variant passed, on sm_120 (RTX 5090, RTX 5080), sm_86 (RTX 3070) and sm_80 (CMP 170HX): the node's VRF vectors, 128,000 randomized field checks, 512 independent VRF vectors across 256 keys through the real pipeline, identical hit sets and complete-output comparisons over 58 dense launch shapes, and live pool mining with accepted shares and no rejects (RTX 5090: 10 minutes, 22 accepted; RTX 5080: 8 minutes, 18 accepted). The Windows build is validated by compilation, package checks and executable startup on CI; Windows GPU hardware execution has not been tested.
