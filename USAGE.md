@@ -34,21 +34,31 @@ to your PROX address by the pool (PPLNS, 1 % fee) and paid out to it.
    ```
    `--name` is the worker name shown on the pool; use a different one per rig/GPU.
 
-4. After a minute the log shows lines like
+4. The miner prints a start-up banner (version, licence, pool, worker, the GPUs with
+   bus id and kernel) and then, every 30 seconds, one line per GPU and a total:
    ```
-   GPU 0: 16.90 MH/s avg over 30s | in kernel 95% ... | idle: no job 4%, stale 0%
-   job 1792…: slot 11234, k=28, ttl 9680 ms
+   12:04:31 GPU #0: RTX PRO 6000 Blackwell Server Edition [05:00.0] 63.52 MH/s, 73C, 548 W, 2422 MHz, fan n/a
+   12:04:31 GPU #1: RTX PRO 6000 Blackwell Server Edition [06:00.0] 63.47 MH/s, 75C, 555 W, 2422 MHz, fan n/a
+   12:04:31 Total: 253.95 MH/s on 4/4 GPUs | accepted 61, rejected 0, stale 1 | job 1792 k=28 | uptime 00:10:30
+   12:04:33 GPU #2: share accepted (62/63)
+   job 1793: slot 11235, k=28, ttl 9680 ms
    ```
-   and the pool's dashboard lists your worker. Shares are accepted silently and counted in
-   the 30-second rate line; a rejected share is logged.
+   Accepted shares are green, rejected ones red, warnings yellow; colours switch off by
+   themselves when the output is not a terminal (log files stay plain), or with `--no-color`.
+   `--quiet` keeps only the total line, job changes, warnings and errors; `--log-interval 10`
+   changes the cadence; `--verbose` adds kernel occupancy and idle diagnostics per GPU.
 
-Several GPUs in one rig: run one process per GPU — it gives the steadiest rates and the
-pool hands every worker its own nonce range:
-```bash
-CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0 ./proxichorizo ... --name rig1-gpu0 &
-CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=1 ./proxichorizo ... --name rig1-gpu1 &
-```
-(or one process with `--gpus 0,1`; each GPU still searches its own range).
+**Several GPUs in one rig: start the miner once, without any GPU argument.** It takes every
+GPU in the machine in PCI bus order (`GPU #0 … GPU #7`, the numbers nvidia-smi shows), runs
+them from one process and gives each GPU its own nonce range. `-d 0,1,2,3` (the same as
+`--gpus` / `--devices`) restricts it to those cards. A GPU that fails with a device error is
+marked dead and reported; the others keep mining (the process exits only when no GPU is left).
+
+**Temperature:** every GPU is watched by the miner itself. At `--max-temp` (default 88 °C core)
+or `--max-mem-temp` (default 92 °C memory, on cards that report it) only that GPU pauses, with
+a yellow log line, and resumes by itself once it has cooled 8 °C below the limit; the other
+GPUs keep mining. `--max-temp 0` disables it. The stats API shows a paused GPU as
+`"status":"paused","reason":"thermal"`.
 
 Instead of `--key-file` you may pass the key as `--seed-hex <first 64 hex chars of
 "private_key" in proxima.key>` or in the environment variable `NONCE_SEEKER_SEED` —
@@ -140,13 +150,26 @@ about half of that). `--iters 8` is the best launch geometry on every AMD card m
 --token-file FILE    read the token from a file instead (keeps it off the command line); PROXI_TOKEN in the environment works too
 --key-file FILE      unencrypted proxima.key (or --seed-hex HEX, or env NONCE_SEEKER_SEED)
 --name NAME          worker name shown by the pool (default proxichorizo-<pid>)
---gpus 0,1           GPUs to use (default all; CUDA order, set CUDA_DEVICE_ORDER=PCI_BUS_ID for PCI order)
+-d 0,1,2,3           GPUs to use (default: all of them, one process, numbered in PCI bus order like nvidia-smi;
+                     --gpus and --devices are the same option)
 --api-bind [H:]PORT  statistics: JSON at http://H:PORT/, mmpOS line at /mmpos (default off)
+--max-temp N         pause a GPU at N C core temperature, resume 8 C lower (default 88; 0 = off); only that GPU pauses
+--max-mem-temp N     the same for the memory temperature where the driver reports one (default 92; 0 = off)
+--log-interval N     seconds between the per-GPU and total lines (default 30)
+--quiet              only the total line, job changes, warnings and errors
+--verbose            kernel occupancy and idle diagnostics on the per-GPU lines
+--no-color           plain output (automatic when stderr is not a terminal or NO_COLOR is set)
 --autotune [SECS]    try every kernel variant on each GPU first, use the fastest (6 s per trial)
 --variant NAME       force one kernel variant (--list-variants); default: per-GPU-generation table
 --threads N --iters N --blocks N   launch geometry (defaults from the table)
 --bench [SECS]       measure the hashrate and exit      --selftest vectors.json   verify the math
 ```
+
+The stats API (`--api-bind`) answers `GET /` with JSON: `hashrate` (H/s), `uptime`, `shares`
+(`accepted`, `rejected`, `stale`), `job_id`, `job_k`, `gpus_active`, `max_temp`, `max_mem_temp`
+and one `gpus[]` entry per GPU with `id`, `cuda_device`, `name`, `bus_id`, `bus_number`,
+`hashrate`, `temp`, `mem_temp`, `fan`, `power`, `clock`, `status` (`mining`, `paused`, `dead`),
+`paused`, `reason`, `accepted`, `rejected`, `stale`. Fields are only ever added, never removed.
 
 Typical rates: RTX 5090 ≈ 29 MH/s, RTX 5080 ≈ 21 MH/s, RTX 3070 ≈ 7.4 MH/s, CMP 170HX ≈ 7 MH/s. The
 work is pure integer ALU; memory, PCIe link width and risers do not matter.
@@ -167,8 +190,14 @@ line shows the kernel, the launch shape and the reason.
   the token (pool) or to the wallet (solo). Use the key the pool gave you / the wallet's key.
 - `no job (miner idle)` for long — the job server is between rounds or unreachable; check
   the URL and the pool status page.
-- Low in-kernel percentage — too little work per launch: raise `--iters` (4 on most GPUs,
-  2 on a CMP 170HX), or run one process per GPU.
+- Low kernel percentage in `--verbose` lines — too little work per launch: raise `--iters`
+  (4 on most GPUs, 2 on a CMP 170HX).
+- `GPU #n: … reaches the limit … paused` — that card is too hot; it resumes by itself 8 °C
+  below the limit while the others keep mining. Improve the cooling or lower its power cap;
+  `--max-temp` raises the limit if your card is rated for it.
+- `GPU #n: CUDA error … this GPU is disabled` — a device error (Xid, fallen off the bus) on
+  one card; the others keep mining. Check `dmesg`/`nvidia-smi` and restart the miner once the
+  card is back. The process exits with code 2 only when no working GPU is left.
 - Windows: `start.cmd` expects `proxima.key` in the unpacked folder; `start.ps1 -KeyFile` points elsewhere.
 
 The source and issue tracker: https://github.com/ocminer/ProxiChorizo

@@ -325,12 +325,14 @@ static void gpu_worker(Shared &sh, GpuCfg cfg) {
     uint64_t stride = (uint64_t)cfg.groups * cfg.v->wg;
     Scratch *sc = scratch_alloc(pr, stride * (size_t)cfg.iters);
     logln("GPU " + std::to_string(cfg.dev) + " " + dev_label(d) + ": variant " + cfg.v->name + ", " + std::to_string(cfg.groups) + "x" + std::to_string(cfg.v->wg) + " work-items, " + std::to_string(cfg.iters) + " nonces/item/launch");
-    auto t_last = std::chrono::steady_clock::now(); uint64_t local_attempts = 0;
-    double idle_nojob = 0, idle_stale = 0, kernel_ms = 0; int launches = 0;
     while (!sh.stop) {
+        if (!thermal_gate(sh, cfg.ordinal)) {
+            { std::lock_guard<std::mutex> l(sh.mu); sh.gpus[cfg.ordinal].win_idle_ms += 1000; }
+            std::this_thread::sleep_for(std::chrono::seconds(1)); continue;
+        }
         Job j; { std::lock_guard<std::mutex> l(sh.mu); j = sh.job; }
         if (j.id == 0 || j.stale) {
-            if (j.id == 0) idle_nojob += 10; else idle_stale += 10;
+            { std::lock_guard<std::mutex> l(sh.mu); sh.gpus[cfg.ordinal].win_idle_ms += 10; }
             std::this_thread::sleep_for(std::chrono::milliseconds(10)); continue;
         }
         if (j.id != working) { working = j.id; nonce = j.has_base ? (j.nonce_base | ((uint64_t)(cfg.ordinal & 0xff) << 40)) : rng(); }
@@ -345,10 +347,11 @@ static void gpu_worker(Shared &sh, GpuCfg cfg) {
         cl_uint zero = 0; CL_CHECK(clEnqueueFillBuffer(d.q, d_n, &zero, 4, 0, 4, 0, nullptr, nullptr));
         prog_mine(pr, d_job, nonce, stride, cfg.iters, d_hits, d_n, sc);
         CL_CHECK(clFinish(d.q));
-        kernel_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - k0).count(); launches++;
+        double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - k0).count();
         uint64_t done = stride * cfg.iters;
         nonce += done;
-        sh.attempts += done; local_attempts += done;
+        sh.attempts += done;
+        { std::lock_guard<std::mutex> l(sh.mu); auto &g = sh.gpus[cfg.ordinal]; g.win_attempts += done; g.win_kernel_ms += ms; g.win_launches++; }
         cl_uint n = 0; CL_CHECK(clEnqueueReadBuffer(d.q, d_n, CL_TRUE, 0, 4, &n, 0, nullptr, nullptr));
         if (n > 0) {
             if (n > MAX_HITS) n = MAX_HITS;
@@ -358,19 +361,8 @@ static void gpu_worker(Shared &sh, GpuCfg cfg) {
                 Job cur; { std::lock_guard<std::mutex> l(sh.mu); cur = sh.job; }
                 if (cur.id != j.id || cur.stale) break;
                 if (cur.has_beat && memcmp(hits[i].beta, cur.beat, 64) >= 0) continue;
-                submit(sh, cur, hits[i].nonce, hits[i].beta, sh.attempts.exchange(0));
+                submit(sh, cur, hits[i].nonce, hits[i].beta, sh.attempts.exchange(0), cfg.ordinal);
             }
-        }
-        auto now = std::chrono::steady_clock::now();
-        if (now - t_last >= std::chrono::seconds(30)) {
-            double s = std::chrono::duration<double>(now - t_last).count();
-            char line[300]; snprintf(line, sizeof line, "GPU %d: %.2f MH/s avg over %.0fs | in kernel %.0f%% (%d launches, %.1f ms each) | idle: no job %.0f%%, stale %.0f%%",
-                cfg.dev, local_attempts / s / 1e6, s, kernel_ms / 10 / s, launches, launches ? kernel_ms / launches : 0, idle_nojob / 10 / s, idle_stale / 10 / s);
-            std::string bus; { std::lock_guard<std::mutex> l(sh.mu); if ((size_t)cfg.ordinal < sh.gpus.size()) bus = sh.gpus[cfg.ordinal].bus; }
-            GpuSensors se = read_sensors(bus);
-            logln(line + sensors_str(se));
-            { std::lock_guard<std::mutex> l(sh.mu); if ((size_t)cfg.ordinal < sh.gpus.size()) { sh.gpus[cfg.ordinal].rate = local_attempts / s; sh.gpus[cfg.ordinal].sens = se; } }
-            t_last = now; local_attempts = 0; idle_nojob = idle_stale = kernel_ms = 0; launches = 0;
         }
     }
     scratch_free(sc); clReleaseMemObject(d_job); clReleaseMemObject(d_hits); clReleaseMemObject(d_n);
@@ -564,7 +556,7 @@ static void usage() {
         "  --seed-hex HEX     32-byte seed\n"
         "  --name NAME        seeker name in the pool's statistics (default proxichorizo-<pid>)\n"
         "  --api-bind [H:]P   stats API, JSON at http://H:P/ and the mmpOS line at /mmpos (default off)\n"
-        "  --gpus 0,1         devices to use (default all; --list-devices shows them); -d 0,1 is the same\n"
+        "  -d 0,1,2,3         GPUs to use; without it every GPU mines in one process (--list-devices shows them; --gpus/--devices are the same)\n"
         "  --variant NAME     kernel variant for all GPUs (default: per-GPU table; --list-variants)\n"
         "  --autotune [SECS]  measure every variant and iteration count on each GPU first (default 6s per trial)\n"
         "  --groups N --iters N   work-groups per launch (default 8 per compute unit) and nonces per work-item\n"
@@ -573,12 +565,44 @@ static void usage() {
         "  --fetest           randomized field-arithmetic test of every variant and exit\n"
         "  --verify-pipeline  complete compacted-pipeline output checks, including partial batches; exit\n"
         "  --verify           every variant over one nonce range at low difficulty must find identical hits; exit\n"
-        "  --bench [SECS]     measure the hashrate of the chosen variant and exit\n");
+        "%s"
+        "  --bench [SECS]     measure the hashrate of the chosen variant and exit\n", CONSOLE_USAGE);
+}
+
+// -d 0,1,2,3 (also "all"): device indices, each once, within the device count
+static bool parse_devices(const std::string &gpus, int ndev, std::vector<int> &devs) {
+    devs.clear();
+    if (gpus.empty() || gpus == "all") { for (int i = 0; i < ndev; i++) devs.push_back(i); return true; }
+    std::stringstream ss(gpus); std::string t;
+    while (std::getline(ss, t, ',')) {
+        while (!t.empty() && t.front() == ' ') t.erase(0, 1);
+        while (!t.empty() && t.back() == ' ') t.pop_back();
+        if (t.empty()) continue;
+        char *end = nullptr; long d = strtol(t.c_str(), &end, 10);
+        if (*end || d < 0 || d >= ndev) { fprintf(stderr, "-d %s: no GPU %s (this machine has %d, numbered 0..%d; --list-devices)\n", gpus.c_str(), t.c_str(), ndev, ndev - 1); return false; }
+        if (std::find(devs.begin(), devs.end(), (int)d) != devs.end()) continue;
+        devs.push_back((int)d);
+    }
+    if (devs.empty()) { fprintf(stderr, "-d %s selects no GPU\n", gpus.c_str()); return false; }
+    return true;
+}
+
+// Ctrl-C / SIGTERM: one summary line, then out
+static Shared *g_sh = nullptr;
+static void on_signal(int) {
+    if (g_sh) {
+        char b[200];
+        snprintf(b, sizeof b, "\n%s stopped: accepted %llu, rejected %llu, stale %llu, uptime %s\n", now_str().c_str(), (unsigned long long)g_sh->shares.load(),
+                 (unsigned long long)g_sh->rejected.load(), (unsigned long long)g_sh->stale.load(), fmt_uptime(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - g_sh->started).count()).c_str());
+        fputs(b, stderr); fflush(stderr);
+    }
+    _Exit(0);
 }
 
 int main(int argc, char **argv) {
     std::string proxi, token, keyfile, seedhex, name, selftest, gpus, variant, apiBind, kernelFile;
     int groups = 0, iters = 0; double bench = 0, autotuneSecs = 0; bool fetest = false, listVariants = false, listDevices = false, verify = false, verifyPipeline = false;
+    ConsoleOpts con;
     sock_init();
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
@@ -606,8 +630,10 @@ int main(int argc, char **argv) {
         else if (a == "--iters") { std::string s; next(s); iters = atoi(s.c_str()); }
         else if (a == "--bench") bench = optnum(20);
         else if (a == "--autotune") autotuneSecs = optnum(6);
-        else { usage(); return 1; }
+        else if (parse_console_opt(a, i, argc, argv, con)) {}
+        else { fprintf(stderr, "unknown option %s\n\n", a.c_str()); usage(); return 1; }
     }
+    console_setup(con);
     if (listVariants) { for (int v = 0; v < NVARIANTS; v++) printf("%s\n", VARIANTS[v].name); return 0; }
     if (!kernelFile.empty()) { std::ifstream f(kernelFile); if (!f) { fprintf(stderr, "cannot open %s\n", kernelFile.c_str()); return 1; } std::stringstream ss; ss << f.rdbuf(); g_kernel_src = ss.str(); }
     else g_kernel_src.assign((const char *)CL_SRC, CL_SRC_LEN);
@@ -615,8 +641,7 @@ int main(int argc, char **argv) {
     if (g_devs.empty()) { fprintf(stderr, "no OpenCL GPU found (is the OpenCL ICD installed? ROCm: /etc/OpenCL/vendors)\n"); return 2; }
     if (listDevices) { for (size_t i = 0; i < g_devs.size(); i++) printf("%zu: %s, %u CUs, bus %d, platform %s\n", i, dev_label(g_devs[i]).c_str(), g_devs[i].cus, g_devs[i].bus, g_devs[i].platname.c_str()); return 0; }
     std::vector<int> devs;
-    if (gpus.empty()) { for (size_t i = 0; i < g_devs.size(); i++) devs.push_back((int)i); }
-    else { std::stringstream ss(gpus); std::string t; while (std::getline(ss, t, ',')) { int d = atoi(t.c_str()); if (d < 0 || d >= (int)g_devs.size()) { fprintf(stderr, "no GPU %d\n", d); return 1; } devs.push_back(d); } }
+    if (!parse_devices(gpus, (int)g_devs.size(), devs)) return 1;
     const Variant *forced = nullptr;
     if (!variant.empty()) { forced = variantByName(variant); if (!forced) { fprintf(stderr, "unknown variant %s (--list-variants)\n", variant.c_str()); return 1; } }
 
@@ -685,6 +710,7 @@ int main(int argc, char **argv) {
         else fprintf(stderr, "GPU %d %s: %s x%d — %s\n", dv, dev_label(d).c_str(), cfg.v->name, cfg.iters, pl.note);
         char bus[32]; snprintf(bus, sizeof bus, "0000:%02x:00.0", d.bus);
         gstats.push_back(Shared::GpuStat{dv, cfg.ordinal, dev_label(d), bus, d.bus, 0.0});
+        { auto &g = gstats.back(); g.arch = std::to_string(d.cus) + " CUs"; g.variant = cfg.v->name; g.geometry = std::to_string(cfg.groups) + "x" + std::to_string(cfg.v->wg) + "x" + std::to_string(cfg.iters); }
         cfgs.push_back(cfg);
     }
     if (bench > 0) { for (auto &c : cfgs) run_bench(get_prog(g_devs[c.dev], c.v), pk, c.groups, c.iters, bench, true); return 0; }
@@ -694,11 +720,15 @@ int main(int argc, char **argv) {
     sh.base_url = proxi; if (!parse_url(proxi, sh.url)) return 1;
     sh.token = token; sh.name = name.empty() ? "proxichorizo-" + std::to_string(getpid()) : name;
     memcpy(sh.pk, pk, 32); memcpy(sh.scalar, scalar, 32);
-    sh.gpus = gstats; sh.api_bind = apiBind;
+    sh.gpus = gstats; sh.api_bind = apiBind; sh.con = con;
+    print_banner(sh, "OpenCL");
     logln("ProxiChorizo " PX_VERSION " (OpenCL): key " + hexs(pk, 32) + ", job server " + sh.url.host + ":" + std::to_string(sh.url.port) + ", " + std::to_string(devs.size()) + " GPU(s), name " + sh.name);
+    for (auto &g : sh.gpus) if (read_sensors(g.bus).temp < 0) log_warn(gpu_tag(g) + ": no temperature sensor readable (hwmon), the thermal limit is not enforced on it");
+    g_sh = &sh; signal(SIGINT, on_signal); signal(SIGTERM, on_signal);
     std::vector<std::thread> th;
     th.emplace_back(poller, std::ref(sh));
     th.emplace_back(reporter, std::ref(sh));
+    th.emplace_back(console, std::ref(sh));
     if (!apiBind.empty()) th.emplace_back(api_server, std::ref(sh));
     for (auto &c : cfgs) th.emplace_back(gpu_worker, std::ref(sh), c);
     for (auto &t : th) t.join();

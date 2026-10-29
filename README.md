@@ -55,12 +55,15 @@ code for H100. See the datacenter measurements in `PLATFORMS.md` for the tested 
 
 ## Usage
 ```
-./proxichorizo --proxi http://proxi.suprnova.cc:8100 --token YOUR_TOKEN --key-file proxima.key --name rig1     # pool (or --token-file FILE)
+./proxichorizo --proxi http://proxi.suprnova.cc:8100 --token YOUR_TOKEN --key-file proxima.key --name rig1     # pool (or --token-file FILE); every GPU, one process
+./proxichorizo ... -d 0,2                   # only these GPUs (PCI bus order, as nvidia-smi numbers them)
 ./proxichorizo --proxi http://your-node:8200 --token SEEKER_TOKEN --key-file proxima.key                        # solo, see USAGE.md
 ./proxichorizo --autotune --bench 10        # fastest kernel variant per GPU, then its hashrate
 ./proxichorizo --selftest vectors.json      # the math against the Proxima node's VRF vectors
 ./proxichorizo ... --api-bind 127.0.0.1:4078   # JSON statistics at /, mmpOS line at /mmpos
+./proxichorizo ... --max-temp 85 --log-interval 10 --quiet   # thermal limit per GPU (default 88 C, pauses only that card), console cadence
 ```
+Without a GPU argument the miner takes every GPU in the machine in one process; a GPU that overheats pauses alone and resumes when cool, a GPU with a device error is disabled alone. The console shows a start-up banner, per-GPU lines with temperature, power and clock, share results per GPU and a total line (colours on a terminal, plain text in logs).
 Measured (0.5.8, `--bench`, platform defaults): RTX 5090 ≈ 64 MH/s at 600 W / ≈ 50 at 420 W, RTX 5080 ≈ 33 MH/s, CMP 170HX ≈ 13 MH/s, RTX 3070 ≈ 11.5 MH/s; unchanged from earlier releases: RTX PRO 6000 ≈ 43 MH/s (0.5.6), H100 SXM ≈ 21.6 MH/s (0.5.7), A100 ≈ 12.7 MH/s (0.5.7), RTX A6000 ≈ 12 MH/s (0.5.6); one CPU core of the reference seeker ≈ 37 kH/s. See the [benchmarks](#benchmarks) below.
 **[USAGE.md](USAGE.md)** has the full guide: registering at the pool, solo mining with `proxi node mine`, HiveOS / MMPOS / SMOS flight sheets, Docker, Windows, every option, troubleshooting.
 

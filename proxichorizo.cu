@@ -16,14 +16,18 @@
 #include <random>
 #include <fstream>
 #include <sstream>
-#define PX_VERSION "0.5.8"
+#define PX_VERSION "0.5.9"
+#include <signal.h>
 // sockets: POSIX or Winsock behind four helpers
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <process.h>
+#include <io.h>
 #pragma comment(lib, "ws2_32.lib")
+#define px_isatty(fd) _isatty(fd)
+#define px_fileno(f) _fileno(f)
 typedef SOCKET sock_t;
 typedef long long ssize_t;
 #define SOCK_INVALID INVALID_SOCKET
@@ -44,6 +48,8 @@ static void sock_timeout(sock_t s, int secs) { DWORD ms = (DWORD)secs * 1000; se
 #include <arpa/inet.h>
 typedef int sock_t;
 #define SOCK_INVALID (-1)
+#define px_isatty(fd) isatty(fd)
+#define px_fileno(f) fileno(f)
 static void sock_init() {}
 static void sock_close(sock_t s) { close(s); }
 static void sock_timeout(sock_t s, int secs) { struct timeval tv = { secs, 0 }; setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv); setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv); }
@@ -393,8 +399,76 @@ static std::string now_str() {
     auto t = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
     char buf[32]; strftime(buf, sizeof buf, "%H:%M:%S", localtime(&t)); return buf;
 }
+// ---- console -----------------------------------------------------------------
+// Every line goes to stderr with a HH:MM:SS prefix (HiveOS/mmpOS tee it into the
+// miner log). Colours are ANSI escapes around the message body only: on when
+// stderr is a terminal, off with --no-color, NO_COLOR in the environment, or when
+// the output is a pipe or file, so logs stay plain text.
 static std::mutex g_log_mu;
+static bool g_color = false;
+#define C_GREEN "\033[32m"
+#define C_RED "\033[31m"
+#define C_YELLOW "\033[33m"
+#define C_CYAN "\033[36m"
+#define C_BOLD "\033[1m"
+#define C_RESET "\033[0m"
 static void logln(const std::string &s) { std::lock_guard<std::mutex> l(g_log_mu); fprintf(stderr, "%s %s\n", now_str().c_str(), s.c_str()); }
+static void logc(const char *color, const std::string &s) {
+    if (!g_color) { logln(s); return; }
+    std::lock_guard<std::mutex> l(g_log_mu); fprintf(stderr, "%s %s%s" C_RESET "\n", now_str().c_str(), color, s.c_str());
+}
+static void log_ok(const std::string &s) { logc(C_GREEN, s); }
+static void log_err(const std::string &s) { logc(C_RED, s); }
+static void log_warn(const std::string &s) { logc(C_YELLOW, s); }
+// a banner line: no timestamp (the start-up block that ccminer/sgminer users expect)
+static void bannerln(const std::string &s) { std::lock_guard<std::mutex> l(g_log_mu); fprintf(stderr, "%s\n", s.c_str()); }
+struct ConsoleOpts { bool noColor = false, quiet = false, verbose = false; int logInterval = 30, maxTemp = 88, maxMemTemp = 92; };
+static const char *CONSOLE_USAGE =
+    "  --max-temp N       pause a GPU at N C core temperature, resume 8 C lower (default 88; 0 = off); only that GPU pauses\n"
+    "  --max-mem-temp N   the same for the memory temperature where the driver reports one (default 92; 0 = off)\n"
+    "  --log-interval N   seconds between the per-GPU and total hashrate lines (default 30)\n"
+    "  --quiet            only the total line, job changes, warnings and errors (no per-GPU or per-share lines)\n"
+    "  --verbose          append kernel occupancy and idle diagnostics to the per-GPU lines\n"
+    "  --no-color         plain output (colours are off anyway when stderr is not a terminal or NO_COLOR is set)\n";
+// consumes --no-color/--quiet/--verbose/--log-interval/--max-temp/--max-mem-temp; i advances over a value
+static bool parse_console_opt(const std::string &a, int &i, int argc, char **argv, ConsoleOpts &o) {
+    auto nextint = [&](int dflt) { if (i + 1 < argc) return atoi(argv[++i]); return dflt; };
+    if (a == "--no-color" || a == "--no-colour") o.noColor = true;
+    else if (a == "--quiet" || a == "-q") o.quiet = true;
+    else if (a == "--verbose") o.verbose = true;
+    else if (a == "--log-interval") o.logInterval = std::max(1, nextint(30));
+    else if (a == "--max-temp") o.maxTemp = nextint(88);
+    else if (a == "--max-mem-temp") o.maxMemTemp = nextint(92);
+    else return false;
+    return true;
+}
+static void console_setup(const ConsoleOpts &o) {
+    g_color = !o.noColor && px_isatty(px_fileno(stderr)) && getenv("NO_COLOR") == nullptr;
+#ifdef _WIN32
+    if (g_color) {  // Windows 10+: ANSI escapes need virtual terminal processing on the console
+        HANDLE h = GetStdHandle(STD_ERROR_HANDLE); DWORD mode = 0;
+        if (h == INVALID_HANDLE_VALUE || !GetConsoleMode(h, &mode) || !SetConsoleMode(h, mode | 0x0004)) g_color = false;
+    }
+#endif
+}
+static std::string fmt_uptime(uint64_t secs) {
+    char b[48];
+    if (secs >= 86400) snprintf(b, sizeof b, "%llud %02llu:%02llu:%02llu", (unsigned long long)secs / 86400, (unsigned long long)secs % 86400 / 3600, (unsigned long long)secs % 3600 / 60, (unsigned long long)secs % 60);
+    else snprintf(b, sizeof b, "%02llu:%02llu:%02llu", (unsigned long long)secs / 3600, (unsigned long long)secs % 3600 / 60, (unsigned long long)secs % 60);
+    return b;
+}
+// "NVIDIA GeForce RTX 5090" -> "RTX 5090"; AMD names are kept as the driver gives them
+static std::string short_gpu_name(const std::string &n) {
+    std::string s = n;
+    for (const char *p : { "NVIDIA ", "GeForce ", "AMD ", "Radeon " }) if (s.rfind(p, 0) == 0) s = s.substr(strlen(p));
+    return s;
+}
+// "0000:1d:00.0" -> "1D:00.0"
+static std::string short_bus(const std::string &bus) {
+    std::string s = bus.size() > 5 && bus[4] == ':' ? bus.substr(5) : bus;
+    for (auto &c : s) c = (char)toupper((unsigned char)c);
+    return s;
+}
 
 // host SHA-512 (for key expansion) — tiny, portable
 static const uint64_t K512[80] = {
@@ -546,18 +620,22 @@ struct Job {
 // Read where the driver offers them: NVML loaded at run time (NVIDIA, Linux and
 // Windows; no build dependency) or the kernel's hwmon files under the device's
 // PCI node (AMD on Linux). A GPU without either simply reports no sensors.
-struct GpuSensors { int temp = -1; int fan = -1; double power = -1; };  // degrees C, percent, watts; -1 = unknown
+struct GpuSensors { int temp = -1; int fan = -1; double power = -1; int mem_temp = -1; int clock = -1; };  // degrees C, percent, watts, degrees C, MHz; -1 = unknown
 #ifndef _WIN32
 #include <dlfcn.h>
 #include <dirent.h>
 #endif
 namespace nvml {
 typedef void *Dev;
+// nvmlFieldValue_t as laid out by NVML (40 bytes): memory temperature is field 83
+struct FieldValue { unsigned fieldId; unsigned scopeId; long long timestamp; long long latencyUsec; int valueType; int nvmlReturn; union { double d; unsigned u; unsigned long long ull; long long ll; } value; };
 static int (*Init)() = nullptr;
 static int (*ByBus)(const char *, Dev *) = nullptr;
 static int (*Temp)(Dev, int, unsigned *) = nullptr;
 static int (*Fan)(Dev, unsigned *) = nullptr;
 static int (*Power)(Dev, unsigned *) = nullptr;
+static int (*Clock)(Dev, int, unsigned *) = nullptr;
+static int (*Fields)(Dev, int, FieldValue *) = nullptr;
 static std::once_flag once; static bool ok = false;
 static void load() {
 #ifdef _WIN32
@@ -575,6 +653,8 @@ static void load() {
     Temp = (int (*)(Dev, int, unsigned *))sym("nvmlDeviceGetTemperature");
     Fan = (int (*)(Dev, unsigned *))sym("nvmlDeviceGetFanSpeed");
     Power = (int (*)(Dev, unsigned *))sym("nvmlDeviceGetPowerUsage");
+    Clock = (int (*)(Dev, int, unsigned *))sym("nvmlDeviceGetClockInfo");
+    Fields = (int (*)(Dev, int, FieldValue *))sym("nvmlDeviceGetFieldValues");
     ok = Init && ByBus && Temp && Init() == 0;
 }
 static bool read(const std::string &bus, GpuSensors &s) {
@@ -585,6 +665,11 @@ static bool read(const std::string &bus, GpuSensors &s) {
     if (Temp(d, 0 /* NVML_TEMPERATURE_GPU */, &v) == 0) s.temp = (int)v;
     if (Fan && Fan(d, &v) == 0) s.fan = (int)v;           // fails on passive (server) cards: stays -1
     if (Power && Power(d, &v) == 0) s.power = v / 1000.0;  // milliwatts
+    if (Clock && Clock(d, 1 /* NVML_CLOCK_SM */, &v) == 0) s.clock = (int)v;
+    if (Fields) {  // memory temperature: HBM/GDDR6X cards report it, most consumer cards do not (stays -1)
+        FieldValue f; memset(&f, 0, sizeof f); f.fieldId = 83 /* NVML_FI_DEV_MEMORY_TEMP */;
+        if (Fields(d, 1, &f) == 0 && f.nvmlReturn == 0 && f.value.u > 0 && f.value.u < 200) s.mem_temp = (int)f.value.u;
+    }
     return s.temp >= 0 || s.power >= 0;
 }
 }
@@ -601,22 +686,26 @@ static bool sysfs_sensors(const std::string &bus, GpuSensors &s) {
     if (rd("fan1_input", v) && rd("fan1_max", m) && m > 0) s.fan = (int)(v * 100 / m + 0.5);
     else if (rd("pwm1", v)) s.fan = (int)(v / 2.55 + 0.5);
     if (rd("power1_average", v) || rd("power1_input", v)) s.power = v / 1e6;  // microwatts
+    if (rd("temp3_input", v)) s.mem_temp = (int)(v / 1000);                     // amdgpu: temp1 edge, temp2 junction, temp3 memory
+    if (rd("freq1_input", v)) s.clock = (int)(v / 1e6);                         // Hz
     return s.temp >= 0 || s.power >= 0;
 #endif
 }
 static GpuSensors read_sensors(const std::string &bus) { GpuSensors s; if (!nvml::read(bus, s)) sysfs_sensors(bus, s); return s; }
-// " | 61C, fan 45%, 318 W" for the 30-second line; empty without sensors
+// "65C, 533 W, 2422 MHz, fan n/a" (memory temperature as "65C/72C mem" where reported) for the per-GPU line
 static std::string sensors_str(const GpuSensors &s) {
-    if (s.temp < 0 && s.power < 0) return "";
-    char b[64]; std::string o = " |";
-    if (s.temp >= 0) { snprintf(b, sizeof b, " %dC", s.temp); o += b; }
-    if (s.fan >= 0) { snprintf(b, sizeof b, ", fan %d%%", s.fan); o += b; }
-    if (s.power >= 0) { snprintf(b, sizeof b, ", %.0f W", s.power); o += b; }
+    char b[96]; std::string o;
+    if (s.temp >= 0) { snprintf(b, sizeof b, "%dC", s.temp); o += b; if (s.mem_temp >= 0) { snprintf(b, sizeof b, "/%dC mem", s.mem_temp); o += b; } }
+    else o += "temp n/a";
+    if (s.power >= 0) { snprintf(b, sizeof b, ", %.0f W", s.power); o += b; } else o += ", power n/a";
+    if (s.clock >= 0) { snprintf(b, sizeof b, ", %d MHz", s.clock); o += b; }
+    if (s.fan >= 0) { snprintf(b, sizeof b, ", fan %d%%", s.fan); o += b; } else o += ", fan n/a";
     return o;
 }
 static std::string sensors_json(const GpuSensors &s) {
     auto num = [](double v, bool f) { if (v < 0) return std::string("null"); char b[32]; snprintf(b, sizeof b, f ? "%.1f" : "%.0f", v); return std::string(b); };
-    return ",\"temp\":" + num(s.temp, false) + ",\"fan\":" + num(s.fan, false) + ",\"power\":" + num(s.power, true);
+    return ",\"temp\":" + num(s.temp, false) + ",\"fan\":" + num(s.fan, false) + ",\"power\":" + num(s.power, true) +
+           ",\"mem_temp\":" + num(s.mem_temp, false) + ",\"clock\":" + num(s.clock, false);
 }
 
 struct Shared {
@@ -625,17 +714,30 @@ struct Shared {
     std::atomic<uint64_t> attempts{0}; // since last report
     std::atomic<uint64_t> solutions{0};
     std::atomic<uint64_t> shares{0};   // pool shares accepted (results answered without a beat)
-    std::atomic<uint64_t> rejected{0};
+    std::atomic<uint64_t> rejected{0}; // answered as not accepted (422 or accepted:false)
+    std::atomic<uint64_t> stale{0};    // 409: the pool had moved on to the next job
     std::atomic<bool> stop{false};
     std::string base_url; Url url; std::string token; std::string name;
     uint8_t pk[32];
     uint8_t scalar[32];
-    // for the stats API (--api-bind): one entry per mining GPU, rate in H/s
-    struct GpuStat { int dev; int ordinal; std::string name; std::string bus; int bus_num; double rate; GpuSensors sens; };
+    // one entry per selected GPU: for the console lines and the stats API (--api-bind), rate in H/s.
+    // The worker adds to the win_* fields after every launch; the console thread turns them into
+    // the rate of the last interval. paused/dead/reason carry the thermal pause and device failures.
+    struct GpuStat {
+        int dev; int ordinal; std::string name; std::string bus; int bus_num; double rate; GpuSensors sens;
+        std::string arch, variant, geometry;   // for the banner: "sm_120", kernel variant, "23552x256x1"
+        uint64_t win_attempts = 0; double win_kernel_ms = 0, win_idle_ms = 0; int win_launches = 0;
+        uint64_t accepted = 0, rejected = 0, stale = 0;
+        bool paused = false, dead = false; std::string reason;
+        std::chrono::steady_clock::time_point sens_at{}, paused_at{};
+    };
     std::vector<GpuStat> gpus;
     std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
     std::string api_bind;
+    ConsoleOpts con;                   // thermal limits and console options
 };
+// console wording for one GPU: "GPU #3" by its device index (nvidia-smi order under PCI_BUS_ID)
+static std::string gpu_tag(const Shared::GpuStat &g) { return "GPU #" + std::to_string(g.dev); }
 
 static void install_job(Shared &sh, const std::string &body) {
     uint64_t id = 0; json_u64(body, "id", id);
@@ -696,57 +798,187 @@ static void poller(Shared &sh) {
     }
 }
 
+// the pool's hashrate accounting: attempts since the last report, once a second
 static void reporter(Shared &sh) {
-    uint64_t carried = 0; auto win_start = std::chrono::steady_clock::now(); uint64_t win_attempts = 0;
+    uint64_t carried = 0;
     while (!sh.stop) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
         uint64_t n = sh.attempts.exchange(0) + carried;
-        win_attempts += n - carried;
         uint64_t id; { std::lock_guard<std::mutex> l(sh.mu); id = sh.job.id; }
         std::string body = "{\"id\":" + std::to_string(id) + ",\"attempts\":" + std::to_string(n) + ",\"seeker\":\"" + sh.name + "\"}";
         HttpResp r = http_do(sh.url, "POST", "/seeker/report", body, sh.token, 10);
         carried = (r.err.empty() && r.status / 100 == 2) ? 0 : n;
-        auto el = std::chrono::steady_clock::now() - win_start;
-        if (el >= std::chrono::seconds(10)) {
-            double secs = std::chrono::duration<double>(el).count();
-            char line[200]; snprintf(line, sizeof line, "job %llu: %.0f H/s (%.2f MH/s), %llu shares (%llu rejected), %llu solo solutions", (unsigned long long)id, win_attempts / secs, win_attempts / secs / 1e6,
-                (unsigned long long)sh.shares.load(), (unsigned long long)sh.rejected.load(), (unsigned long long)sh.solutions.load());
-            if (id != 0) logln(line);
-            win_start = std::chrono::steady_clock::now(); win_attempts = 0;
-        }
     }
 }
 
-static void submit(Shared &sh, const Job &j, uint64_t nonce, const uint8_t beta[64], uint64_t attempts) {
+// "GPU #0: RTX PRO 6000 Blackwell Server Edition [1D:00.0] 63.52 MH/s, 65C, 533 W, 2422 MHz, fan n/a"
+static std::string gpu_line(const Shared::GpuStat &g, double secs, bool verbose) {
+    char b[160]; std::string o = gpu_tag(g) + ": " + short_gpu_name(g.name) + " [" + short_bus(g.bus) + "] ";
+    if (g.dead) return o + "DEAD (" + g.reason + ")";
+    if (g.paused) { o += "PAUSED (" + g.reason + ", " + fmt_uptime((uint64_t)std::chrono::duration<double>(std::chrono::steady_clock::now() - g.paused_at).count()) + ") "; }
+    else { snprintf(b, sizeof b, "%.2f MH/s, ", g.rate / 1e6); o += b; }
+    o += sensors_str(g.sens);
+    if (verbose && secs > 0) {
+        snprintf(b, sizeof b, " | kernel %.0f%%, %d launches x %.1f ms, idle %.0f%%", g.win_kernel_ms / 10 / secs, g.win_launches, g.win_launches ? g.win_kernel_ms / g.win_launches : 0.0, g.win_idle_ms / 10 / secs);
+        o += b;
+    }
+    return o;
+}
+// the periodic console block: one line per GPU, then the total with the share counters and the uptime
+static void console(Shared &sh) {
+    auto last = std::chrono::steady_clock::now();
+    while (!sh.stop) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        auto now = std::chrono::steady_clock::now();
+        if (now - last < std::chrono::seconds(sh.con.logInterval)) continue;
+        double secs = std::chrono::duration<double>(now - last).count(); last = now;
+        std::vector<Shared::GpuStat> snap; uint64_t id, k; int alive = 0;
+        {
+            std::lock_guard<std::mutex> l(sh.mu);
+            for (auto &g : sh.gpus) {
+                g.rate = g.dead ? 0 : g.win_attempts / secs;
+                snap.push_back(g);
+                g.win_attempts = 0; g.win_kernel_ms = g.win_idle_ms = 0; g.win_launches = 0;
+                if (!g.dead) alive++;
+            }
+            id = sh.job.id; k = sh.job.k;
+        }
+        double total = 0;
+        for (auto &g : snap) {
+            total += g.rate;
+            if (sh.con.quiet) continue;
+            if (g.dead) log_err(gpu_line(g, secs, sh.con.verbose));
+            else if (g.paused) log_warn(gpu_line(g, secs, sh.con.verbose));
+            else logln(gpu_line(g, secs, sh.con.verbose));
+        }
+        char b[256];
+        snprintf(b, sizeof b, "Total: %.2f MH/s on %d/%zu GPUs | accepted %llu, rejected %llu, stale %llu", total / 1e6, alive, snap.size(),
+                 (unsigned long long)sh.shares.load(), (unsigned long long)sh.rejected.load(), (unsigned long long)sh.stale.load());
+        std::string line = b;
+        if (sh.solutions.load()) line += ", solutions " + std::to_string(sh.solutions.load());
+        line += id ? " | job " + std::to_string(id) + " k=" + std::to_string(k) : " | no job";
+        line += " | uptime " + fmt_uptime(std::chrono::duration_cast<std::chrono::seconds>(now - sh.started).count());
+        if (id == 0) log_warn(line); else logc(C_BOLD, line);
+    }
+}
+
+// Thermal gate, called by the worker before every launch: refreshes this GPU's
+// sensors every 2 s and pauses only this GPU at --max-temp (core) or --max-mem-temp
+// (memory), resuming once it has cooled 8 C below the limit. Returns false while the
+// GPU must not launch. A GPU without a readable temperature is never paused.
+static bool thermal_gate(Shared &sh, int ordinal) {
+    auto now = std::chrono::steady_clock::now();
+    std::string bus;
+    {
+        std::lock_guard<std::mutex> l(sh.mu);
+        if ((size_t)ordinal >= sh.gpus.size()) return true;
+        auto &g = sh.gpus[ordinal];
+        if (now - g.sens_at < std::chrono::seconds(2)) return !g.paused;
+        bus = g.bus;
+    }
+    GpuSensors se = read_sensors(bus);
+    // test hook: PX_TEST_TEMP_OFFSET=<device>:<degrees> makes one GPU read that much hotter than it is
+    if (const char *e = getenv("PX_TEST_TEMP_OFFSET")) { int d = -1, off = 0; std::lock_guard<std::mutex> l(sh.mu); if (sscanf(e, "%d:%d", &d, &off) == 2 && d == sh.gpus[ordinal].dev && se.temp >= 0) se.temp += off; }
+    std::string msg; bool warn = false, paused;
+    {
+        std::lock_guard<std::mutex> l(sh.mu);
+        auto &g = sh.gpus[ordinal];
+        g.sens = se; g.sens_at = now;
+        int lim = sh.con.maxTemp, mlim = sh.con.maxMemTemp, d = 8;
+        bool hot = (lim > 0 && se.temp >= lim) || (mlim > 0 && se.mem_temp >= mlim);
+        bool cool = (lim <= 0 || se.temp < 0 || se.temp <= lim - d) && (mlim <= 0 || se.mem_temp < 0 || se.mem_temp <= mlim - d);
+        if (!g.paused && hot) {
+            g.paused = true; g.reason = "thermal"; g.paused_at = now; warn = true;
+            char b[160];
+            if (lim > 0 && se.temp >= lim) snprintf(b, sizeof b, "%dC core reaches the limit of %dC: paused, resumes below %dC (the other GPUs keep mining)", se.temp, lim, lim - d);
+            else snprintf(b, sizeof b, "%dC memory reaches the limit of %dC: paused, resumes below %dC (the other GPUs keep mining)", se.mem_temp, mlim, mlim - d);
+            msg = gpu_tag(g) + ": " + b;
+        } else if (g.paused && g.reason == "thermal" && cool) {
+            g.paused = false; g.reason.clear();
+            char b[120]; snprintf(b, sizeof b, "%dC: cooled down after %s, mining again", se.temp, fmt_uptime((uint64_t)std::chrono::duration<double>(now - g.paused_at).count()).c_str());
+            msg = gpu_tag(g) + ": " + b;
+        }
+        paused = g.paused;
+    }
+    if (!msg.empty()) { if (warn) log_warn(msg); else log_ok(msg); }
+    return !paused;
+}
+// a device error on one GPU: that GPU is marked dead and its worker ends, the others keep
+// mining; the process exits (code 2, for a restart wrapper) only when no GPU is left
+static void gpu_failed(Shared &sh, int ordinal, const std::string &what) {
+    int alive = 0; std::string tag;
+    {
+        std::lock_guard<std::mutex> l(sh.mu);
+        if ((size_t)ordinal < sh.gpus.size()) { auto &g = sh.gpus[ordinal]; g.dead = true; g.paused = false; g.reason = "device error"; g.rate = 0; tag = gpu_tag(g); }
+        for (auto &g : sh.gpus) if (!g.dead) alive++;
+    }
+    log_err(tag + ": " + what + " — this GPU is disabled" + (alive ? ", mining continues on " + std::to_string(alive) + " GPU(s)" : ""));
+    if (!alive) { log_err("no working GPU left, exiting"); fflush(stderr); exit(2); }
+}
+// start-up banner (ccminer style): version, licence, pool, worker, key, the GPUs, thermal limits, API
+static void print_banner(Shared &sh, const char *backend) {
+    bannerln("");
+    bannerln(std::string(g_color ? C_BOLD C_CYAN : "") + "  *** ProxiChorizo " PX_VERSION " (" + backend + ") — nonce seeker for Proxima by suprnova.cc ***" + (g_color ? C_RESET : ""));
+    bannerln("      ProxiChorizo License 1.0: free to run for mining; commercial or closed-source reuse needs written permission");
+    bannerln("      pool:    http://" + sh.url.host + ":" + std::to_string(sh.url.port) + "   worker: " + sh.name);
+    bannerln("      key:     " + hexs(sh.pk, 32));
+    bannerln("      GPUs:    " + std::to_string(sh.gpus.size()) + " selected (GPU numbers follow the PCI bus order, as nvidia-smi lists them)");
+    for (auto &g : sh.gpus) bannerln("      " + gpu_tag(g) + ": " + short_gpu_name(g.name) + " [" + short_bus(g.bus) + "] " + g.arch + ", " + g.variant + " " + g.geometry);
+    char b[160];
+    if (sh.con.maxTemp > 0 || sh.con.maxMemTemp > 0) snprintf(b, sizeof b, "      thermal: pause a GPU at %dC core / %dC memory, resume 8C lower (--max-temp, --max-mem-temp; 0 = off)", sh.con.maxTemp, sh.con.maxMemTemp);
+    else snprintf(b, sizeof b, "      thermal: limits off (--max-temp 0)");
+    bannerln(b);
+    if (!sh.api_bind.empty()) bannerln("      stats:   http://" + (sh.api_bind.find(':') == std::string::npos ? "127.0.0.1:" + sh.api_bind : sh.api_bind) + "/  (JSON; /mmpos for the mmpOS line)");
+    bannerln("");
+}
+
+static void submit(Shared &sh, const Job &j, uint64_t nonce, const uint8_t beta[64], uint64_t attempts, int ordinal) {
+    std::string tag; { std::lock_guard<std::mutex> l(sh.mu); tag = (size_t)ordinal < sh.gpus.size() ? gpu_tag(sh.gpus[ordinal]) : "GPU"; }
+    auto count = [&](int which) {  // 0 accepted, 1 rejected, 2 stale: process total and this GPU
+        std::lock_guard<std::mutex> l(sh.mu);
+        if (which == 0) sh.shares++; else if (which == 1) sh.rejected++; else sh.stale++;
+        if ((size_t)ordinal < sh.gpus.size()) { auto &g = sh.gpus[ordinal]; if (which == 0) g.accepted++; else if (which == 1) g.rejected++; else g.stale++; }
+    };
+    auto tally = [&]() { char b[64]; snprintf(b, sizeof b, " (%llu/%llu)", (unsigned long long)sh.shares.load(), (unsigned long long)(sh.shares.load() + sh.rejected.load() + sh.stale.load())); return std::string(b); };
     uint8_t nb[8]; for (int i = 0; i < 8; i++) nb[i] = nonce >> (56 - 8 * i);
     std::string body = "{\"id\":" + std::to_string(j.id) + ",\"nonce\":\"" + hexs(nb, 8) + "\",\"beta\":\"" + hexs(beta, 64) + "\",\"attempts\":" + std::to_string(attempts) + ",\"seeker\":\"" + sh.name + "\"}";
     HttpResp r = http_do(sh.url, "POST", "/seeker/result", body, sh.token, 10);
-    if (!r.err.empty()) { logln("job " + std::to_string(j.id) + ": cannot post the solution: " + r.err); return; }
+    if (!r.err.empty()) { log_err(tag + ": job " + std::to_string(j.id) + ": cannot post the solution: " + r.err); return; }
     std::string beath; bool accepted = false;
     if (r.status == 200) {
         json_bool(r.body, "accepted", accepted); json_str(r.body, "beat", beath);
         std::vector<uint8_t> b;
-        std::lock_guard<std::mutex> l(sh.mu);
-        if (sh.job.id == j.id && unhex(beath, b) && b.size() == 64) {
-            if (!sh.job.has_beat || memcmp(b.data(), sh.job.beat, 64) < 0) { memcpy(sh.job.beat, b.data(), 64); sh.job.has_beat = true; }
+        {
+            std::lock_guard<std::mutex> l(sh.mu);
+            if (sh.job.id == j.id && unhex(beath, b) && b.size() == 64) {
+                if (!sh.job.has_beat || memcmp(b.data(), sh.job.beat, 64) < 0) { memcpy(sh.job.beat, b.data(), 64); sh.job.has_beat = true; }
+            }
         }
         // a pool answers every valid share with accepted and an empty beat; only a
         // solo miner (proxi node mine) sends a beat, and then a result is a solution
-        if (beath.empty()) { sh.shares++; if (!accepted) sh.rejected++; }
-        else if (accepted) { sh.solutions++; logln("job " + std::to_string(j.id) + ": SOLVED with nonce 0x" + hexs(nb, 8) + ", accepted; searching for a smaller output"); }
-        else logln("job " + std::to_string(j.id) + ": valid but beaten (beat now " + beath.substr(0, 16) + "…)");
+        if (beath.empty()) {
+            count(accepted ? 0 : 1);
+            if (accepted) { if (!sh.con.quiet) log_ok(tag + ": share accepted" + tally()); }
+            else log_err(tag + ": share REJECTED by the pool" + tally());
+        }
+        else if (accepted) { sh.solutions++; log_ok(tag + ": job " + std::to_string(j.id) + " SOLVED with nonce 0x" + hexs(nb, 8) + ", accepted; searching for a smaller output"); }
+        else logln(tag + ": job " + std::to_string(j.id) + ": valid but beaten (beat now " + beath.substr(0, 16) + "…)");
     } else if (r.status == 409) {
-        std::lock_guard<std::mutex> l(sh.mu);
-        if (sh.job.id == j.id) sh.job.stale = true;
-        logln("job " + std::to_string(j.id) + ": solved, but the miner has moved on");
+        { std::lock_guard<std::mutex> l(sh.mu); if (sh.job.id == j.id) sh.job.stale = true; }
+        count(2);
+        log_warn(tag + ": share stale, the pool had moved on from job " + std::to_string(j.id) + tally());
     } else if (r.status == 422) {
         std::string reason; json_str(r.body, "error", reason);
-        logln("job " + std::to_string(j.id) + ": REJECTED nonce 0x" + hexs(nb, 8) + ": " + reason);
-    } else logln("job " + std::to_string(j.id) + ": result answered HTTP " + std::to_string(r.status) + " " + r.body.substr(0, 120));
+        count(1);
+        log_err(tag + ": share REJECTED, nonce 0x" + hexs(nb, 8) + " of job " + std::to_string(j.id) + ": " + reason + tally());
+    } else log_warn(tag + ": job " + std::to_string(j.id) + ": result answered HTTP " + std::to_string(r.status) + " " + r.body.substr(0, 120));
 }
 
 struct GpuCfg { int dev; int blocks; int threads; int iters; const VariantOps *ops; int ordinal = 0; };
 
+// A CUDA failure inside the mining loop ends this worker only (gpu_failed marks the
+// GPU dead, the other workers keep going); set-up failures before the loop still abort.
+#define GPU_TRY(x) if (cudaError_t e_ = (x)) { fail = std::string(cudaGetErrorString(e_)) + " in " #x; break; }
 static void gpu_worker(Shared &sh, GpuCfg cfg) {
     CUDA_CHECK(cudaSetDevice(cfg.dev));
     cudaDeviceProp prop; CUDA_CHECK(cudaGetDeviceProperties(&prop, cfg.dev));
@@ -761,68 +993,62 @@ static void gpu_worker(Shared &sh, GpuCfg cfg) {
     uint64_t working = 0, nonce = 0;
     uint64_t stride = (uint64_t)cfg.blocks * cfg.threads;
     void *scratch = cfg.ops->alloc(stride * (size_t)cfg.iters);
-    logln(std::string("GPU ") + std::to_string(cfg.dev) + " " + prop.name + " (sm_" + std::to_string(prop.major) + std::to_string(prop.minor) + "): variant " + cfg.ops->name + ", " +
-          std::to_string(cfg.blocks) + "x" + std::to_string(cfg.threads) + " threads, " + std::to_string(cfg.iters) + " nonces/thread/launch");
-    auto t_last = std::chrono::steady_clock::now(); uint64_t local_attempts = 0, current_job_attempts = 0;
-    double idle_nojob = 0, idle_stale = 0, kernel_ms = 0, gpu_ms = 0; int launches = 0;
     cudaEvent_t ev0, ev1; CUDA_CHECK(cudaEventCreate(&ev0)); CUDA_CHECK(cudaEventCreate(&ev1));
+    // test hook: PX_TEST_FAIL_GPU=<device>:<seconds> makes this worker issue one invalid CUDA call
+    // after that many seconds, to exercise the dead-GPU path without real hardware trouble
+    double failAfter = -1; auto t_start = std::chrono::steady_clock::now();
+    if (const char *e = getenv("PX_TEST_FAIL_GPU")) { int d = -1; double s = 0; if (sscanf(e, "%d:%lf", &d, &s) == 2 && d == cfg.dev) failAfter = s; }
+    std::string fail;
     while (!sh.stop) {
+        if (!thermal_gate(sh, cfg.ordinal)) {
+            { std::lock_guard<std::mutex> l(sh.mu); sh.gpus[cfg.ordinal].win_idle_ms += 1000; }
+            std::this_thread::sleep_for(std::chrono::seconds(1)); continue;
+        }
         Job j; { std::lock_guard<std::mutex> l(sh.mu); j = sh.job; }
         // past its ttl a job is still the current one until the miner replaces it or
         // answers 409, so keep searching: an idle GPU earns nothing, a late solution
         // costs one refused post
         if (j.id == 0 || j.stale) {
-            if (j.id == 0) idle_nojob += 10; else idle_stale += 10;
+            { std::lock_guard<std::mutex> l(sh.mu); sh.gpus[cfg.ordinal].win_idle_ms += 10; }
             std::this_thread::sleep_for(std::chrono::milliseconds(10)); continue;
         }
         // a new job: this GPU's own range of the worker's nonce space (8 bits of GPU
         // ordinal under the pool's 16-bit worker index, 2^40 nonces per GPU per job),
         // or a random start when the job server assigns no range
         if (j.id != working) { working = j.id; nonce = j.has_base ? (j.nonce_base | ((uint64_t)(cfg.ordinal & 0xff) << 40)) : rng(); }
-        auto k0 = std::chrono::steady_clock::now();
         JobDev jd; memset(&jd, 0, sizeof jd);
         memcpy(jd.pk, sh.pk, 32); memcpy(jd.prefix, j.prefix.data(), j.prefix.size()); jd.prefix_len = (int)j.prefix.size();
         memcpy(jd.beat, j.beat, 64); jd.k = j.k;
-        CUDA_CHECK(cudaMemcpy(d_job, &jd, sizeof jd, cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemset(d_n, 0, sizeof(unsigned)));
-        CUDA_CHECK(cudaEventRecord(ev0));
+        if (failAfter >= 0 && std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count() >= failAfter) {
+            failAfter = -1; log_warn("GPU #" + std::to_string(cfg.dev) + ": PX_TEST_FAIL_GPU: injecting an invalid CUDA call");
+            GPU_TRY(cudaMemcpy(d_job, nullptr, sizeof jd, cudaMemcpyHostToDevice));
+        }
+        GPU_TRY(cudaMemcpy(d_job, &jd, sizeof jd, cudaMemcpyHostToDevice));
+        GPU_TRY(cudaMemset(d_n, 0, sizeof(unsigned)));
+        GPU_TRY(cudaEventRecord(ev0));
         cfg.ops->mine(cfg.blocks, cfg.threads, d_job, nonce, stride, cfg.iters, d_hits, d_n, scratch);
-        CUDA_CHECK(cudaGetLastError());
-        CUDA_CHECK(cudaEventRecord(ev1));
-        CUDA_CHECK(cudaDeviceSynchronize());
-        { float ms = 0; CUDA_CHECK(cudaEventElapsedTime(&ms, ev0, ev1)); gpu_ms += ms; }
-        kernel_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - k0).count(); launches++;
+        GPU_TRY(cudaGetLastError());
+        GPU_TRY(cudaEventRecord(ev1));
+        GPU_TRY(cudaDeviceSynchronize());
+        float ms = 0; GPU_TRY(cudaEventElapsedTime(&ms, ev0, ev1));
         uint64_t done = stride * cfg.iters;
         nonce += done;
-        sh.attempts += done; local_attempts += done;
-        // A batch that finishes after a job change cannot submit its hits.
-        // Keep this separate from the raw rate when evaluating launch sizes.
-        { std::lock_guard<std::mutex> l(sh.mu); if (sh.job.id == j.id && !sh.job.stale) current_job_attempts += done; }
-        unsigned n = 0; CUDA_CHECK(cudaMemcpy(&n, d_n, sizeof n, cudaMemcpyDeviceToHost));
+        sh.attempts += done;
+        { std::lock_guard<std::mutex> l(sh.mu); auto &g = sh.gpus[cfg.ordinal]; g.win_attempts += done; g.win_kernel_ms += ms; g.win_launches++; }
+        unsigned n = 0; GPU_TRY(cudaMemcpy(&n, d_n, sizeof n, cudaMemcpyDeviceToHost));
         if (n > 0) {
             if (n > MAX_HITS) n = MAX_HITS;
-            CUDA_CHECK(cudaMemcpy(hits.data(), d_hits, sizeof(Hit) * n, cudaMemcpyDeviceToHost));
+            GPU_TRY(cudaMemcpy(hits.data(), d_hits, sizeof(Hit) * n, cudaMemcpyDeviceToHost));
             std::sort(hits.begin(), hits.begin() + n, [](const Hit &a, const Hit &b) { return memcmp(a.beta, b.beta, 64) < 0; });
             for (unsigned i = 0; i < n; i++) {
                 Job cur; { std::lock_guard<std::mutex> l(sh.mu); cur = sh.job; }
                 if (cur.id != j.id || cur.stale) break;
                 if (cur.has_beat && memcmp(hits[i].beta, cur.beat, 64) >= 0) continue;
-                submit(sh, cur, hits[i].nonce, hits[i].beta, sh.attempts.exchange(0));
+                submit(sh, cur, hits[i].nonce, hits[i].beta, sh.attempts.exchange(0), cfg.ordinal);
             }
         }
-        auto now = std::chrono::steady_clock::now();
-        if (now - t_last >= std::chrono::seconds(30)) {
-            double s = std::chrono::duration<double>(now - t_last).count();
-            char line[400]; snprintf(line, sizeof line, "GPU %d: %.2f MH/s avg over %.0fs | in kernel %.0f%% (%d launches, %.1f ms each, %.2f MH/s in-kernel) | idle: no job %.0f%%, stale %.0f%% | completed on current jobs %.2f MH/s",
-                cfg.dev, local_attempts / s / 1e6, s, kernel_ms / 10 / s, launches, launches ? gpu_ms / launches : 0,
-                gpu_ms > 0 ? (double)launches * stride * cfg.iters / (gpu_ms / 1000.0) / 1e6 : 0, idle_nojob / 10 / s, idle_stale / 10 / s, current_job_attempts / s / 1e6);
-            std::string bus; { std::lock_guard<std::mutex> l(sh.mu); if ((size_t)cfg.ordinal < sh.gpus.size()) bus = sh.gpus[cfg.ordinal].bus; }
-            GpuSensors se = read_sensors(bus);
-            logln(line + sensors_str(se));
-            { std::lock_guard<std::mutex> l(sh.mu); if ((size_t)cfg.ordinal < sh.gpus.size()) { sh.gpus[cfg.ordinal].rate = local_attempts / s; sh.gpus[cfg.ordinal].sens = se; } }
-            t_last = now; local_attempts = current_job_attempts = 0; idle_nojob = idle_stale = kernel_ms = gpu_ms = 0; launches = 0;
-        }
     }
+    if (!fail.empty()) gpu_failed(sh, cfg.ordinal, "CUDA error: " + fail);
 }
 
 // ----------------------------------------------------------------------------
@@ -837,17 +1063,22 @@ static std::string json_escape(const std::string &v) {
 static std::string stats_json(Shared &sh, bool mmpos) {
     std::lock_guard<std::mutex> l(sh.mu);
     uint64_t up = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - sh.started).count();
-    uint64_t acc = sh.shares.load() + sh.solutions.load(), rej = sh.rejected.load();
-    double total = 0; std::string hs, bus, gpus, temp, fan, power;
+    uint64_t acc = sh.shares.load() + sh.solutions.load(), rej = sh.rejected.load(), stale = sh.stale.load();
+    double total = 0; std::string hs, bus, gpus, temp, fan, power; int active = 0;
     for (auto &g : sh.gpus) {
         total += g.rate;
+        if (!g.dead && !g.paused) active++;
         char r[64]; snprintf(r, sizeof r, "%.0f", g.rate);
         if (!hs.empty()) { hs += ","; bus += ","; gpus += ","; temp += ","; fan += ","; power += ","; }
         hs += r; bus += std::to_string(g.bus_num);
         temp += std::to_string(g.sens.temp < 0 ? 0 : g.sens.temp); fan += std::to_string(g.sens.fan < 0 ? 0 : g.sens.fan);
         power += std::to_string(g.sens.power < 0 ? 0 : (int)(g.sens.power + 0.5));
+        // 0.5.9 additions: status/paused/reason (thermal pause, device error), per-GPU share counters, mem_temp and clock in sensors_json
         gpus += "{\"id\":" + std::to_string(g.ordinal) + ",\"cuda_device\":" + std::to_string(g.dev) + ",\"name\":\"" + json_escape(g.name) +
-                "\",\"bus_id\":\"" + g.bus + "\",\"bus_number\":" + std::to_string(g.bus_num) + ",\"hashrate\":" + r + sensors_json(g.sens) + "}";
+                "\",\"bus_id\":\"" + g.bus + "\",\"bus_number\":" + std::to_string(g.bus_num) + ",\"hashrate\":" + r + sensors_json(g.sens) +
+                ",\"status\":\"" + (g.dead ? "dead" : g.paused ? "paused" : "mining") + "\",\"paused\":" + (g.paused ? "true" : "false") +
+                ",\"reason\":" + (g.reason.empty() ? std::string("null") : "\"" + json_escape(g.reason) + "\"") +
+                ",\"accepted\":" + std::to_string(g.accepted) + ",\"rejected\":" + std::to_string(g.rejected) + ",\"stale\":" + std::to_string(g.stale) + "}";
     }
     if (mmpos)
         return "{\"busid\":[" + bus + "],\"hash\":[" + hs + "],\"units\":\"hs\",\"temp\":[" + temp + "],\"fan\":[" + fan + "],\"power\":[" + power +
@@ -855,9 +1086,11 @@ static std::string stats_json(Shared &sh, bool mmpos) {
                "\"],\"miner_name\":\"ProxiChorizo\",\"miner_version\":\"" PX_VERSION "\"}";
     char t[64]; snprintf(t, sizeof t, "%.0f", total);
     return "{\"miner\":\"ProxiChorizo\",\"version\":\"" PX_VERSION "\",\"uptime\":" + std::to_string(up) + ",\"hashrate\":" + t +
-           ",\"hashrate_units\":\"hs\",\"shares\":{\"accepted\":" + std::to_string(acc) + ",\"rejected\":" + std::to_string(rej) + "},\"solutions\":" +
+           ",\"hashrate_units\":\"hs\",\"shares\":{\"accepted\":" + std::to_string(acc) + ",\"rejected\":" + std::to_string(rej) + ",\"stale\":" + std::to_string(stale) + "},\"solutions\":" +
            std::to_string(sh.solutions.load()) + ",\"job_server\":\"" + json_escape(sh.url.host) + ":" + std::to_string(sh.url.port) + "\",\"worker\":\"" +
-           json_escape(sh.name) + "\",\"job_k\":" + std::to_string(sh.job.k) + ",\"gpus\":[" + gpus + "]}";
+           json_escape(sh.name) + "\",\"job_k\":" + std::to_string(sh.job.k) + ",\"job_id\":" + std::to_string(sh.job.id) +
+           ",\"gpus_active\":" + std::to_string(active) + ",\"max_temp\":" + std::to_string(sh.con.maxTemp) + ",\"max_mem_temp\":" + std::to_string(sh.con.maxMemTemp) +
+           ",\"gpus\":[" + gpus + "]}";
 }
 static void api_server(Shared &sh) {
     std::string host = "127.0.0.1"; int port = 0;
@@ -1131,20 +1364,60 @@ static void usage() {
         "  --seed-hex HEX     32-byte seed\n"
         "  --name NAME        seeker name in the pool's statistics (default ProxiChorizo-<pid>)\n"
         "  --api-bind [H:]P   stats API, JSON at http://H:P/ and the mmpOS line at /mmpos (default off; H defaults to 127.0.0.1)\n"
-        "  --gpus 0,1         devices to use (default all; indices as CUDA orders them, see CUDA_DEVICE_ORDER); -d 0,1 is the same\n"
+        "  -d 0,1,2,3         GPUs to use; without it every GPU mines, in one process, numbered 0.. in PCI bus order as nvidia-smi\n"
+        "                     lists them (--gpus and --devices are the same option)\n"
         "  --variant NAME     kernel variant for all GPUs (default: per-platform table; --list-variants)\n"
         "  --autotune [SECS]  measure every variant on each GPU first and use the fastest (default 6s per trial)\n"
         "  --blocks N --threads N --iters N   launch geometry (defaults from the platform table)\n"
+        "%s"
         "  --selftest FILE    verify every variant against vectors.json (from vrfvec) and exit\n"
         "  --fetest           randomized field-arithmetic test of every variant and exit\n"
         "  --verify           every variant over one nonce range at low difficulty must find identical hits; exit\n"
-        "  --bench [SECS]     measure the hashrate of the chosen variant and exit\n");
+        "  --bench [SECS]     measure the hashrate of the chosen variant and exit\n", CONSOLE_USAGE);
+}
+
+// -d 0,1,2,3 (also "all"): device indices, each once, within the device count
+static bool parse_devices(const std::string &gpus, int ndev, std::vector<int> &devs) {
+    devs.clear();
+    if (gpus.empty() || gpus == "all") { for (int i = 0; i < ndev; i++) devs.push_back(i); return true; }
+    std::stringstream ss(gpus); std::string t;
+    while (std::getline(ss, t, ',')) {
+        while (!t.empty() && t.front() == ' ') t.erase(0, 1);
+        while (!t.empty() && t.back() == ' ') t.pop_back();
+        if (t.empty()) continue;
+        char *end = nullptr; long d = strtol(t.c_str(), &end, 10);
+        if (*end || d < 0 || d >= ndev) { fprintf(stderr, "-d %s: no GPU %s (this machine has %d, numbered 0..%d)\n", gpus.c_str(), t.c_str(), ndev, ndev - 1); return false; }
+        if (std::find(devs.begin(), devs.end(), (int)d) != devs.end()) continue;
+        devs.push_back((int)d);
+    }
+    if (devs.empty()) { fprintf(stderr, "-d %s selects no GPU\n", gpus.c_str()); return false; }
+    return true;
+}
+
+// Ctrl-C / SIGTERM: one summary line, then out (the workers hold no state worth flushing)
+static Shared *g_sh = nullptr;
+static void on_signal(int) {
+    if (g_sh) {
+        char b[200];
+        snprintf(b, sizeof b, "\n%s stopped: accepted %llu, rejected %llu, stale %llu, uptime %s\n", now_str().c_str(), (unsigned long long)g_sh->shares.load(),
+                 (unsigned long long)g_sh->rejected.load(), (unsigned long long)g_sh->stale.load(), fmt_uptime(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - g_sh->started).count()).c_str());
+        fputs(b, stderr); fflush(stderr);
+    }
+    _Exit(0);
 }
 
 int main(int argc, char **argv) {
     std::string proxi, token, tokenFile, keyfile, seedhex, name, selftest, gpus, variant, apiBind;
     sock_init();
+    // GPU numbers follow the PCI bus order (as nvidia-smi lists the cards) unless the caller
+    // chose an order; the runtime reads this before its first call
+#ifdef _WIN32
+    if (!getenv("CUDA_DEVICE_ORDER")) _putenv_s("CUDA_DEVICE_ORDER", "PCI_BUS_ID");
+#else
+    setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID", 0);
+#endif
     int blocks = 0, threads = 0, iters = 0; double bench = 0, autotuneSecs = 0; bool fetest = false, listVariants = false, verify = false;
+    ConsoleOpts con;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         auto next = [&](std::string &dst) { if (i + 1 < argc) dst = argv[++i]; };
@@ -1168,8 +1441,10 @@ int main(int argc, char **argv) {
         else if (a == "--iters") { std::string s; next(s); iters = atoi(s.c_str()); }
         else if (a == "--bench") bench = optnum(20);
         else if (a == "--autotune") autotuneSecs = optnum(6);
-        else { usage(); return 1; }
+        else if (parse_console_opt(a, i, argc, argv, con)) {}
+        else { fprintf(stderr, "unknown option %s\n\n", a.c_str()); usage(); return 1; }
     }
+    console_setup(con);
     if (listVariants) { for (int v = 0; v < NVARIANTS; v++) fprintf(stderr, "%s\n", VARIANTS[v]->name); return 0; }
     if (token.empty() && !tokenFile.empty()) {
         std::ifstream tf(tokenFile); if (!tf) { fprintf(stderr, "cannot open token file %s\n", tokenFile.c_str()); return 1; }
@@ -1179,8 +1454,7 @@ int main(int argc, char **argv) {
     int ndev = 0; CUDA_CHECK(cudaGetDeviceCount(&ndev));
     if (ndev == 0) { fprintf(stderr, "no CUDA devices\n"); return 2; }
     std::vector<int> devs;
-    if (gpus.empty()) for (int i = 0; i < ndev; i++) devs.push_back(i);
-    else { std::stringstream ss(gpus); std::string t; while (std::getline(ss, t, ',')) devs.push_back(atoi(t.c_str())); }
+    if (!parse_devices(gpus, ndev, devs)) return 1;
 
     uint8_t seed[32], scalar[32] = {0}, pk[32] = {0};
     bool keyGiven = !seedhex.empty() || !keyfile.empty() || getenv("NONCE_SEEKER_SEED") != nullptr;
@@ -1251,6 +1525,8 @@ int main(int argc, char **argv) {
             }
         }
         else fprintf(stderr, "GPU %d %s (sm_%d%d): %s, %dx%dx%d — %s\n", d, prop.name, prop.major, prop.minor, cfg.ops->name, cfg.blocks, cfg.threads, cfg.iters, pl.note);
+        { auto &g = gstats.back(); g.arch = "sm_" + std::to_string(prop.major) + std::to_string(prop.minor); g.variant = cfg.ops->name;
+          g.geometry = std::to_string(cfg.blocks) + "x" + std::to_string(cfg.threads) + "x" + std::to_string(cfg.iters); }
         cfgs.push_back(cfg);
     }
     if (bench > 0) { for (auto &c : cfgs) run_bench(c.ops, pk, c.dev, c.blocks, c.threads, c.iters, bench, true); return 0; }
@@ -1260,11 +1536,15 @@ int main(int argc, char **argv) {
     sh.base_url = proxi; if (!parse_url(proxi, sh.url)) return 1;
     sh.token = token; sh.name = name.empty() ? "proxichorizo-" + std::to_string(getpid()) : name;
     memcpy(sh.pk, pk, 32); memcpy(sh.scalar, scalar, 32);
-    sh.gpus = gstats; sh.api_bind = apiBind;
+    sh.gpus = gstats; sh.api_bind = apiBind; sh.con = con;
+    print_banner(sh, "CUDA");
     logln("ProxiChorizo " PX_VERSION ": key " + hexs(pk, 32) + ", job server " + sh.url.host + ":" + std::to_string(sh.url.port) + ", " + std::to_string(devs.size()) + " GPU(s), name " + sh.name);
+    for (auto &g : sh.gpus) if (read_sensors(g.bus).temp < 0) log_warn(gpu_tag(g) + ": no temperature sensor readable (NVML/hwmon), the thermal limit is not enforced on it");
+    g_sh = &sh; signal(SIGINT, on_signal); signal(SIGTERM, on_signal);
     std::vector<std::thread> th;
     th.emplace_back(poller, std::ref(sh));
     th.emplace_back(reporter, std::ref(sh));
+    th.emplace_back(console, std::ref(sh));
     if (!apiBind.empty()) th.emplace_back(api_server, std::ref(sh));
     for (auto &c : cfgs) th.emplace_back(gpu_worker, std::ref(sh), c);
     for (auto &t : th) t.join();
