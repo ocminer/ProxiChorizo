@@ -735,6 +735,7 @@ struct Shared {
     std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
     std::string api_bind;
     ConsoleOpts con;                   // thermal limits and console options
+    uint64_t last_job_id = 0, last_job_k = 0; std::chrono::steady_clock::time_point last_job_at{};  // for the console's total line
 };
 // console wording for one GPU: "GPU #3" by its device index (nvidia-smi order under PCI_BUS_ID)
 static std::string gpu_tag(const Shared::GpuStat &g) { return "GPU #" + std::to_string(g.dev); }
@@ -764,7 +765,7 @@ static void install_job(Shared &sh, const std::string &body) {
     else { j.has_beat = false; memset(j.beat, 0xff, 64); }
     j.deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(ttl);
     bool changed = (sh.job.id != id);
-    sh.job = j;
+    sh.job = j; sh.last_job_id = id; sh.last_job_k = k; sh.last_job_at = std::chrono::steady_clock::now();
     if (changed) logln("job " + std::to_string(id) + ": slot " + std::to_string(slot) + ", k=" + std::to_string(k) + ", ttl " + std::to_string(ttl) + " ms" + (j.has_beat ? ", beat " + beath.substr(0, 16) + "…" : ""));
 }
 
@@ -842,6 +843,9 @@ static void console(Shared &sh) {
                 if (!g.dead) alive++;
             }
             id = sh.job.id; k = sh.job.k;
+            // a pool retires its job for a few milliseconds at every round boundary: a snapshot
+            // inside that gap is not "no job"; say so only after 10 s without one
+            if (id == 0 && sh.last_job_id && now - sh.last_job_at < std::chrono::seconds(10)) { id = sh.last_job_id; k = sh.last_job_k; }
         }
         double total = 0;
         for (auto &g : snap) {
