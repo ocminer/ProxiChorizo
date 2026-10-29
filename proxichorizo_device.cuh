@@ -402,6 +402,197 @@ __device__ __forceinline__ void fe_addtop(fe &h, uint32_t t0, uint32_t t1) {
     asm("add.cc.u32 %0, %0, %3;\n\taddc.cc.u32 %1, %1, %4;\n\taddc.u32 %2, 0, 0;" : "+r"(h.v[0]), "+r"(h.v[1]), "=&r"(c) : "r"(t0), "r"(t1));
     if (c) fe_inc2(h);
 }
+#ifdef PX_WIDECHAIN
+// ----------------------------------------------------------------------------
+// Row-ordered schoolbook with wide-multiply carry chains (0.5.10). The products
+// of one row are issued two columns apart: the 2^64 carry of one IMAD.WIDE.U32
+// is the carry-in of the next (IMAD.WIDE.U32.X), so no per-product add is
+// needed; one addc per row captures the chain's last carry, the other chain
+// of the row ends at column i+7 whose carry is provably zero (the partial
+// product has no word there). Even columns accumulate into E on aligned
+// register pairs, odd columns into Od (window (c,c+1) stored at Od[c-1]),
+// and the two are added once at the end. Same multiply count as comba, about
+// half its integer-add count: on GA10x (RTX 30xx) the adds share the issue
+// slots and the integer pipe with the carries, and the multiplier pipe is the
+// bottleneck, so the freed slots go to the remaining work.
+// ----------------------------------------------------------------------------
+// Row-ordered schoolbook. Products at even columns accumulate into E (64-bit windows (c,c+1) on aligned
+// register pairs), products at odd columns into Od (window (c,c+1) stored at Od[c-1], Od[c], also aligned).
+// Within a row the products of one parity are chained: the 2^64 carry of one IMAD.WIDE.U32 is the carry-in of
+// the next one two columns up (IMAD.WIDE.U32.X), so there is no per-product IADD.X; one addc per row captures
+// the chain's last carry (the other chain ends at column i+7 whose carry is provably zero).
+// t * 38 for a small t (< 2^26) as shifts and adds on the integer pipe, never a multiplier-pipe IMAD
+__device__ __forceinline__ uint32_t fe_mul38small(uint32_t t) {
+    uint32_t r; asm("shl.b32 %0, %1, 5;\n\tshl.b32 %1, %1, 1;\n\tadd.u32 %0, %0, %1;\n\tshl.b32 %1, %1, 1;\n\tadd.u32 %0, %0, %1;" : "=&r"(r), "+r"(t)); return r;
+}
+#ifndef PX_FOLDSHIFT
+#define PX_FOLDSHIFT 0
+#endif
+__device__ void fe_mul(fe &h, const fe &f, const fe &g) {
+    const uint32_t *a = f.v, *b = g.v;
+    uint32_t E[16], Od[16];
+    #pragma unroll
+    for (int i = 0; i < 16; i++) { E[i] = 0; Od[i] = 0; }
+    // row 0
+    asm("mad.lo.cc.u32 %0, %17, %18, %0;\n\tmadc.hi.cc.u32 %1, %17, %18, %1;\n\tmadc.lo.cc.u32 %2, %17, %20, %2;\n\tmadc.hi.cc.u32 %3, %17, %20, %3;\n\tmadc.lo.cc.u32 %4, %17, %22, %4;\n\tmadc.hi.cc.u32 %5, %17, %22, %5;\n\tmadc.lo.cc.u32 %6, %17, %24, %6;\n\tmadc.hi.cc.u32 %7, %17, %24, %7;\n\taddc.u32 %8, %8, 0;\n\tmad.lo.cc.u32 %9, %17, %19, %9;\n\tmadc.hi.cc.u32 %10, %17, %19, %10;\n\tmadc.lo.cc.u32 %11, %17, %21, %11;\n\tmadc.hi.cc.u32 %12, %17, %21, %12;\n\tmadc.lo.cc.u32 %13, %17, %23, %13;\n\tmadc.hi.cc.u32 %14, %17, %23, %14;\n\tmadc.lo.cc.u32 %15, %17, %25, %15;\n\tmadc.hi.u32 %16, %17, %25, %16;"
+        : "+r"(E[0]), "+r"(E[1]), "+r"(E[2]), "+r"(E[3]), "+r"(E[4]), "+r"(E[5]), "+r"(E[6]), "+r"(E[7]), "+r"(E[8]), "+r"(Od[0]), "+r"(Od[1]), "+r"(Od[2]), "+r"(Od[3]), "+r"(Od[4]), "+r"(Od[5]), "+r"(Od[6]), "+r"(Od[7])
+        : "r"(a[0]), "r"(b[0]), "r"(b[1]), "r"(b[2]), "r"(b[3]), "r"(b[4]), "r"(b[5]), "r"(b[6]), "r"(b[7]));
+    // row 1
+    asm("mad.lo.cc.u32 %0, %17, %19, %0;\n\tmadc.hi.cc.u32 %1, %17, %19, %1;\n\tmadc.lo.cc.u32 %2, %17, %21, %2;\n\tmadc.hi.cc.u32 %3, %17, %21, %3;\n\tmadc.lo.cc.u32 %4, %17, %23, %4;\n\tmadc.hi.cc.u32 %5, %17, %23, %5;\n\tmadc.lo.cc.u32 %6, %17, %25, %6;\n\tmadc.hi.u32 %7, %17, %25, %7;\n\tmad.lo.cc.u32 %8, %17, %18, %8;\n\tmadc.hi.cc.u32 %9, %17, %18, %9;\n\tmadc.lo.cc.u32 %10, %17, %20, %10;\n\tmadc.hi.cc.u32 %11, %17, %20, %11;\n\tmadc.lo.cc.u32 %12, %17, %22, %12;\n\tmadc.hi.cc.u32 %13, %17, %22, %13;\n\tmadc.lo.cc.u32 %14, %17, %24, %14;\n\tmadc.hi.cc.u32 %15, %17, %24, %15;\n\taddc.u32 %16, %16, 0;"
+        : "+r"(E[2]), "+r"(E[3]), "+r"(E[4]), "+r"(E[5]), "+r"(E[6]), "+r"(E[7]), "+r"(E[8]), "+r"(E[9]), "+r"(Od[0]), "+r"(Od[1]), "+r"(Od[2]), "+r"(Od[3]), "+r"(Od[4]), "+r"(Od[5]), "+r"(Od[6]), "+r"(Od[7]), "+r"(Od[8])
+        : "r"(a[1]), "r"(b[0]), "r"(b[1]), "r"(b[2]), "r"(b[3]), "r"(b[4]), "r"(b[5]), "r"(b[6]), "r"(b[7]));
+    // row 2
+    asm("mad.lo.cc.u32 %0, %17, %18, %0;\n\tmadc.hi.cc.u32 %1, %17, %18, %1;\n\tmadc.lo.cc.u32 %2, %17, %20, %2;\n\tmadc.hi.cc.u32 %3, %17, %20, %3;\n\tmadc.lo.cc.u32 %4, %17, %22, %4;\n\tmadc.hi.cc.u32 %5, %17, %22, %5;\n\tmadc.lo.cc.u32 %6, %17, %24, %6;\n\tmadc.hi.cc.u32 %7, %17, %24, %7;\n\taddc.u32 %8, %8, 0;\n\tmad.lo.cc.u32 %9, %17, %19, %9;\n\tmadc.hi.cc.u32 %10, %17, %19, %10;\n\tmadc.lo.cc.u32 %11, %17, %21, %11;\n\tmadc.hi.cc.u32 %12, %17, %21, %12;\n\tmadc.lo.cc.u32 %13, %17, %23, %13;\n\tmadc.hi.cc.u32 %14, %17, %23, %14;\n\tmadc.lo.cc.u32 %15, %17, %25, %15;\n\tmadc.hi.u32 %16, %17, %25, %16;"
+        : "+r"(E[2]), "+r"(E[3]), "+r"(E[4]), "+r"(E[5]), "+r"(E[6]), "+r"(E[7]), "+r"(E[8]), "+r"(E[9]), "+r"(E[10]), "+r"(Od[2]), "+r"(Od[3]), "+r"(Od[4]), "+r"(Od[5]), "+r"(Od[6]), "+r"(Od[7]), "+r"(Od[8]), "+r"(Od[9])
+        : "r"(a[2]), "r"(b[0]), "r"(b[1]), "r"(b[2]), "r"(b[3]), "r"(b[4]), "r"(b[5]), "r"(b[6]), "r"(b[7]));
+    // row 3
+    asm("mad.lo.cc.u32 %0, %17, %19, %0;\n\tmadc.hi.cc.u32 %1, %17, %19, %1;\n\tmadc.lo.cc.u32 %2, %17, %21, %2;\n\tmadc.hi.cc.u32 %3, %17, %21, %3;\n\tmadc.lo.cc.u32 %4, %17, %23, %4;\n\tmadc.hi.cc.u32 %5, %17, %23, %5;\n\tmadc.lo.cc.u32 %6, %17, %25, %6;\n\tmadc.hi.u32 %7, %17, %25, %7;\n\tmad.lo.cc.u32 %8, %17, %18, %8;\n\tmadc.hi.cc.u32 %9, %17, %18, %9;\n\tmadc.lo.cc.u32 %10, %17, %20, %10;\n\tmadc.hi.cc.u32 %11, %17, %20, %11;\n\tmadc.lo.cc.u32 %12, %17, %22, %12;\n\tmadc.hi.cc.u32 %13, %17, %22, %13;\n\tmadc.lo.cc.u32 %14, %17, %24, %14;\n\tmadc.hi.cc.u32 %15, %17, %24, %15;\n\taddc.u32 %16, %16, 0;"
+        : "+r"(E[4]), "+r"(E[5]), "+r"(E[6]), "+r"(E[7]), "+r"(E[8]), "+r"(E[9]), "+r"(E[10]), "+r"(E[11]), "+r"(Od[2]), "+r"(Od[3]), "+r"(Od[4]), "+r"(Od[5]), "+r"(Od[6]), "+r"(Od[7]), "+r"(Od[8]), "+r"(Od[9]), "+r"(Od[10])
+        : "r"(a[3]), "r"(b[0]), "r"(b[1]), "r"(b[2]), "r"(b[3]), "r"(b[4]), "r"(b[5]), "r"(b[6]), "r"(b[7]));
+    // row 4
+    asm("mad.lo.cc.u32 %0, %17, %18, %0;\n\tmadc.hi.cc.u32 %1, %17, %18, %1;\n\tmadc.lo.cc.u32 %2, %17, %20, %2;\n\tmadc.hi.cc.u32 %3, %17, %20, %3;\n\tmadc.lo.cc.u32 %4, %17, %22, %4;\n\tmadc.hi.cc.u32 %5, %17, %22, %5;\n\tmadc.lo.cc.u32 %6, %17, %24, %6;\n\tmadc.hi.cc.u32 %7, %17, %24, %7;\n\taddc.u32 %8, %8, 0;\n\tmad.lo.cc.u32 %9, %17, %19, %9;\n\tmadc.hi.cc.u32 %10, %17, %19, %10;\n\tmadc.lo.cc.u32 %11, %17, %21, %11;\n\tmadc.hi.cc.u32 %12, %17, %21, %12;\n\tmadc.lo.cc.u32 %13, %17, %23, %13;\n\tmadc.hi.cc.u32 %14, %17, %23, %14;\n\tmadc.lo.cc.u32 %15, %17, %25, %15;\n\tmadc.hi.u32 %16, %17, %25, %16;"
+        : "+r"(E[4]), "+r"(E[5]), "+r"(E[6]), "+r"(E[7]), "+r"(E[8]), "+r"(E[9]), "+r"(E[10]), "+r"(E[11]), "+r"(E[12]), "+r"(Od[4]), "+r"(Od[5]), "+r"(Od[6]), "+r"(Od[7]), "+r"(Od[8]), "+r"(Od[9]), "+r"(Od[10]), "+r"(Od[11])
+        : "r"(a[4]), "r"(b[0]), "r"(b[1]), "r"(b[2]), "r"(b[3]), "r"(b[4]), "r"(b[5]), "r"(b[6]), "r"(b[7]));
+    // row 5
+    asm("mad.lo.cc.u32 %0, %17, %19, %0;\n\tmadc.hi.cc.u32 %1, %17, %19, %1;\n\tmadc.lo.cc.u32 %2, %17, %21, %2;\n\tmadc.hi.cc.u32 %3, %17, %21, %3;\n\tmadc.lo.cc.u32 %4, %17, %23, %4;\n\tmadc.hi.cc.u32 %5, %17, %23, %5;\n\tmadc.lo.cc.u32 %6, %17, %25, %6;\n\tmadc.hi.u32 %7, %17, %25, %7;\n\tmad.lo.cc.u32 %8, %17, %18, %8;\n\tmadc.hi.cc.u32 %9, %17, %18, %9;\n\tmadc.lo.cc.u32 %10, %17, %20, %10;\n\tmadc.hi.cc.u32 %11, %17, %20, %11;\n\tmadc.lo.cc.u32 %12, %17, %22, %12;\n\tmadc.hi.cc.u32 %13, %17, %22, %13;\n\tmadc.lo.cc.u32 %14, %17, %24, %14;\n\tmadc.hi.cc.u32 %15, %17, %24, %15;\n\taddc.u32 %16, %16, 0;"
+        : "+r"(E[6]), "+r"(E[7]), "+r"(E[8]), "+r"(E[9]), "+r"(E[10]), "+r"(E[11]), "+r"(E[12]), "+r"(E[13]), "+r"(Od[4]), "+r"(Od[5]), "+r"(Od[6]), "+r"(Od[7]), "+r"(Od[8]), "+r"(Od[9]), "+r"(Od[10]), "+r"(Od[11]), "+r"(Od[12])
+        : "r"(a[5]), "r"(b[0]), "r"(b[1]), "r"(b[2]), "r"(b[3]), "r"(b[4]), "r"(b[5]), "r"(b[6]), "r"(b[7]));
+    // row 6
+    asm("mad.lo.cc.u32 %0, %17, %18, %0;\n\tmadc.hi.cc.u32 %1, %17, %18, %1;\n\tmadc.lo.cc.u32 %2, %17, %20, %2;\n\tmadc.hi.cc.u32 %3, %17, %20, %3;\n\tmadc.lo.cc.u32 %4, %17, %22, %4;\n\tmadc.hi.cc.u32 %5, %17, %22, %5;\n\tmadc.lo.cc.u32 %6, %17, %24, %6;\n\tmadc.hi.cc.u32 %7, %17, %24, %7;\n\taddc.u32 %8, %8, 0;\n\tmad.lo.cc.u32 %9, %17, %19, %9;\n\tmadc.hi.cc.u32 %10, %17, %19, %10;\n\tmadc.lo.cc.u32 %11, %17, %21, %11;\n\tmadc.hi.cc.u32 %12, %17, %21, %12;\n\tmadc.lo.cc.u32 %13, %17, %23, %13;\n\tmadc.hi.cc.u32 %14, %17, %23, %14;\n\tmadc.lo.cc.u32 %15, %17, %25, %15;\n\tmadc.hi.u32 %16, %17, %25, %16;"
+        : "+r"(E[6]), "+r"(E[7]), "+r"(E[8]), "+r"(E[9]), "+r"(E[10]), "+r"(E[11]), "+r"(E[12]), "+r"(E[13]), "+r"(E[14]), "+r"(Od[6]), "+r"(Od[7]), "+r"(Od[8]), "+r"(Od[9]), "+r"(Od[10]), "+r"(Od[11]), "+r"(Od[12]), "+r"(Od[13])
+        : "r"(a[6]), "r"(b[0]), "r"(b[1]), "r"(b[2]), "r"(b[3]), "r"(b[4]), "r"(b[5]), "r"(b[6]), "r"(b[7]));
+    // row 7
+    asm("mad.lo.cc.u32 %0, %17, %19, %0;\n\tmadc.hi.cc.u32 %1, %17, %19, %1;\n\tmadc.lo.cc.u32 %2, %17, %21, %2;\n\tmadc.hi.cc.u32 %3, %17, %21, %3;\n\tmadc.lo.cc.u32 %4, %17, %23, %4;\n\tmadc.hi.cc.u32 %5, %17, %23, %5;\n\tmadc.lo.cc.u32 %6, %17, %25, %6;\n\tmadc.hi.u32 %7, %17, %25, %7;\n\tmad.lo.cc.u32 %8, %17, %18, %8;\n\tmadc.hi.cc.u32 %9, %17, %18, %9;\n\tmadc.lo.cc.u32 %10, %17, %20, %10;\n\tmadc.hi.cc.u32 %11, %17, %20, %11;\n\tmadc.lo.cc.u32 %12, %17, %22, %12;\n\tmadc.hi.cc.u32 %13, %17, %22, %13;\n\tmadc.lo.cc.u32 %14, %17, %24, %14;\n\tmadc.hi.cc.u32 %15, %17, %24, %15;\n\taddc.u32 %16, %16, 0;"
+        : "+r"(E[8]), "+r"(E[9]), "+r"(E[10]), "+r"(E[11]), "+r"(E[12]), "+r"(E[13]), "+r"(E[14]), "+r"(E[15]), "+r"(Od[6]), "+r"(Od[7]), "+r"(Od[8]), "+r"(Od[9]), "+r"(Od[10]), "+r"(Od[11]), "+r"(Od[12]), "+r"(Od[13]), "+r"(Od[14])
+        : "r"(a[7]), "r"(b[0]), "r"(b[1]), "r"(b[2]), "r"(b[3]), "r"(b[4]), "r"(b[5]), "r"(b[6]), "r"(b[7]));
+    // hi = words 8..15 of the product = E[8..15] + Od[7..14]. No carry out: the sum is at most the
+    // product's high half (it lacks only the carry from the low half), which is below 2^256.
+    uint32_t hi[8];
+    asm("add.cc.u32 %0, %8, %16;\n\taddc.cc.u32 %1, %9, %17;\n\taddc.cc.u32 %2, %10, %18;\n\taddc.cc.u32 %3, %11, %19;\n\t"
+        "addc.cc.u32 %4, %12, %20;\n\taddc.cc.u32 %5, %13, %21;\n\taddc.cc.u32 %6, %14, %22;\n\taddc.u32 %7, %15, %23;"
+        : "=&r"(hi[0]), "=&r"(hi[1]), "=&r"(hi[2]), "=&r"(hi[3]), "=&r"(hi[4]), "=&r"(hi[5]), "=&r"(hi[6]), "=&r"(hi[7])
+        : "r"(E[8]), "r"(E[9]), "r"(E[10]), "r"(E[11]), "r"(E[12]), "r"(E[13]), "r"(E[14]), "r"(E[15]),
+          "r"(Od[7]), "r"(Od[8]), "r"(Od[9]), "r"(Od[10]), "r"(Od[11]), "r"(Od[12]), "r"(Od[13]), "r"(Od[14]));
+#if PX_FOLDSHIFT
+    // 2^256 = 38: h = lo + 38 * hi with 38 * hi = hi<<5 + hi<<2 + hi<<1 built from funnel shifts and
+    // added on the integer pipe, so the fold costs no wide multiplies at all (the multiplier pipe is
+    // the bottleneck on GA10x). lo = E[0..8] + Od[0..7]<<32 first, nine words.
+    uint32_t L[9];
+    L[0] = E[0];
+    asm("add.cc.u32 %0, %8, %16;\n\taddc.cc.u32 %1, %9, %17;\n\taddc.cc.u32 %2, %10, %18;\n\taddc.cc.u32 %3, %11, %19;\n\t"
+        "addc.cc.u32 %4, %12, %20;\n\taddc.cc.u32 %5, %13, %21;\n\taddc.cc.u32 %6, %14, %22;\n\taddc.u32 %7, %15, %23;"
+        : "=&r"(L[1]), "=&r"(L[2]), "=&r"(L[3]), "=&r"(L[4]), "=&r"(L[5]), "=&r"(L[6]), "=&r"(L[7]), "=&r"(L[8])
+        : "r"(E[1]), "r"(E[2]), "r"(E[3]), "r"(E[4]), "r"(E[5]), "r"(E[6]), "r"(E[7]), "r"(E[8]),
+          "r"(Od[0]), "r"(Od[1]), "r"(Od[2]), "r"(Od[3]), "r"(Od[4]), "r"(Od[5]), "r"(Od[6]), "r"(Od[7]));
+#define PX_ADDSHIFTED(sh) do { \
+        uint32_t t[9]; \
+        t[0] = hi[0] << (sh); \
+        _Pragma("unroll") for (int k = 1; k < 8; k++) t[k] = __funnelshift_l(hi[k - 1], hi[k], (sh)); \
+        t[8] = hi[7] >> (32 - (sh)); \
+        asm("add.cc.u32 %0, %0, %9;\n\taddc.cc.u32 %1, %1, %10;\n\taddc.cc.u32 %2, %2, %11;\n\taddc.cc.u32 %3, %3, %12;\n\t" \
+            "addc.cc.u32 %4, %4, %13;\n\taddc.cc.u32 %5, %5, %14;\n\taddc.cc.u32 %6, %6, %15;\n\taddc.cc.u32 %7, %7, %16;\n\taddc.u32 %8, %8, %17;" \
+            : "+r"(L[0]), "+r"(L[1]), "+r"(L[2]), "+r"(L[3]), "+r"(L[4]), "+r"(L[5]), "+r"(L[6]), "+r"(L[7]), "+r"(L[8]) \
+            : "r"(t[0]), "r"(t[1]), "r"(t[2]), "r"(t[3]), "r"(t[4]), "r"(t[5]), "r"(t[6]), "r"(t[7]), "r"(t[8])); \
+    } while (0)
+    PX_ADDSHIFTED(5); PX_ADDSHIFTED(2); PX_ADDSHIFTED(1);
+#undef PX_ADDSHIFTED
+    for (int i = 0; i < 8; i++) h.v[i] = L[i];
+    fe_addtop(h, fe_mul38small(L[8]), 0u);   // L[8] <= 40
+#else
+    // fold row: 38 * hi into words 0..8
+    asm("mad.lo.cc.u32 %0, %17, 38, %0;\n\tmadc.hi.cc.u32 %1, %17, 38, %1;\n\tmadc.lo.cc.u32 %2, %19, 38, %2;\n\tmadc.hi.cc.u32 %3, %19, 38, %3;\n\tmadc.lo.cc.u32 %4, %21, 38, %4;\n\tmadc.hi.cc.u32 %5, %21, 38, %5;\n\tmadc.lo.cc.u32 %6, %23, 38, %6;\n\tmadc.hi.cc.u32 %7, %23, 38, %7;\n\taddc.u32 %8, 0, 0;\n\tmad.lo.cc.u32 %9, %18, 38, %9;\n\tmadc.hi.cc.u32 %10, %18, 38, %10;\n\tmadc.lo.cc.u32 %11, %20, 38, %11;\n\tmadc.hi.cc.u32 %12, %20, 38, %12;\n\tmadc.lo.cc.u32 %13, %22, 38, %13;\n\tmadc.hi.cc.u32 %14, %22, 38, %14;\n\tmadc.lo.cc.u32 %15, %24, 38, %15;\n\tmadc.hi.u32 %16, %24, 38, 0;"
+        : "+r"(E[0]), "+r"(E[1]), "+r"(E[2]), "+r"(E[3]), "+r"(E[4]), "+r"(E[5]), "+r"(E[6]), "+r"(E[7]), "+r"(E[8]), "+r"(Od[0]), "+r"(Od[1]), "+r"(Od[2]), "+r"(Od[3]), "+r"(Od[4]), "+r"(Od[5]), "+r"(Od[6]), "+r"(Od[7])
+        : "r"(hi[0]), "r"(hi[1]), "r"(hi[2]), "r"(hi[3]), "r"(hi[4]), "r"(hi[5]), "r"(hi[6]), "r"(hi[7]));
+    // combine: h[w] = E[w] + Od[w-1]; the top word t8 (< 41) and the 2^512 carry fold into word 0
+    uint32_t o[8], t8;
+    asm("add.cc.u32 %0, %10, %17;\n\taddc.cc.u32 %1, %11, %18;\n\taddc.cc.u32 %2, %12, %19;\n\taddc.cc.u32 %3, %13, %20;\n\t"
+        "addc.cc.u32 %4, %14, %21;\n\taddc.cc.u32 %5, %15, %22;\n\taddc.cc.u32 %6, %16, %23;\n\taddc.u32 %7, %9, %24;"
+        : "=&r"(o[1]), "=&r"(o[2]), "=&r"(o[3]), "=&r"(o[4]), "=&r"(o[5]), "=&r"(o[6]), "=&r"(o[7]), "=&r"(t8)
+        : "r"(E[0]), "r"(E[8]), "r"(E[1]), "r"(E[2]), "r"(E[3]), "r"(E[4]), "r"(E[5]), "r"(E[6]), "r"(E[7]),
+          "r"(Od[0]), "r"(Od[1]), "r"(Od[2]), "r"(Od[3]), "r"(Od[4]), "r"(Od[5]), "r"(Od[6]), "r"(Od[7]));
+    o[0] = E[0];
+    for (int i = 0; i < 8; i++) h.v[i] = o[i];
+    fe_addtop(h, fe_mul38small(t8), 0u);
+#endif
+}
+__device__ void fe_sq(fe &h, const fe &f) {
+    const uint32_t *a = f.v;
+    uint32_t E[16], Od[16];
+    #pragma unroll
+    for (int i = 0; i < 16; i++) { E[i] = 0; Od[i] = 0; }
+    // sq row 0
+    asm("mad.lo.cc.u32 %0, %15, %17, %0;\n\tmadc.hi.cc.u32 %1, %15, %17, %1;\n\tmadc.lo.cc.u32 %2, %15, %19, %2;\n\tmadc.hi.cc.u32 %3, %15, %19, %3;\n\tmadc.lo.cc.u32 %4, %15, %21, %4;\n\tmadc.hi.cc.u32 %5, %15, %21, %5;\n\taddc.u32 %6, %6, 0;\n\tmad.lo.cc.u32 %7, %15, %16, %7;\n\tmadc.hi.cc.u32 %8, %15, %16, %8;\n\tmadc.lo.cc.u32 %9, %15, %18, %9;\n\tmadc.hi.cc.u32 %10, %15, %18, %10;\n\tmadc.lo.cc.u32 %11, %15, %20, %11;\n\tmadc.hi.cc.u32 %12, %15, %20, %12;\n\tmadc.lo.cc.u32 %13, %15, %22, %13;\n\tmadc.hi.u32 %14, %15, %22, %14;"
+        : "+r"(E[2]), "+r"(E[3]), "+r"(E[4]), "+r"(E[5]), "+r"(E[6]), "+r"(E[7]), "+r"(E[8]), "+r"(Od[0]), "+r"(Od[1]), "+r"(Od[2]), "+r"(Od[3]), "+r"(Od[4]), "+r"(Od[5]), "+r"(Od[6]), "+r"(Od[7])
+        : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(a[4]), "r"(a[5]), "r"(a[6]), "r"(a[7]));
+    // sq row 1
+    asm("mad.lo.cc.u32 %0, %13, %15, %0;\n\tmadc.hi.cc.u32 %1, %13, %15, %1;\n\tmadc.lo.cc.u32 %2, %13, %17, %2;\n\tmadc.hi.cc.u32 %3, %13, %17, %3;\n\tmadc.lo.cc.u32 %4, %13, %19, %4;\n\tmadc.hi.u32 %5, %13, %19, %5;\n\tmad.lo.cc.u32 %6, %13, %14, %6;\n\tmadc.hi.cc.u32 %7, %13, %14, %7;\n\tmadc.lo.cc.u32 %8, %13, %16, %8;\n\tmadc.hi.cc.u32 %9, %13, %16, %9;\n\tmadc.lo.cc.u32 %10, %13, %18, %10;\n\tmadc.hi.cc.u32 %11, %13, %18, %11;\n\taddc.u32 %12, %12, 0;"
+        : "+r"(E[4]), "+r"(E[5]), "+r"(E[6]), "+r"(E[7]), "+r"(E[8]), "+r"(E[9]), "+r"(Od[2]), "+r"(Od[3]), "+r"(Od[4]), "+r"(Od[5]), "+r"(Od[6]), "+r"(Od[7]), "+r"(Od[8])
+        : "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(a[4]), "r"(a[5]), "r"(a[6]), "r"(a[7]));
+    // sq row 2
+    asm("mad.lo.cc.u32 %0, %11, %13, %0;\n\tmadc.hi.cc.u32 %1, %11, %13, %1;\n\tmadc.lo.cc.u32 %2, %11, %15, %2;\n\tmadc.hi.cc.u32 %3, %11, %15, %3;\n\taddc.u32 %4, %4, 0;\n\tmad.lo.cc.u32 %5, %11, %12, %5;\n\tmadc.hi.cc.u32 %6, %11, %12, %6;\n\tmadc.lo.cc.u32 %7, %11, %14, %7;\n\tmadc.hi.cc.u32 %8, %11, %14, %8;\n\tmadc.lo.cc.u32 %9, %11, %16, %9;\n\tmadc.hi.u32 %10, %11, %16, %10;"
+        : "+r"(E[6]), "+r"(E[7]), "+r"(E[8]), "+r"(E[9]), "+r"(E[10]), "+r"(Od[4]), "+r"(Od[5]), "+r"(Od[6]), "+r"(Od[7]), "+r"(Od[8]), "+r"(Od[9])
+        : "r"(a[2]), "r"(a[3]), "r"(a[4]), "r"(a[5]), "r"(a[6]), "r"(a[7]));
+    // sq row 3
+    asm("mad.lo.cc.u32 %0, %9, %11, %0;\n\tmadc.hi.cc.u32 %1, %9, %11, %1;\n\tmadc.lo.cc.u32 %2, %9, %13, %2;\n\tmadc.hi.u32 %3, %9, %13, %3;\n\tmad.lo.cc.u32 %4, %9, %10, %4;\n\tmadc.hi.cc.u32 %5, %9, %10, %5;\n\tmadc.lo.cc.u32 %6, %9, %12, %6;\n\tmadc.hi.cc.u32 %7, %9, %12, %7;\n\taddc.u32 %8, %8, 0;"
+        : "+r"(E[8]), "+r"(E[9]), "+r"(E[10]), "+r"(E[11]), "+r"(Od[6]), "+r"(Od[7]), "+r"(Od[8]), "+r"(Od[9]), "+r"(Od[10])
+        : "r"(a[3]), "r"(a[4]), "r"(a[5]), "r"(a[6]), "r"(a[7]));
+    // sq row 4
+    asm("mad.lo.cc.u32 %0, %7, %9, %0;\n\tmadc.hi.cc.u32 %1, %7, %9, %1;\n\taddc.u32 %2, %2, 0;\n\tmad.lo.cc.u32 %3, %7, %8, %3;\n\tmadc.hi.cc.u32 %4, %7, %8, %4;\n\tmadc.lo.cc.u32 %5, %7, %10, %5;\n\tmadc.hi.u32 %6, %7, %10, %6;"
+        : "+r"(E[10]), "+r"(E[11]), "+r"(E[12]), "+r"(Od[8]), "+r"(Od[9]), "+r"(Od[10]), "+r"(Od[11])
+        : "r"(a[4]), "r"(a[5]), "r"(a[6]), "r"(a[7]));
+    // sq row 5
+    asm("mad.lo.cc.u32 %0, %5, %7, %0;\n\tmadc.hi.u32 %1, %5, %7, %1;\n\tmad.lo.cc.u32 %2, %5, %6, %2;\n\tmadc.hi.cc.u32 %3, %5, %6, %3;\n\taddc.u32 %4, %4, 0;"
+        : "+r"(E[12]), "+r"(E[13]), "+r"(Od[10]), "+r"(Od[11]), "+r"(Od[12])
+        : "r"(a[5]), "r"(a[6]), "r"(a[7]));
+    // sq row 6
+    asm("mad.lo.cc.u32 %0, %2, %3, %0;\n\tmadc.hi.u32 %1, %2, %3, %1;"
+        : "+r"(Od[12]), "+r"(Od[13])
+        : "r"(a[6]), "r"(a[7]));
+    // cross sum s = E + Od<<32 (< 2^480), doubled by a funnel shift
+    uint32_t s[16];
+    s[0] = E[0];
+    asm("add.cc.u32 %0, %15, %29;\n\taddc.cc.u32 %1, %16, %30;\n\taddc.cc.u32 %2, %17, %31;\n\taddc.cc.u32 %3, %18, %32;\n\t"
+        "addc.cc.u32 %4, %19, %33;\n\taddc.cc.u32 %5, %20, %34;\n\taddc.cc.u32 %6, %21, %35;\n\taddc.cc.u32 %7, %22, %36;\n\t"
+        "addc.cc.u32 %8, %23, %37;\n\taddc.cc.u32 %9, %24, %38;\n\taddc.cc.u32 %10, %25, %39;\n\taddc.cc.u32 %11, %26, %40;\n\t"
+        "addc.cc.u32 %12, %27, %41;\n\taddc.cc.u32 %13, %28, %42;\n\taddc.u32 %14, 0, %43;"
+        : "=&r"(s[1]), "=&r"(s[2]), "=&r"(s[3]), "=&r"(s[4]), "=&r"(s[5]), "=&r"(s[6]), "=&r"(s[7]), "=&r"(s[8]), "=&r"(s[9]), "=&r"(s[10]), "=&r"(s[11]), "=&r"(s[12]), "=&r"(s[13]), "=&r"(s[14]), "=&r"(s[15])
+        : "r"(E[1]), "r"(E[2]), "r"(E[3]), "r"(E[4]), "r"(E[5]), "r"(E[6]), "r"(E[7]), "r"(E[8]), "r"(E[9]), "r"(E[10]), "r"(E[11]), "r"(E[12]), "r"(E[13]), "r"(E[14]),
+          "r"(Od[0]), "r"(Od[1]), "r"(Od[2]), "r"(Od[3]), "r"(Od[4]), "r"(Od[5]), "r"(Od[6]), "r"(Od[7]), "r"(Od[8]), "r"(Od[9]), "r"(Od[10]), "r"(Od[11]), "r"(Od[12]), "r"(Od[13]), "r"(Od[14]));
+    #pragma unroll
+    for (int k = 15; k > 0; k--) s[k] = (s[k] << 1) | (s[k - 1] >> 31);
+    s[0] <<= 1;
+    // the 8 squares at columns 0,2,..,14: one chain of aligned windows
+    asm("mad.lo.cc.u32 %0, %16, %16, 0;\n\tmadc.hi.cc.u32 %1, %16, %16, %1;\n\t"
+        "madc.lo.cc.u32 %2, %17, %17, %2;\n\tmadc.hi.cc.u32 %3, %17, %17, %3;\n\t"
+        "madc.lo.cc.u32 %4, %18, %18, %4;\n\tmadc.hi.cc.u32 %5, %18, %18, %5;\n\t"
+        "madc.lo.cc.u32 %6, %19, %19, %6;\n\tmadc.hi.cc.u32 %7, %19, %19, %7;\n\t"
+        "madc.lo.cc.u32 %8, %20, %20, %8;\n\tmadc.hi.cc.u32 %9, %20, %20, %9;\n\t"
+        "madc.lo.cc.u32 %10, %21, %21, %10;\n\tmadc.hi.cc.u32 %11, %21, %21, %11;\n\t"
+        "madc.lo.cc.u32 %12, %22, %22, %12;\n\tmadc.hi.cc.u32 %13, %22, %22, %13;\n\t"
+        "madc.lo.cc.u32 %14, %23, %23, %14;\n\tmadc.hi.u32 %15, %23, %23, %15;"
+        : "=&r"(s[0]), "+r"(s[1]), "+r"(s[2]), "+r"(s[3]), "+r"(s[4]), "+r"(s[5]), "+r"(s[6]), "+r"(s[7]), "+r"(s[8]), "+r"(s[9]), "+r"(s[10]), "+r"(s[11]), "+r"(s[12]), "+r"(s[13]), "+r"(s[14]), "+r"(s[15])
+        : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(a[4]), "r"(a[5]), "r"(a[6]), "r"(a[7]));
+    // fold 38 * s[8..15] into s[0..7]: even columns into s itself (aligned), odd columns into Od2, top word t8
+    uint32_t Od2[8], t8;
+    asm("mad.lo.cc.u32 %0, %17, 38, %0;\n\tmadc.hi.cc.u32 %1, %17, 38, %1;\n\tmadc.lo.cc.u32 %2, %19, 38, %2;\n\tmadc.hi.cc.u32 %3, %19, 38, %3;\n\t"
+        "madc.lo.cc.u32 %4, %21, 38, %4;\n\tmadc.hi.cc.u32 %5, %21, 38, %5;\n\tmadc.lo.cc.u32 %6, %23, 38, %6;\n\tmadc.hi.cc.u32 %7, %23, 38, %7;\n\taddc.u32 %8, 0, 0;\n\t"
+        "mad.lo.cc.u32 %9, %18, 38, 0;\n\tmadc.hi.cc.u32 %10, %18, 38, 0;\n\tmadc.lo.cc.u32 %11, %20, 38, 0;\n\tmadc.hi.cc.u32 %12, %20, 38, 0;\n\t"
+        "madc.lo.cc.u32 %13, %22, 38, 0;\n\tmadc.hi.cc.u32 %14, %22, 38, 0;\n\tmadc.lo.cc.u32 %15, %24, 38, 0;\n\tmadc.hi.u32 %16, %24, 38, 0;"
+        : "+r"(s[0]), "+r"(s[1]), "+r"(s[2]), "+r"(s[3]), "+r"(s[4]), "+r"(s[5]), "+r"(s[6]), "+r"(s[7]), "=&r"(t8),
+          "=&r"(Od2[0]), "=&r"(Od2[1]), "=&r"(Od2[2]), "=&r"(Od2[3]), "=&r"(Od2[4]), "=&r"(Od2[5]), "=&r"(Od2[6]), "=&r"(Od2[7])
+        : "r"(s[8]), "r"(s[9]), "r"(s[10]), "r"(s[11]), "r"(s[12]), "r"(s[13]), "r"(s[14]), "r"(s[15]));
+    uint32_t o[8];
+    asm("add.cc.u32 %0, %9, %16;\n\taddc.cc.u32 %1, %10, %17;\n\taddc.cc.u32 %2, %11, %18;\n\taddc.cc.u32 %3, %12, %19;\n\t"
+        "addc.cc.u32 %4, %13, %20;\n\taddc.cc.u32 %5, %14, %21;\n\taddc.cc.u32 %6, %15, %22;\n\taddc.u32 %7, %8, %23;"
+        : "=&r"(o[1]), "=&r"(o[2]), "=&r"(o[3]), "=&r"(o[4]), "=&r"(o[5]), "=&r"(o[6]), "=&r"(o[7]), "=&r"(t8)
+        : "r"(t8), "r"(s[1]), "r"(s[2]), "r"(s[3]), "r"(s[4]), "r"(s[5]), "r"(s[6]), "r"(s[7]),
+          "r"(Od2[0]), "r"(Od2[1]), "r"(Od2[2]), "r"(Od2[3]), "r"(Od2[4]), "r"(Od2[5]), "r"(Od2[6]), "r"(Od2[7]));
+    o[0] = s[0];
+    for (int i = 0; i < 8; i++) h.v[i] = o[i];
+    fe_addtop(h, fe_mul38small(t8), 0u);
+}
+
+#else // PX_WIDECHAIN
 // h = f * g
 __device__ void fe_mul(fe &h, const fe &f, const fe &g) {
     const uint32_t *a = f.v, *b = g.v;
@@ -510,6 +701,7 @@ __device__ void fe_sq(fe &h, const fe &f) {
     for (int i = 0; i < 8; i++) h.v[i] = o[i];
     fe_addtop(h, cin * 38u, 0u);   // cin < 39
 }
+#endif // PX_WIDECHAIN
 #else
 // h = f * g: 512-bit schoolbook product, then folded
 __device__ void fe_mul(fe &h, const fe &f, const fe &g) {
@@ -1600,4 +1792,6 @@ static const VariantOps ops = { PX_VARIANT_NAME,
 #undef PX_CSHIFT
 #undef PX_MERGE8
 #undef PX_SQCHAIN
+#undef PX_WIDECHAIN
+#undef PX_FOLDSHIFT
 #undef PX_LB_H2C

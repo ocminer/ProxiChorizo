@@ -162,6 +162,7 @@ namespace v_fe32_w4_lb2_c {
 #undef PX_COMPACT
 
 #endif // PX_LEAN
+#ifndef PX_DEV_AMPERE
 #define PX_FE32 1
 #define PX_WINDOW 5
 #define PX_LB_BLOCKS 2
@@ -197,6 +198,7 @@ namespace v_fe32c_wnaf_lb2_c {
 // the 0.5.8 default for every measured NVIDIA generation: comba field arithmetic, the cofactor folded into
 // the wNAF scalar, a separate normalisation stage sharing one inversion over 16 points, the hash-to-curve
 // kernel at 3 blocks per SM (PLATFORMS.md, round 10)
+#endif // !PX_DEV_AMPERE
 #define PX_FE32 1
 #define PX_COMBA 1
 #define PX_MERGE8 1
@@ -219,6 +221,58 @@ namespace v_fe32c_wnaf_s16_c {
 #undef PX_VARIANT_NAME
 #undef PX_LB_THREADS
 #undef PX_SPLIT_FINISH
+
+#ifdef PX_DEV_AMPERE
+// Ampere development: the shipped 0.5.9 structure with the wide-chain field arithmetic
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_WINDOW 5
+#define PX_LB_BLOCKS 2
+#define PX_LB_H2C 3
+#define PX_COMPACT 1
+#define PX_SPLIT_FINISH 16
+#define PX_VARIANT_NAME "fe32w_wnaf_s16_c"
+namespace v_fe32w_wnaf_s16_c {
+#include "proxichorizo_device.cuh"
+}
+#undef PX_FE32
+#undef PX_COMBA
+#undef PX_MERGE8
+#undef PX_WINDOW
+#undef PX_LB_BLOCKS
+#undef PX_LB_H2C
+#undef PX_COMPACT
+#undef PX_VARIANT_NAME
+#undef PX_LB_THREADS
+#undef PX_SPLIT_FINISH
+
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_FOLDSHIFT 1
+#define PX_MERGE8 1
+#define PX_WINDOW 5
+#define PX_LB_BLOCKS 2
+#define PX_LB_H2C 3
+#define PX_COMPACT 1
+#define PX_SPLIT_FINISH 16
+#define PX_VARIANT_NAME "fe32wf_wnaf_s16_c"
+namespace v_fe32wf_wnaf_s16_c {
+#include "proxichorizo_device.cuh"
+}
+#undef PX_FE32
+#undef PX_COMBA
+#undef PX_MERGE8
+#undef PX_WINDOW
+#undef PX_LB_BLOCKS
+#undef PX_LB_H2C
+#undef PX_COMPACT
+#undef PX_VARIANT_NAME
+#undef PX_LB_THREADS
+#undef PX_SPLIT_FINISH
+#endif // PX_DEV_AMPERE
 
 #ifdef PX_DEV_EXTRA
 // development-only comba combinations (not in release builds)
@@ -360,7 +414,9 @@ namespace v_fe32_w4_linear_split8_c {
 
 #endif // PX_LEAN
 #ifdef PX_LEAN
-#ifdef PX_DEV_EXTRA
+#ifdef PX_DEV_AMPERE
+static const VariantOps *VARIANTS[] = { &v_fe32c_wnaf_s16_c::ops, &v_fe32w_wnaf_s16_c::ops, &v_fe32wf_wnaf_s16_c::ops };
+#elif defined(PX_DEV_EXTRA)
 static const VariantOps *VARIANTS[] = { &v_fe32_wnaf_lb2_c::ops, &v_fe32c_wnaf_lb2_c::ops, &v_fe32c_wnaf_s16_c::ops, &v_fe32c_wnaf_lb1_c::ops, &v_fe32c_wnaf_split16_c::ops, &v_fe32c_wnaf_inv4_c::ops, &v_fe32c_wnaf_m8_c::ops, &v_fe32c_wnaf_m8s16_c::ops };
 #else
 static const VariantOps *VARIANTS[] = { &v_fe32_wnaf_lb2_c::ops, &v_fe32c_wnaf_lb2_c::ops, &v_fe32c_wnaf_s16_c::ops };
