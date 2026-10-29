@@ -56,8 +56,8 @@ marked dead and reported; the others keep mining (the process exits only when no
 
 **Temperature:** every GPU is watched by the miner itself. At `--max-temp` (default 88 °C core)
 or `--max-mem-temp` (default 92 °C memory, on cards that report it) only that GPU pauses, with
-a yellow log line, and resumes by itself once it has cooled 8 °C below the limit; the other
-GPUs keep mining. `--max-temp 0` disables it. The stats API shows a paused GPU as
+a yellow log line, and resumes by itself once it has cooled 8 °C below the limit (after at least
+30 s); the other GPUs keep mining. `--max-temp 0` disables it. The stats API shows a paused GPU as
 `"status":"paused","reason":"thermal"`.
 
 Instead of `--key-file` you may pass the key as `--seed-hex <first 64 hex chars of
@@ -153,7 +153,7 @@ about half of that). `--iters 8` is the best launch geometry on every AMD card m
 -d 0,1,2,3           GPUs to use (default: all of them, one process, numbered in PCI bus order like nvidia-smi;
                      --gpus and --devices are the same option)
 --api-bind [H:]PORT  statistics: JSON at http://H:PORT/, mmpOS line at /mmpos (default off)
---max-temp N         pause a GPU at N C core temperature, resume 8 C lower (default 88; 0 = off); only that GPU pauses
+--max-temp N         pause a GPU at N C core temperature, resume 8 C lower after at least 30 s (default 88; 0 = off); only that GPU pauses
 --max-mem-temp N     the same for the memory temperature where the driver reports one (default 92; 0 = off)
 --log-interval N     seconds between the per-GPU and total lines (default 30)
 --quiet              only the total line, job changes, warnings and errors
@@ -193,7 +193,7 @@ line shows the kernel, the launch shape and the reason.
 - Low kernel percentage in `--verbose` lines — too little work per launch: raise `--iters`
   (4 on most GPUs, 2 on a CMP 170HX).
 - `GPU #n: … reaches the limit … paused` — that card is too hot; it resumes by itself 8 °C
-  below the limit while the others keep mining. Improve the cooling or lower its power cap;
+  below the limit (after at least 30 s) while the others keep mining. Improve the cooling or lower its power cap;
   `--max-temp` raises the limit if your card is rated for it.
 - `GPU #n: CUDA error … this GPU is disabled` — a device error (Xid, fallen off the bus) on
   one card; the others keep mining. Check `dmesg`/`nvidia-smi` and restart the miner once the

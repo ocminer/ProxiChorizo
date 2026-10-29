@@ -424,7 +424,7 @@ static void log_warn(const std::string &s) { logc(C_YELLOW, s); }
 static void bannerln(const std::string &s) { std::lock_guard<std::mutex> l(g_log_mu); fprintf(stderr, "%s\n", s.c_str()); }
 struct ConsoleOpts { bool noColor = false, quiet = false, verbose = false; int logInterval = 30, maxTemp = 88, maxMemTemp = 92; };
 static const char *CONSOLE_USAGE =
-    "  --max-temp N       pause a GPU at N C core temperature, resume 8 C lower (default 88; 0 = off); only that GPU pauses\n"
+    "  --max-temp N       pause a GPU at N C core temperature, resume 8 C lower after at least 30 s (default 88; 0 = off); only that GPU pauses\n"
     "  --max-mem-temp N   the same for the memory temperature where the driver reports one (default 92; 0 = off)\n"
     "  --log-interval N   seconds between the per-GPU and total hashrate lines (default 30)\n"
     "  --quiet            only the total line, job changes, warnings and errors (no per-GPU or per-share lines)\n"
@@ -897,7 +897,9 @@ static bool thermal_gate(Shared &sh, int ordinal) {
             if (lim > 0 && se.temp >= lim) snprintf(b, sizeof b, "%dC core reaches the limit of %dC: paused, resumes below %dC (the other GPUs keep mining)", se.temp, lim, lim - d);
             else snprintf(b, sizeof b, "%dC memory reaches the limit of %dC: paused, resumes below %dC (the other GPUs keep mining)", se.mem_temp, mlim, mlim - d);
             msg = gpu_tag(g) + ": " + b;
-        } else if (g.paused && g.reason == "thermal" && cool) {
+        } else if (g.paused && g.reason == "thermal" && cool && now - g.paused_at >= std::chrono::seconds(30)) {
+            // a paused card cools several degrees within seconds and would flap every sensor
+            // interval: stay paused at least 30 s so the pause is a duty cycle, not a flutter
             g.paused = false; g.reason.clear();
             char b[120]; snprintf(b, sizeof b, "%dC: cooled down after %s, mining again", se.temp, fmt_uptime((uint64_t)std::chrono::duration<double>(now - g.paused_at).count()).c_str());
             msg = gpu_tag(g) + ": " + b;
