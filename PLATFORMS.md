@@ -603,3 +603,6 @@ and square 11.11; wide chains with the exponentiation chains folding by shifts 1
 spills) 12.51–12.52. RTX 5080: wide chains 35.34–35.50; 3 blocks/SM 34.97–35.04; shift fold in the exponentiation chains 35.02–35.03.
 Nsight Compute of the new scalar kernel on the 3070: multiplier pipe 87 % busy (instruction share 47 %), integer pipe 36 %, issue 44 %,
 launch 93.5 ms vs 103.8 ms for the comba kernel over the same nonce range.
+Live pool mining with the final 0.5.10 build at the then-current difficulty (k = 33): RTX 5090 at 600 W, 40 minutes, 67.7 MH/s average,
+23 shares accepted, 0 rejected, 0 stale; RTX 5090 at 420 W, 37 minutes, 50.4 MH/s, 15 accepted, 0 rejected; shorter 8-minute runs on an
+RTX 3070 (12.7 MH/s) and an RTX 5080 (35.1 MH/s) found no share, as expected at that difficulty (about one and two expected).
