@@ -5,6 +5,7 @@
 // ProxiChorizo.cu inside a namespace, with PX_FE32 / PX_WINDOW / PX_LB_BLOCKS /
 // PX_VARIANT_NAME set by the includer; see PLATFORMS.md for what each costs.
 #if defined(PX_FE26)
+#define fe_sq_pow fe_sq
 // ----------------------------------------------------------------------------
 // field element, 10 signed 32-bit limbs in radix 2^25.5 (26, 25, 26, ... bits),
 // the ref10 layout: products are accumulated in 64-bit columns, one IMAD.WIDE
@@ -81,7 +82,7 @@ __device__ void fe_sq(fe &h, const fe &f) {
     for (int k = 0; k < 10; k++) t[k] += w[k] * 19;
     fe_carry64(h, t);
 }
-__device__ __forceinline__ void fe_pow2k(fe &h, const fe &f, int k) { fe_copy(h, f); for (int i = 0; i < k; i++) fe_sq(h, h); }
+__device__ __forceinline__ void fe_pow2k(fe &h, const fe &f, int k) { fe_copy(h, f); for (int i = 0; i < k; i++) fe_sq_pow(h, h); }
 
 // canonical little-endian bytes (ref10 fe_tobytes after a carry pass)
 __device__ void fe_tobytes(uint8_t s[32], const fe &f) {
@@ -477,13 +478,14 @@ __device__ void fe_mul(fe &h, const fe &f, const fe &g) {
     // 2^256 = 38: h = lo + 38 * hi with 38 * hi = hi<<5 + hi<<2 + hi<<1 built from funnel shifts and
     // added on the integer pipe, so the fold costs no wide multiplies at all (the multiplier pipe is
     // the bottleneck on GA10x). lo = E[0..8] + Od[0..7]<<32 first, nine words.
+    // lo = E[0..7] + Od[0..6]<<32 (E[8] and Od[7] are word 8: they belong to hi), L[8] = its carry
     uint32_t L[9];
     L[0] = E[0];
-    asm("add.cc.u32 %0, %8, %16;\n\taddc.cc.u32 %1, %9, %17;\n\taddc.cc.u32 %2, %10, %18;\n\taddc.cc.u32 %3, %11, %19;\n\t"
-        "addc.cc.u32 %4, %12, %20;\n\taddc.cc.u32 %5, %13, %21;\n\taddc.cc.u32 %6, %14, %22;\n\taddc.u32 %7, %15, %23;"
+    asm("add.cc.u32 %0, %8, %15;\n\taddc.cc.u32 %1, %9, %16;\n\taddc.cc.u32 %2, %10, %17;\n\taddc.cc.u32 %3, %11, %18;\n\t"
+        "addc.cc.u32 %4, %12, %19;\n\taddc.cc.u32 %5, %13, %20;\n\taddc.cc.u32 %6, %14, %21;\n\taddc.u32 %7, 0, 0;"
         : "=&r"(L[1]), "=&r"(L[2]), "=&r"(L[3]), "=&r"(L[4]), "=&r"(L[5]), "=&r"(L[6]), "=&r"(L[7]), "=&r"(L[8])
-        : "r"(E[1]), "r"(E[2]), "r"(E[3]), "r"(E[4]), "r"(E[5]), "r"(E[6]), "r"(E[7]), "r"(E[8]),
-          "r"(Od[0]), "r"(Od[1]), "r"(Od[2]), "r"(Od[3]), "r"(Od[4]), "r"(Od[5]), "r"(Od[6]), "r"(Od[7]));
+        : "r"(E[1]), "r"(E[2]), "r"(E[3]), "r"(E[4]), "r"(E[5]), "r"(E[6]), "r"(E[7]),
+          "r"(Od[0]), "r"(Od[1]), "r"(Od[2]), "r"(Od[3]), "r"(Od[4]), "r"(Od[5]), "r"(Od[6]));
 #define PX_ADDSHIFTED(sh) do { \
         uint32_t t[9]; \
         t[0] = hi[0] << (sh); \
@@ -515,7 +517,7 @@ __device__ void fe_mul(fe &h, const fe &f, const fe &g) {
     fe_addtop(h, fe_mul38small(t8), 0u);
 #endif
 }
-__device__ void fe_sq(fe &h, const fe &f) {
+template<int FS> __device__ void fe_sq_impl(fe &h, const fe &f) {
     const uint32_t *a = f.v;
     uint32_t E[16], Od[16];
     #pragma unroll
@@ -572,6 +574,27 @@ __device__ void fe_sq(fe &h, const fe &f) {
         "madc.lo.cc.u32 %14, %23, %23, %14;\n\tmadc.hi.u32 %15, %23, %23, %15;"
         : "=&r"(s[0]), "+r"(s[1]), "+r"(s[2]), "+r"(s[3]), "+r"(s[4]), "+r"(s[5]), "+r"(s[6]), "+r"(s[7]), "+r"(s[8]), "+r"(s[9]), "+r"(s[10]), "+r"(s[11]), "+r"(s[12]), "+r"(s[13]), "+r"(s[14]), "+r"(s[15])
         : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(a[4]), "r"(a[5]), "r"(a[6]), "r"(a[7]));
+    if (FS) {
+    // 2^256 = 38 by funnel shifts on the integer pipe (see fe_mul): h = s[0..7] + s[8..15] * (32 + 4 + 2)
+    { uint32_t L[9]; const uint32_t *hi = s + 8;
+      #pragma unroll
+      for (int i = 0; i < 8; i++) L[i] = s[i];
+      L[8] = 0;
+#define PX_ADDSHIFTED(sh) do { \
+        uint32_t t[9]; \
+        t[0] = hi[0] << (sh); \
+        _Pragma("unroll") for (int k = 1; k < 8; k++) t[k] = __funnelshift_l(hi[k - 1], hi[k], (sh)); \
+        t[8] = hi[7] >> (32 - (sh)); \
+        asm("add.cc.u32 %0, %0, %9;\n\taddc.cc.u32 %1, %1, %10;\n\taddc.cc.u32 %2, %2, %11;\n\taddc.cc.u32 %3, %3, %12;\n\t" \
+            "addc.cc.u32 %4, %4, %13;\n\taddc.cc.u32 %5, %5, %14;\n\taddc.cc.u32 %6, %6, %15;\n\taddc.cc.u32 %7, %7, %16;\n\taddc.u32 %8, %8, %17;" \
+            : "+r"(L[0]), "+r"(L[1]), "+r"(L[2]), "+r"(L[3]), "+r"(L[4]), "+r"(L[5]), "+r"(L[6]), "+r"(L[7]), "+r"(L[8]) \
+            : "r"(t[0]), "r"(t[1]), "r"(t[2]), "r"(t[3]), "r"(t[4]), "r"(t[5]), "r"(t[6]), "r"(t[7]), "r"(t[8])); \
+    } while (0)
+      PX_ADDSHIFTED(5); PX_ADDSHIFTED(2); PX_ADDSHIFTED(1);
+#undef PX_ADDSHIFTED
+      for (int i = 0; i < 8; i++) h.v[i] = L[i];
+      fe_addtop(h, fe_mul38small(L[8]), 0u); }
+    } else {
     // fold 38 * s[8..15] into s[0..7]: even columns into s itself (aligned), odd columns into Od2, top word t8
     uint32_t Od2[8], t8;
     asm("mad.lo.cc.u32 %0, %17, 38, %0;\n\tmadc.hi.cc.u32 %1, %17, 38, %1;\n\tmadc.lo.cc.u32 %2, %19, 38, %2;\n\tmadc.hi.cc.u32 %3, %19, 38, %3;\n\t"
@@ -590,7 +613,18 @@ __device__ void fe_sq(fe &h, const fe &f) {
     o[0] = s[0];
     for (int i = 0; i < 8; i++) h.v[i] = o[i];
     fe_addtop(h, fe_mul38small(t8), 0u);
+    }
 }
+__device__ __forceinline__ void fe_sq(fe &h, const fe &f) { fe_sq_impl<(PX_FOLDSHIFT >= 2)>(h, f); }
+#ifndef PX_FOLDSHIFT_POW
+#define PX_FOLDSHIFT_POW 0
+#endif
+#if PX_FOLDSHIFT_POW
+// the exponentiation chains (square roots in hash-to-curve, inversions) square with the shift fold: there the
+// integer pipe has room while the multiplier pipe is the limit
+__device__ __forceinline__ void fe_sq_pow(fe &h, const fe &f) { fe_sq_impl<1>(h, f); }
+#define PX_HAVE_SQ_POW 1
+#endif
 
 #else // PX_WIDECHAIN
 // h = f * g
@@ -745,8 +779,11 @@ __device__ void fe_sq(fe &h, const fe &f) {
 }
 #endif
 #endif // PX_COMBA
+#ifndef PX_HAVE_SQ_POW
+#define fe_sq_pow fe_sq
+#endif
 
-__device__ __forceinline__ void fe_pow2k(fe &h, const fe &f, int k) { fe_copy(h, f); for (int i = 0; i < k; i++) fe_sq(h, h); }
+__device__ __forceinline__ void fe_pow2k(fe &h, const fe &f, int k) { fe_copy(h, f); for (int i = 0; i < k; i++) fe_sq_pow(h, h); }
 
 // canonical representative in [0, p)
 __device__ __forceinline__ void fe_canon(uint32_t out[8], const fe &f) {
@@ -776,6 +813,7 @@ __device__ __forceinline__ bool fe_isnegative(const fe &f) { uint32_t c[8]; fe_c
 __device__ __forceinline__ bool fe_iszero(const fe &f) { uint32_t c[8]; fe_canon(c, f); uint32_t o = 0; for (int i = 0; i < 8; i++) o |= c[i]; return o == 0; }
 __device__ __forceinline__ bool fe_eq(const fe &f, const fe &g) { fe t; fe_sub(t, f, g); return fe_iszero(t); }
 #else
+#define fe_sq_pow fe_sq
 struct fe { uint64_t v[5]; };
 #define MASK51 0x7FFFFFFFFFFFFULL
 
@@ -851,7 +889,7 @@ __device__ void fe_sq(fe &h, const fe &f) {
     o0 += carry * 19; carry = o0 >> 51; o0 &= MASK51; o1 += carry;
     h.v[0] = o0; h.v[1] = o1; h.v[2] = o2; h.v[3] = o3; h.v[4] = o4;
 }
-__device__ __forceinline__ void fe_pow2k(fe &h, const fe &f, int k) { fe_copy(h, f); for (int i = 0; i < k; i++) fe_sq(h, h); }
+__device__ __forceinline__ void fe_pow2k(fe &h, const fe &f, int k) { fe_copy(h, f); for (int i = 0; i < k; i++) fe_sq_pow(h, h); }
 
 __device__ void fe_tobytes(uint8_t s[32], const fe &f) {
     fe h; fe_copy(h, f); fe_reduce(h);
@@ -1493,7 +1531,10 @@ __global__ void __launch_bounds__(PX_LB_THREADS, PX_LB_MULT_BLOCKS) mult_kernel(
 #ifdef PX_SPLIT_FINISH
 // Keep only one point live in the expensive scalar stage. Normalization is
 // a separate stage so a larger inversion batch needs no parked scalar tables.
-__global__ void __launch_bounds__(256, 2) scalar_kernel(const HPoint *pts,const unsigned *n_ptr,ProjectivePoint *out) {
+#ifndef PX_LB_SCALAR
+#define PX_LB_SCALAR 2
+#endif
+__global__ void __launch_bounds__(256, PX_LB_SCALAR) scalar_kernel(const HPoint *pts,const unsigned *n_ptr,ProjectivePoint *out) {
     unsigned n=*n_ptr;
     for(unsigned i=blockIdx.x*blockDim.x+threadIdx.x;i<n;i+=gridDim.x*blockDim.x) {
         ge G; bool ok=mult_point(G,pts[i]);
@@ -1794,4 +1835,8 @@ static const VariantOps ops = { PX_VARIANT_NAME,
 #undef PX_SQCHAIN
 #undef PX_WIDECHAIN
 #undef PX_FOLDSHIFT
+#undef PX_LB_SCALAR
+#undef PX_FOLDSHIFT_POW
+#undef PX_HAVE_SQ_POW
+#undef fe_sq_pow
 #undef PX_LB_H2C

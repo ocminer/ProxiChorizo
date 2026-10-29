@@ -16,7 +16,7 @@
 #include <random>
 #include <fstream>
 #include <sstream>
-#define PX_VERSION "0.5.9"
+#define PX_VERSION "0.5.10"
 #include <signal.h>
 // sockets: POSIX or Winsock behind four helpers
 #ifdef _WIN32
@@ -87,7 +87,8 @@ struct VariantOps {
     int (*fetest)(uint32_t seed, int n, uint8_t dump[128]);
 };
 
-// PX_LEAN: development builds compile only the shipped Blackwell variant and the comba variant (minutes instead of ~7 per arch)
+// PX_LEAN: development builds compile only the shipped variants (minutes instead of ~7 per arch); PX_DEV_AMPERE narrows
+// that to the 0.5.9 comba default and the 0.5.10 wide-chain default for A/B runs
 #ifndef PX_LEAN
 #define PX_FE32 1
 #define PX_WINDOW 0
@@ -222,8 +223,8 @@ namespace v_fe32c_wnaf_s16_c {
 #undef PX_LB_THREADS
 #undef PX_SPLIT_FINISH
 
-#ifdef PX_DEV_AMPERE
-// Ampere development: the shipped 0.5.9 structure with the wide-chain field arithmetic
+// the 0.5.10 default for every measured NVIDIA generation: the 0.5.8 structure with the wide-multiply
+// carry chains (PX_WIDECHAIN) in place of the three-word comba columns (PLATFORMS.md, round 11)
 #define PX_FE32 1
 #define PX_COMBA 1
 #define PX_WIDECHAIN 1
@@ -248,31 +249,6 @@ namespace v_fe32w_wnaf_s16_c {
 #undef PX_LB_THREADS
 #undef PX_SPLIT_FINISH
 
-#define PX_FE32 1
-#define PX_COMBA 1
-#define PX_WIDECHAIN 1
-#define PX_FOLDSHIFT 1
-#define PX_MERGE8 1
-#define PX_WINDOW 5
-#define PX_LB_BLOCKS 2
-#define PX_LB_H2C 3
-#define PX_COMPACT 1
-#define PX_SPLIT_FINISH 16
-#define PX_VARIANT_NAME "fe32wf_wnaf_s16_c"
-namespace v_fe32wf_wnaf_s16_c {
-#include "proxichorizo_device.cuh"
-}
-#undef PX_FE32
-#undef PX_COMBA
-#undef PX_MERGE8
-#undef PX_WINDOW
-#undef PX_LB_BLOCKS
-#undef PX_LB_H2C
-#undef PX_COMPACT
-#undef PX_VARIANT_NAME
-#undef PX_LB_THREADS
-#undef PX_SPLIT_FINISH
-#endif // PX_DEV_AMPERE
 
 #ifdef PX_DEV_EXTRA
 // development-only comba combinations (not in release builds)
@@ -415,14 +391,14 @@ namespace v_fe32_w4_linear_split8_c {
 #endif // PX_LEAN
 #ifdef PX_LEAN
 #ifdef PX_DEV_AMPERE
-static const VariantOps *VARIANTS[] = { &v_fe32c_wnaf_s16_c::ops, &v_fe32w_wnaf_s16_c::ops, &v_fe32wf_wnaf_s16_c::ops };
+static const VariantOps *VARIANTS[] = { &v_fe32c_wnaf_s16_c::ops, &v_fe32w_wnaf_s16_c::ops };
 #elif defined(PX_DEV_EXTRA)
-static const VariantOps *VARIANTS[] = { &v_fe32_wnaf_lb2_c::ops, &v_fe32c_wnaf_lb2_c::ops, &v_fe32c_wnaf_s16_c::ops, &v_fe32c_wnaf_lb1_c::ops, &v_fe32c_wnaf_split16_c::ops, &v_fe32c_wnaf_inv4_c::ops, &v_fe32c_wnaf_m8_c::ops, &v_fe32c_wnaf_m8s16_c::ops };
+static const VariantOps *VARIANTS[] = { &v_fe32_wnaf_lb2_c::ops, &v_fe32c_wnaf_lb2_c::ops, &v_fe32c_wnaf_s16_c::ops, &v_fe32c_wnaf_lb1_c::ops, &v_fe32c_wnaf_split16_c::ops, &v_fe32c_wnaf_inv4_c::ops, &v_fe32c_wnaf_m8_c::ops, &v_fe32c_wnaf_m8s16_c::ops, &v_fe32w_wnaf_s16_c::ops };
 #else
-static const VariantOps *VARIANTS[] = { &v_fe32_wnaf_lb2_c::ops, &v_fe32c_wnaf_lb2_c::ops, &v_fe32c_wnaf_s16_c::ops };
+static const VariantOps *VARIANTS[] = { &v_fe32_wnaf_lb2_c::ops, &v_fe32c_wnaf_lb2_c::ops, &v_fe32c_wnaf_s16_c::ops, &v_fe32w_wnaf_s16_c::ops };
 #endif
 #else
-static const VariantOps *VARIANTS[] = { &v_fe32_w0_lb2::ops, &v_fe32_w4_lb2::ops, &v_fe32_w0_lb2_c::ops, &v_fe32_w4_lb2_c::ops, &v_fe32_wnaf_lb2_c::ops, &v_fe51_w4_lb1::ops, &v_fe32_wnaf_split16_c::ops, &v_fe32_w4_linear_split8_c::ops, &v_fe32c_wnaf_lb2_c::ops, &v_fe32c_wnaf_s16_c::ops };
+static const VariantOps *VARIANTS[] = { &v_fe32_w0_lb2::ops, &v_fe32_w4_lb2::ops, &v_fe32_w0_lb2_c::ops, &v_fe32_w4_lb2_c::ops, &v_fe32_wnaf_lb2_c::ops, &v_fe51_w4_lb1::ops, &v_fe32_wnaf_split16_c::ops, &v_fe32_w4_linear_split8_c::ops, &v_fe32c_wnaf_lb2_c::ops, &v_fe32c_wnaf_s16_c::ops, &v_fe32w_wnaf_s16_c::ops };
 #endif
 static const int NVARIANTS = sizeof(VARIANTS) / sizeof(VARIANTS[0]);
 
@@ -1271,13 +1247,13 @@ static GpuCfg autotune(int dev, const uint8_t scalar[32], const uint8_t pk[32], 
     double bestRate = 0;
     // threads, nonces per thread, blocks per multiprocessor (ignored under --blocks)
     const int geoAll[][3] = { {256, 4, 8}, {256, 2, 8}, {128, 4, 8}, {256, 1, 64}, {256, 1, 128}, {256, 2, 64} };
-    // quick: the kernels that win somewhere (0.5.8 comba, wNAF, 4-bit table), at the two launch shapes that do
+    // quick: the kernels that win somewhere (0.5.10 wide-chain, 0.5.8 comba, wNAF, 4-bit table), at the two launch shapes that do
     const int geoQuick[][3] = { {256, 1, 128}, {256, 4, 8} };
     const int (*geo)[3] = quick ? geoQuick : geoAll;
     const int ngeo = quick ? 2 : 6;
     fprintf(stderr, "autotune GPU %d %s (sm_%d%d), %.0fs per trial:\n", dev, prop.name, prop.major, prop.minor, seconds);
     for (int v = 0; v < NVARIANTS; v++) {
-        if (quick && strcmp(VARIANTS[v]->name, "fe32c_wnaf_s16_c") != 0 && strcmp(VARIANTS[v]->name, "fe32_wnaf_lb2_c") != 0 && strcmp(VARIANTS[v]->name, "fe32_w4_lb2_c") != 0) continue;
+        if (quick && strcmp(VARIANTS[v]->name, "fe32w_wnaf_s16_c") != 0 && strcmp(VARIANTS[v]->name, "fe32c_wnaf_s16_c") != 0 && strcmp(VARIANTS[v]->name, "fe32_wnaf_lb2_c") != 0 && strcmp(VARIANTS[v]->name, "fe32_w4_lb2_c") != 0) continue;
         uint8_t pk2[32];
         if (VARIANTS[v]->init(scalar, pk2) != 1 || memcmp(pk2, pk, 32) != 0) { fprintf(stderr, "  %-12s: init failed, skipped\n", VARIANTS[v]->name); continue; }
         for (int gi = 0; gi < ngeo; gi++) {
