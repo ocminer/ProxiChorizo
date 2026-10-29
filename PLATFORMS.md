@@ -574,7 +574,7 @@ multiplies per field multiply, 44 per square); the integer adds drop from ~44 to
 and ptxas no longer needs `IMAD.MOV`/`IMAD.X` moves on the multiplier pipe for most of the carries (static kernel mix on sm_86:
 2327 wide multiplies, 1725 `IADD3.X`, 218 `IMAD.MOV`, 130 `IMAD.X` vs 2314 / 2043 / 564 / 303 in 0.5.9). In isolation on the 3070
 (`tools/febench6.cu`): multiply 31.1 → 33.2 G/s, square 40.9 → 46.6 G/s; 0 mismatches over 52 M full-range operand pairs against
-the comba code; the kernel passes the 16 node vectors, `--fetest`, the 512 independent vectors and `--verify` on sm_86, sm_120 and sm_80.
+the comba code; every variant of the final build passes the 16 node vectors, `--fetest`, the 512 independent vectors and `--verify` (identical hit sets, 58 pipeline edge shapes / 5,189 complete outputs) on sm_86 (RTX 3070), sm_120 (RTX 5080, RTX 5090) and sm_80 (CMP 170HX).
 
 Tried and dropped (RTX 3070 unless noted):
 - Karatsuba on top of the wide chains (three 4×4 products, 54 instead of 72 wide multiplies): 29.4 vs 33.2 G multiplies/s in
@@ -583,15 +583,20 @@ Tried and dropped (RTX 3070 unless noted):
   multiplier pipe is the bottleneck; on GA10x the extra shift/add instructions are not free (the physical pipe is shared with part of
   the integer work). The same for the squaring and for the exponentiation chains only.
 
-Matched A/B/B/A `--bench 45`, same card and cap, CUDA 12.9 builds of the 0.5.9 source (`fe32c_wnaf_s16_c`, the shipped default) and the
-0.5.10 source (`fe32w_wnaf_s16_c`) from one binary, automatic launch shape (128 blocks/SM × 256 × 1), driver-reported power and clock:
+Matched A/B/B/A `--bench 45` of the final 0.5.10 build (all variants, CUDA 12.9) against the 0.5.9 release binary on the same card and
+cap, automatic defaults on both sides (`fe32c_wnaf_s16_c` → `fe32w_wnaf_s16_c`, 128 blocks/SM × 256 × 1), driver-reported power and clock:
 
 | GPU | Power cap | 0.5.9 default | 0.5.10 default | Gain | Power / SM clock (0.5.10) |
 |---|---:|---:|---:|---:|---|
-| RTX 3070 (sm_86, 46 SMs) | 240 W | 11.43 / 11.52 MH/s | **12.76 / 12.74 MH/s** | +11 % | 230 W, 1815–1905 MHz |
-| RTX 5090 (sm_120, 170 SMs) | 600 W | 64.07 / 63.59 MH/s | **68.19 / 67.98 MH/s** | +6.7 % | 573 W, 2655–2940 MHz |
-| RTX 5090 | 420 W | 48.07 / 48.44 MH/s | **50.85 / 51.19 MH/s** | +5.7 % | 404 W, ~2000 MHz |
-| RTX 5080 (sm_120, 84 SMs) | 360 W | 32.99 / 33.00 MH/s | **35.35 / 35.35 MH/s** | +7.1 % | 336 W, 2775–2850 MHz |
+| RTX 3070 (sm_86, 46 SMs) | 240 W | 11.51 / 11.45 MH/s | **12.74 / 12.73 MH/s** | +11.0 % | 230 W, 1830–1890 MHz |
+| RTX 3070, second card (x1 riser host, 220 W) | 220 W | 11.50 / 11.43 MH/s | **12.71 / 12.69 MH/s** | +10.8 % | 212 W, 1815–1935 MHz |
+| CMP 170HX (sm_80, 74 SMs, core locked at 1300 MHz) | 250 W | 12.46 / 12.46 MH/s | **14.04 / 14.04 MH/s** | +12.7 % | 163 W, 1290 MHz |
+| RTX 5080 (sm_120, 84 SMs) | 360 W | 33.11 / 33.10 MH/s | **35.49 / 35.48 MH/s** | +7.2 % | 335 W, 2790–2850 MHz |
+| RTX 5090 (sm_120, 170 SMs; a verifier process coexists on this card) | 600 W | 64.07 / 63.70 MH/s | **68.01 / 67.96 MH/s** | +6.4 % | 574 W, 2655–2932 MHz |
+| RTX 5090 | 420 W | 48.78 / 48.46 MH/s | **51.04 / 51.03 MH/s** | +5.0 % | 405 W, 1987–2842 MHz |
+
+Development builds earlier in the round (one binary, `--variant`, 45 s arms) gave the same picture: 3070 11.43 / 11.52 → 12.76 / 12.74;
+5090 64.07 / 63.59 → 68.19 / 67.98 at 600 W and 48.07 / 48.44 → 50.85 / 51.19 at 420 W; 5080 32.99 / 33.00 → 35.35 / 35.35.
 
 The 3070 series, same binary (`--variant`), 45 s arms: wide chains 12.83–12.87; + shift fold in the multiply 12.06–12.09; + shift fold in multiply
 and square 11.11; wide chains with the exponentiation chains folding by shifts 12.37; scalar kernel at 3 blocks/SM (80 registers, 644 bytes of
