@@ -137,7 +137,7 @@ code for H100. See the datacenter measurements in `PLATFORMS.md` for the tested 
 ./proxichorizo ... --max-temp 85 --log-interval 10 --quiet   # thermal limit per GPU (default 88 C, pauses only that card), console cadence
 ```
 Without a GPU argument the miner takes every GPU in the machine in one process; a GPU that overheats pauses alone and resumes when cool, a GPU with a device error is disabled alone. The console shows a start-up banner, per-GPU lines with temperature, power and clock, share results per GPU and a total line (colours on a terminal, plain text in logs).
-Measured (0.5.10, `--bench`, platform defaults): RTX 5090 ≈ 68 MH/s at 600 W / ≈ 51 at 420 W, RTX 5080 ≈ 35.5 MH/s, RTX 3070 ≈ 12.7 MH/s, CMP 170HX ≈ 14 MH/s; unchanged from earlier releases: RTX PRO 6000 ≈ 43 MH/s (0.5.6), H100 SXM ≈ 21.6 MH/s (0.5.7), A100 ≈ 12.7 MH/s (0.5.7), RTX A6000 ≈ 12 MH/s (0.5.6); one CPU core of the reference seeker ≈ 37 kH/s. See the [benchmarks](#benchmarks) below.
+Measured (1.0.0, `--bench`, platform defaults): RTX 5090 ≈ 68 MH/s at 600 W / ≈ 51 at 420 W, RTX 5080 ≈ 35.5 MH/s, RTX 3070 ≈ 12.7 MH/s, CMP 170HX ≈ 14 MH/s; unchanged from earlier releases: RTX PRO 6000 ≈ 43 MH/s (0.5.6), H100 SXM ≈ 21.6 MH/s (0.5.7), A100 ≈ 12.7 MH/s (0.5.7), RTX A6000 ≈ 12 MH/s (0.5.6); one CPU core of the reference seeker ≈ 37 kH/s. See the [benchmarks](#benchmarks) below.
 **[USAGE.md](USAGE.md)** has the full guide: registering at the pool, solo mining with `proxi node mine`, HiveOS / MMPOS / SMOS flight sheets, Docker, Windows, every option, troubleshooting.
 
 ## Build
@@ -164,11 +164,11 @@ RTX 3070 ≈ 12.7 MH/s, CMP 170HX ≈ 14 MH/s, one CPU core of the reference Rus
 
 ## Benchmarks
 
-`--bench 45` on our own cards, platform defaults, driver-reported power; 0.5.10 numbers are matched A/B/B/A
-against the 0.5.9 kernels (0.5.8 arithmetic) on the same card and power cap (details and raw series in PLATFORMS.md, round 11;
+`--bench 45` on our own cards, platform defaults, driver-reported power; 1.0.0 numbers are matched A/B/B/A
+against the 0.5.9 kernels (0.5.8 arithmetic) on the same card and power cap (details and raw series in PLATFORMS.md, round 11, where the 1.0.0 kernels were developed;
 the 0.5.7 → 0.5.8 step is round 10). Other cards keep the rates measured with the release noted; pool rates are a little lower (job changes, idle gaps).
 
-| GPU | Power cap | 0.5.7 | 0.5.8 / 0.5.9 | **0.5.10** | Gain over 0.5.9 | MH/s per W (0.5.10) |
+| GPU | Power cap | 0.5.7 | 0.5.8 / 0.5.9 | **1.0.0** | Gain over 0.5.9 | MH/s per W (1.0.0) |
 |---|---:|---:|---:|---:|---:|---:|
 | RTX 5090 (sm_120, 170 SMs) | 600 W | 42.3 MH/s | 63.9 MH/s | **68.0 MH/s** | +6.4 % | 0.118 |
 | RTX 5090 | 420 W | 32.7 MH/s | 48.6 MH/s | **51.0 MH/s** | +5.0 % | 0.126 |

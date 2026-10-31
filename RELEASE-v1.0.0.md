@@ -1,6 +1,22 @@
 # ProxiChorizo 1.0.0
 
-The stratum release: the miner talks to the pool over **stratum** — one persistent TCP connection, newline-delimited JSON-RPC as in stratum v1 — instead of polling an HTTP job server. The pool gives every connection its own nonce range and its own share difficulty, retargeted to about one share every 15–25 seconds per connection. The kernels are the 0.5.9 kernels, so hashrates are unchanged.
+The stratum release: the miner talks to the pool over **stratum** — one persistent TCP connection, newline-delimited JSON-RPC as in stratum v1 — instead of polling an HTTP job server. The pool gives every connection its own nonce range and its own share difficulty, retargeted to about one share every 15–25 seconds per connection. It also brings new field arithmetic for NVIDIA GPUs: hashrates rise over 0.5.9 on every NVIDIA card we measured, most on the RTX 30xx series and the CMP 170HX.
+
+## Faster kernels (NVIDIA)
+
+The field multiply and square issue their 32×32-bit products in chains whose carries ride as carry-ins of the next wide multiply, which removes about 40 % of the integer adds and most of the register moves from the hot loop (`fe32w_wnaf_s16_c`, the new default for Blackwell, Ada, Ampere and Turing). Same multiply count as the 0.5.8/0.5.9 product scanning; details, the profile that led there and the variants that lost are in `PLATFORMS.md`, round 11.
+
+Measured with `--bench 45`, matched A/B/B/A on the same card and power cap against the 0.5.9 release, automatic profiles on both sides:
+
+| GPU | Power cap | 0.5.9 | 1.0.0 | Gain |
+|---|---:|---:|---:|---:|
+| RTX 5090 | 600 W | 63.9 MH/s | **68.0 MH/s** | +6.4 % |
+| RTX 5090 | 420 W | 48.6 MH/s | **51.0 MH/s** | +5.0 % |
+| RTX 5080 | 360 W | 33.1 MH/s | **35.5 MH/s** | +7.2 % |
+| RTX 3070 (two cards) | 240 W / 220 W | 11.5 MH/s | **12.7 MH/s** | +11.0 % / +10.8 % |
+| CMP 170HX (core locked at 1300 MHz) | 250 W | 12.5 MH/s | **14.0 MH/s** | +12.7 % |
+
+Ada and Turing were not measured here; they get the new kernel through the first-start quick tune, which now includes it. The A100 and H100 datacenter profiles and the AMD OpenCL miner are unchanged. The 0.5.8/0.5.9 variant stays in the binary (`--variant fe32c_wnaf_s16_c`, `--autotune`). A cached first-start tune (`proxichorizo-autotune.cache`) is keyed by miner version and refreshes itself.
 
 ## What changed
 
@@ -12,7 +28,8 @@ The stratum release: the miner talks to the pool over **stratum** — one persis
 - **Share difficulty per connection:** a connection starts low (2^24) and the pool's vardiff raises or lowers it per connection, so a single small GPU and a large rig both report about one share every 20 s. Difficulties are powers of two (the number of trailing zero bits of the VRF output), so the time per share settles within a factor of 1.4 of 20 s.
 - **HTTP job servers still work:** `http://HOST:PORT` (or `HOST:PORT`) keeps the 0.5.x protocol for `proxi node mine` (solo) and for pools that have not moved to stratum.
 - **Launchers:** HiveOS, MMPOS, SMOS, Docker and the Windows start scripts pass the pool URL through unchanged; the defaults and examples now use `stratum+tcp://proxi.suprnova.cc:3355`.
-- Kernels, platform profiles, the console, the thermal limits and the stats API are unchanged.
+- **Kernels:** the wide-chain field arithmetic above is the default on every consumer and CMP NVIDIA generation (platform profiles for sm_120, sm_89, sm_86, sm_80 GA100 and sm_75). Build-time options kept for reference: `PX_FOLDSHIFT`, `PX_FOLDSHIFT_POW`, `PX_LB_SCALAR`.
+- The console, the thermal limits and the stats API are unchanged.
 
 ## Downloads
 
@@ -29,3 +46,7 @@ Docker, NVIDIA only: `ocminersupr/proxichorizo:1.0.0` and `:latest`, mirrored at
 ## Upgrade
 
 Replace the miner and change the pool URL to `stratum+tcp://proxi.suprnova.cc:3355` (or `stratum+ssl://proxi.suprnova.cc:3356`); token, key file and worker name stay as they are. On HiveOS, MMPOS and SMOS put that URL in the flight sheet's pool field. The pool's HTTP port 8100 keeps working for 0.5.x miners for a transition period and will be switched off later.
+
+## Validation
+
+VALIDATION_PLACEHOLDER

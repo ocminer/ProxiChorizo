@@ -556,6 +556,8 @@ Ada and Turing default to the new variant with the first-start quick tune, which
 
 ## Round 11: wide-multiply carry chains — 2026-10-29 (RTX 3070, RTX 5080, RTX 5090, CMP 170HX)
 
+These kernels were developed as 0.5.10, which was not released on its own; they ship in 1.0.0 together with the stratum client.
+
 Where the time goes on an RTX 30xx (Nsight Compute, 0.5.9 scalar-multiplication kernel on an RTX 3070, 1.83 GHz, 240 W):
 the pipe that executes the 32×32→64-bit multiplies (`IMAD.WIDE.U32`, two slots each) is busy 88 % of the cycles, the
 integer-add pipe 40 %, the FP32-only pipe 0 %, the schedulers issue on 48 % of the cycles with 4 warps each (128 registers),
