@@ -16,7 +16,7 @@ Measured with `--bench 45`, matched A/B/B/A on the same card and power cap again
 | RTX 3070 (two cards) | 240 W / 220 W | 11.5 MH/s | **12.7 MH/s** | +11.0 % / +10.8 % |
 | CMP 170HX (core locked at 1300 MHz) | 250 W | 12.5 MH/s | **14.0 MH/s** | +12.7 % |
 
-Ada and Turing were not measured here; they get the new kernel through the first-start quick tune, which now includes it. The A100 and H100 datacenter profiles and the AMD OpenCL miner are unchanged. The 0.5.8/0.5.9 variant stays in the binary (`--variant fe32c_wnaf_s16_c`, `--autotune`). A cached first-start tune (`proxichorizo-autotune.cache`) is keyed by miner version and refreshes itself.
+Ada and Turing were not measured here; they get the new kernel through the first-start quick tune, which now includes it. The A100 and H100 datacenter profiles and the AMD OpenCL kernels are unchanged. The 0.5.8/0.5.9 variant stays in the binary (`--variant fe32c_wnaf_s16_c`, `--autotune`). A cached first-start tune (`proxichorizo-autotune.cache`) is keyed by miner version and refreshes itself.
 
 ## What changed
 
@@ -49,4 +49,18 @@ Replace the miner and change the pool URL to `stratum+tcp://proxi.suprnova.cc:33
 
 ## Validation
 
-VALIDATION_PLACEHOLDER
+Every kernel variant of the release-style Linux build (CUDA 12.9, glibc 2.31) passes on sm_86 (RTX 3070) and sm_120 (two RTX 5080, RTX 5090): `--selftest vectors.json` (16 node vectors), 512 independent VRF vectors across 256 keys, `--fetest` (128,000 random field checks) and `--verify` (identical hit sets over one nonce range plus 58 dense launch shapes / 5,189 complete outputs). The OpenCL miner on an RX 7900 XTX passes the 16 + 512 vectors, `--fetest` and `--verify-pipeline` (70 shapes / 83,393 outputs). The same kernels passed the 16 + 512 vectors and `--fetest` on sm_80 (CMP 170HX) during development; the A/B rates above were measured then on the identical kernels. Both the CUDA and the OpenCL binaries pass `--check-pool` against `stratum+tcp://` and `stratum+ssl://`.
+
+Live stratum mining with the release-style build on the public pool, about 13 minutes per card (7 minutes for the second XTX run), automatic profiles:
+
+| GPU | Connection | Average | Accepted | Rejected |
+|---|---|---:|---:|---:|
+| RTX 3070 (240 W) | `stratum+tcp://` | 12.81 MH/s | 58 | 0 |
+| RTX 3070 (240 W) | `stratum+ssl://` | 12.98 MH/s | 59 | 0 |
+| RTX 5080 (360 W) | `stratum+tcp://` | 35.37 MH/s | 52 | 0 |
+| RTX 5080 (360 W) | `stratum+ssl://` | 36.11 MH/s | 43 | 0 |
+| RTX 5090 (420 W) | `stratum+ssl://` | 51.95 MH/s | 73 | 0 |
+| RX 7900 XTX (OpenCL, 244 W) | `stratum+tcp://` | 11.35 MH/s | 59 | 0 |
+| RX 7900 XTX (OpenCL, 244 W) | `stratum+ssl://` | 11.32 MH/s | 56 | 0 |
+
+Three shares in total arrived after a job change and were counted stale.
