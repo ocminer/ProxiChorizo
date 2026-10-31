@@ -552,10 +552,13 @@ static int run_verify(const uint8_t scalar[32], const uint8_t pk[32], int dev) {
 static void usage() {
     fprintf(stderr,
         "ProxiChorizo " PX_VERSION " (OpenCL) — nonce seeker for Proxima (suprnova.cc)\n"
-        "  --proxi URL        the pool: stratum+tcp://HOST:PORT (stratum), or the HTTP job server of `proxi node mine`\n"
+        "  --proxi URL        the pool: stratum+tcp://HOST:PORT or stratum+ssl://HOST:PORT (stratum), or the HTTP job server of `proxi node mine`\n"
         "                     and older pools (http://HOST:PORT); -o and --url are the same option\n"
         "  --user ADDR.WORKER stratum login (-u): your payout address and worker name, or just the worker name;\n"
         "                     default: the --name\n"
+        "  --ca-file FILE     CA certificates for stratum+ssl:// besides the system store (PEM)\n"
+        "  --tls-insecure     stratum+ssl:// without checking the pool's certificate (private pools only)\n"
+        "  --check-pool URL   connect to a stratum pool, subscribe, print the answer and exit (no GPU needed)\n"
         "  --token T          the account token from the pool registration (stratum password; --pass and -p are the same)\n"
         "  --key-file FILE    unencrypted proxima.key (or --seed-hex HEX / NONCE_SEEKER_SEED)\n"
         "  --seed-hex HEX     32-byte seed\n"
@@ -605,7 +608,7 @@ static void on_signal(int) {
 }
 
 int main(int argc, char **argv) {
-    std::string proxi, token, keyfile, seedhex, name, selftest, gpus, variant, apiBind, kernelFile, user;
+    std::string proxi, token, keyfile, seedhex, name, selftest, gpus, variant, apiBind, kernelFile, user, checkPool;
     int groups = 0, iters = 0; double bench = 0, autotuneSecs = 0; bool fetest = false, listVariants = false, listDevices = false, verify = false, verifyPipeline = false;
     ConsoleOpts con;
     sock_init();
@@ -616,6 +619,9 @@ int main(int argc, char **argv) {
         if (a == "--help" || a == "-h") { usage(); return 0; }
         else if (a == "--proxi" || a == "-o" || a == "--url") next(proxi);
         else if (a == "--user" || a == "-u") next(user);
+        else if (a == "--ca-file") next(tls::ca_file);
+        else if (a == "--tls-insecure") tls::insecure = true;
+        else if (a == "--check-pool") next(checkPool);
         else if (a == "--token" || a == "--pass" || a == "-p") next(token);
         else if (a == "--key-file") next(keyfile);
         else if (a == "--seed-hex") next(seedhex);
@@ -640,6 +646,7 @@ int main(int argc, char **argv) {
         else { fprintf(stderr, "unknown option %s\n\n", a.c_str()); usage(); return 1; }
     }
     console_setup(con);
+    if (!checkPool.empty()) return check_pool(checkPool);
     if (listVariants) { for (int v = 0; v < NVARIANTS; v++) printf("%s\n", VARIANTS[v].name); return 0; }
     if (!kernelFile.empty()) { std::ifstream f(kernelFile); if (!f) { fprintf(stderr, "cannot open %s\n", kernelFile.c_str()); return 1; } std::stringstream ss; ss << f.rdbuf(); g_kernel_src = ss.str(); }
     else g_kernel_src.assign((const char *)CL_SRC, CL_SRC_LEN);

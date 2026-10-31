@@ -12,3 +12,10 @@ in vectors.json were generated with the Proxima node's own util/vrf package
 
 Binaries link the NVIDIA CUDA runtime statically under the CUDA Toolkit EULA
 (https://docs.nvidia.com/cuda/eula/); the NVIDIA driver on the host is required.
+
+Windows release archives also include, unmodified, for stratum+ssl:// connections:
+- OpenSSL 3 (libssl-3-x64.dll, libcrypto-3-x64.dll), Apache License 2.0, https://www.openssl.org/
+  (licence text in LICENSE-OpenSSL.txt when the build provides it).
+- cacert.pem, the Mozilla CA certificate bundle as published by the curl project
+  (https://curl.se/docs/caextract.html), Mozilla Public License 2.0.
+On Linux the miner uses the system's OpenSSL and CA store; nothing is bundled.

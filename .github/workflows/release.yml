@@ -73,6 +73,10 @@ jobs:
           python3 scripts/test-launchers.py
           ./proxichorizo --help
           ./opencl/proxichorizo-cl --help
+      - name: stratum and stratum+ssl against the live pool (system OpenSSL, no GPU)
+        run: |
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ca-certificates libssl1.1 >/dev/null
+          for u in stratum+tcp://proxi.suprnova.cc:3355 stratum+ssl://proxi.suprnova.cc:3356; do ./proxichorizo --check-pool $u; ./opencl/proxichorizo-cl --check-pool $u; done
       - name: package
         run: scripts/package.sh "${{ needs.version.outputs.ver }}" ./proxichorizo 12.9 opencl/proxichorizo-cl
       - name: verify packaged notices and checksums
@@ -102,6 +106,11 @@ jobs:
       - name: build
         shell: cmd
         run: nvcc -O3 -std=c++17 %ARCHS% -Xcompiler /MT -o proxichorizo.exe proxichorizo.cu
+      - name: OpenSSL 3 for the package (stratum+ssl)
+        shell: pwsh
+        run: |
+          if (!(Test-Path 'C:\Program Files\OpenSSL\bin\libssl-3-x64.dll') -and !(Test-Path 'C:\Program Files\OpenSSL-Win64\bin\libssl-3-x64.dll')) { choco install openssl -y --no-progress }
+          Get-ChildItem 'C:\Program Files\OpenSSL*\bin\lib*-3-x64.dll' | ForEach-Object FullName
       - name: package
         shell: pwsh
         run: scripts/package-windows.ps1 -Version "${{ needs.version.outputs.ver }}" -Exe proxichorizo.exe -Cuda 12.9

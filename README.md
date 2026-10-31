@@ -1,32 +1,105 @@
-# ProxiChorizo — CUDA nonce seeker for Proxima
+# ProxiChorizo — GPU miner for Proxima (PROX)
 
-A GPU miner for [Proxima](https://lunfardo314.github.io/)'s fair-launch mine chain.
-Proxima's proof of work is an ECVRF (Ed25519, RFC 9381) output under the key that
-signs the transit, so there is no stratum: miners run a *nonce seeker* that fetches
-jobs over HTTP from either `proxi node mine` or a pool speaking the same
-[nonce-seeker protocol](https://github.com/lunfardo314/proxima/blob/develop/kb/external_nonce_seeker.md),
-and post the nonces they find. ProxiChorizo is such a seeker, written for NVIDIA GPUs by suprnova.cc.
+A GPU miner for [Proxima](https://lunfardo314.github.io/)'s fair-launch mine chain, for NVIDIA
+(CUDA) and AMD (OpenCL) GPUs, by suprnova.cc. Proxima's proof of work is an ECVRF (Ed25519,
+RFC 9381) output under the key that signs the transit; the miner searches nonces for the
+pool's jobs and reports the ones whose output has enough trailing zero bits.
+
+**From 1.0.0 the miner talks stratum** to the pool — one persistent connection, plain
+(`stratum+tcp://`) or encrypted (`stratum+ssl://`) — with its own nonce range and share
+difficulty per connection, as on any NOMP-style pool. Solo mining against your own node
+(`proxi node mine`, HTTP) works as before.
 
 Built for and used by the Suprnova Proxima pool: https://proxi.suprnova.cc
 
-**Miners: read [USAGE.md](USAGE.md)** — pool mining with suprnova as the example, solo
-mining with `proxi node mine`, HiveOS, mmpOS, Docker, Windows, options, troubleshooting.
-It is included in every release archive.
+## How to mine (quick start)
 
-## Network upgrade (hard fork) at slot 29000 — 2026-10-21 17:01 UTC
+**You need:** an NVIDIA GPU (Turing or newer, driver 550+) or an AMD GPU with OpenCL,
+Linux x86-64 (also HiveOS, MMPOS, SMOS) or Windows 10/11 x64, and a PROX address
+(the 64-hex holder ID your wallet shows as `a/<hex>`).
 
-Proxima's first live library upgrade ([release v1.1.0-take1](https://github.com/lunfardo314/proxima/releases/tag/v1.1.0-take1))
-activates at slot 29000. From that slot a mine transit must be stamped at tick 83 of its
-slot or later and carry miner version 5, and every transaction carries the version of its
-slot's library. **ProxiChorizo needs no update**: a seeker only searches nonces for the job
-(predecessor ‖ slot ‖ nonce); the tick, the miner version and the transaction version are
-set by whoever builds the transit.
+1. **Register** at https://proxi.suprnova.cc/StartMining.html with your PROX address
+   (without the `a/`). You get a **token** and a **key file**. Save the key file as
+   `proxima.key` next to the miner and keep the token. The key is a mining key the pool
+   made for your account: it can only mine for you and holds no funds. Rewards are paid
+   to your PROX address.
+2. **Download** the release for your system from
+   [GitHub Releases](https://github.com/ocminer/ProxiChorizo/releases) and unpack it.
+3. **Start the miner** with the pool URL, your token, the key file and a worker name:
 
-* **Pool miners** (suprnova and any pool on an updated node): nothing to do.
-* **Solo miners**: the transit is built by your `proxi node mine`, so run `proxi` and your
-  node from **v1.1.0-take1 or newer before slot 29000**. An older `proxi` keeps building
-  version-4 transits after the upgrade and every one of them is rejected. A v1.1.0 `proxi`
-  mines the old rules until slot 28999 and the new ones from 29000 by itself, so update early.
+   Linux
+   ```bash
+   ./proxichorizo -o stratum+tcp://proxi.suprnova.cc:3355 -u rig1 -p YOUR_TOKEN --key-file proxima.key
+   ```
+   Windows (Command Prompt, in the unpacked folder; or edit and run `start.cmd`)
+   ```
+   proxichorizo.exe -o stratum+tcp://proxi.suprnova.cc:3355 -u rig1 -p YOUR_TOKEN --key-file proxima.key
+   ```
+   AMD GPUs: the same with `./proxichorizo-cl`.
+
+### Pool addresses
+
+| | URL |
+|---|---|
+| Stratum | `stratum+tcp://proxi.suprnova.cc:3355` |
+| Stratum over TLS (encrypted) | `stratum+ssl://proxi.suprnova.cc:3356` |
+
+TLS needs OpenSSL 1.1 or 3 on Linux (present on HiveOS, MMPOS, SMOS and every current
+distribution); the Windows archive brings its own. The pool's certificate is checked.
+
+### Login
+
+* `-u` / `--user`: the **worker name** (`rig1`), or `YOURADDRESS.rig1`. The address part is
+  optional — the token already identifies your account; if you give it, it must match.
+  Without `-u` the miner uses `--name`.
+* `-p` / `--token`: your **token**. `--token-file FILE` (first line) or the environment
+  variable `PROXI_TOKEN` keep it off the command line.
+* `--key-file proxima.key`: the key file from the registration (or `--seed-hex HEX`).
+* Two rigs may use the same worker name; every connection gets its own nonce range anyway.
+  Distinct names show up as separate workers in your statistics.
+
+### Mining OSes and Docker
+
+* **HiveOS:** custom miner `proxichorizo`, installation URL = the `proxichorizo-hiveos.tar.gz`
+  of the release; pool URL `stratum+tcp://proxi.suprnova.cc:3355`, wallet/template = your
+  token, password = the seed of your key file. Worker name = the rig name.
+* **MMPOS / SMOS:** the same tarball, launchers `mmpos-run.sh` / `smos-run.sh`; pool URL as
+  above, user = token, password = key seed (see [USAGE.md](USAGE.md)).
+* **Docker (NVIDIA):** `ocminersupr/proxichorizo:1.0.0` with `TOKEN`, `KEY_FILE` (or `SEED`)
+  and optionally `POOL_URL` (default `stratum+tcp://proxi.suprnova.cc:3355`); see `docker/README.md`.
+
+### Is it working?
+
+Test the connection first, without mining (no GPU needed):
+`./proxichorizo --check-pool stratum+ssl://proxi.suprnova.cc:3356` → `pool OK, …`. Then start the miner; it prints:
+
+```
+stratum: connected to proxi.suprnova.cc:3355
+stratum: authorized as rig1
+GPU #0: share accepted (1/1)
+Total: 49.75 MH/s on 1/1 GPUs | accepted 42, rejected 0, stale 0 | job 1a19… k=30 | uptime 00:10:00
+```
+
+The first shares come within seconds at a low difficulty; within a minute or two the pool
+raises it so that each rig sends a share about every 20 seconds (`k` in the total line is the
+current difficulty, 2^k attempts per share). A few `stale` shares at job changes are normal.
+Your workers and earnings: https://proxi.suprnova.cc (enter your PROX address).
+
+### Common problems
+
+| Message | Cause |
+|---|---|
+| `authorization of … refused … check --token and --user` | wrong token, or an address in `-u` that is not the token's |
+| `the pool sends jobs for key … but this miner holds …` | the key file is not the one from your registration |
+| `stratum: cannot connect` / reconnecting | network or firewall; the miner retries by itself |
+| `TLS handshake … failed` | old OpenSSL, or a proxy breaking TLS; use `stratum+tcp://` |
+| `share REJECTED (23 low difficulty share)` | should not happen; report it with the log |
+
+Everything else — options, thermal limits, the stats API, solo mining, troubleshooting — is
+in **[USAGE.md](USAGE.md)**, included in every release archive.
+
+**Older versions:** ProxiChorizo 0.5.x speaks the pool's old HTTP protocol (port 8100),
+which stays open for a while and will then be switched off. Update to 1.0.0.
 
 ## Which kernel runs on which card
 
@@ -45,11 +118,11 @@ MIG partitions retain the generation defaults. The distribution build includes n
 code for H100. See the datacenter measurements in `PLATFORMS.md` for the tested configurations.
 
 ## Download
-[GitHub Releases](https://github.com/ocminer/ProxiChorizo/releases) (Linux binary mirrored at https://proxi.suprnova.cc/downloads/):
+[GitHub Releases](https://github.com/ocminer/ProxiChorizo/releases):
 
-* `proxichorizo-<ver>.tar.gz` — Linux x86-64, built on glibc 2.31. One tarball serves plain Linux, **HiveOS** (`h-run.sh`), **MMPOS** (`mmpos-run.sh`) and **SMOS** (`smos-run.sh`) — pick the launcher for your OS and set the job server, your pool token and your key seed in the flight sheet.
+* `proxichorizo-<ver>.tar.gz` — Linux x86-64, built on glibc 2.31. One tarball serves plain Linux, **HiveOS** (`h-run.sh`), **MMPOS** (`mmpos-run.sh`) and **SMOS** (`smos-run.sh`) — pick the launcher for your OS and set the pool URL, your pool token and your key seed in the flight sheet.
 * `proxichorizo-hiveos.tar.gz` — the same package under the directory name HiveOS's custom-miner installer requires (miner name `proxichorizo`).
-* `proxichorizo-<ver>-windows-x86_64.zip` — native **Windows** x64. Put the pool's `proxima.key` next to it, set your token in `start.cmd` and run it.
+* `proxichorizo-<ver>-windows-x86_64.zip` — native **Windows** x64, with the OpenSSL DLLs and `cacert.pem` for `stratum+ssl://`. Put the pool's `proxima.key` next to it, set your token in `start.cmd` and run it.
 * Docker: `ocminersupr/proxichorizo:<ver>` (`docker/README.md`).
 * `SHA256SUMS` and one `.sha256` per asset; every archive carries its own `SHA256SUMS.txt` and `BUILD-INFO.json`.
 
@@ -109,7 +182,7 @@ Other cards keep the rates measured with the release noted; pool rates are a lit
 
 ## Layout
 
-- `proxichorizo.cu` — host: seeker protocol client, variants, autotune, tests.
+- `proxichorizo.cu` — host: stratum client (plain and TLS), HTTP seeker client for solo, variants, autotune, tests.
 - `platform_profiles.h` — per-GPU defaults; `tests/platform_profiles.cpp` checks model selection and preservation of existing profiles without requiring a GPU.
 - `proxichorizo_device.cuh` — device: field arithmetic (5×51, 8×32 row form and 8×32 product-scanning form), Ed25519 points, SHA-512,
   the VRF attempt, the kernels. Included once per variant from `proxichorizo.cu`.

@@ -41,6 +41,7 @@ typedef long long ssize_t;
 static void sock_init() { WSADATA w; WSAStartup(MAKEWORD(2, 2), &w); }
 static void sock_close(sock_t s) { closesocket(s); }
 static void sock_timeout(sock_t s, int secs) { DWORD ms = (DWORD)secs * 1000; setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char *)&ms, sizeof ms); setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, (const char *)&ms, sizeof ms); }
+static void sock_timeout_ms(sock_t s, int ms) { DWORD v = (DWORD)ms; setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char *)&v, sizeof v); }
 #else
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -56,6 +57,7 @@ typedef int sock_t;
 static void sock_init() {}
 static void sock_close(sock_t s) { close(s); }
 static void sock_timeout(sock_t s, int secs) { struct timeval tv = { secs, 0 }; setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv); setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv); }
+static void sock_timeout_ms(sock_t s, int ms) { struct timeval tv = { ms / 1000, (ms % 1000) * 1000 }; setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv); }
 #endif
 
 #define CUDA_CHECK(x) do { cudaError_t e = (x); if (e != cudaSuccess) { fprintf(stderr, "CUDA error %s at %s:%d\n", cudaGetErrorString(e), __FILE__, __LINE__); exit(2);} } while (0)
@@ -550,17 +552,17 @@ static bool json_bool(const std::string &s, const char *key, bool &out) {
 // --- tiny HTTP/1.1 client ---
 // stratum+tcp://host:port is a stratum pool (one persistent connection, see stratum_client);
 // http://host:port (or host:port) the HTTP seeker protocol of `proxi node mine` and older pools
-struct Url { std::string host; int port = 80; bool stratum = false; };
+struct Url { std::string host; int port = 80; bool stratum = false; bool tls = false; };
 static bool parse_url(const std::string &u, Url &out) {
     std::string s = u;
     if (s.rfind("stratum+tcp://", 0) == 0) { s = s.substr(14); out.stratum = true; }
-    else if (s.rfind("stratum+ssl://", 0) == 0 || s.rfind("stratum+tls://", 0) == 0) { fprintf(stderr, "stratum over TLS is not supported\n"); return false; }
+    else if (s.rfind("stratum+ssl://", 0) == 0 || s.rfind("stratum+tls://", 0) == 0) { s = s.substr(14); out.stratum = out.tls = true; }
     else if (s.rfind("http://", 0) == 0) s = s.substr(7);
     else if (s.rfind("https://", 0) == 0) { fprintf(stderr, "https is not supported\n"); return false; }
     size_t slash = s.find('/'); if (slash != std::string::npos) s = s.substr(0, slash);
     size_t colon = s.find(':');
     if (colon == std::string::npos) {
-        if (out.stratum) { fprintf(stderr, "a stratum URL needs a port: stratum+tcp://host:port\n"); return false; }
+        if (out.stratum) { fprintf(stderr, "a stratum URL needs a port: stratum+tcp://host:port or stratum+ssl://host:port\n"); return false; }
         out.host = s; out.port = 80;
     }
     else { out.host = s.substr(0, colon); out.port = atoi(s.substr(colon + 1).c_str()); }
@@ -586,6 +588,12 @@ static sock_t tcp_connect(const Url &u, int timeout_s, std::string &err) {
     return fd;
 }
 // a recv that failed because its timeout ran out (not because the connection broke)
+// wait until the socket has data to read, at most ms; false on timeout
+static bool sock_readable(sock_t s, int ms) {
+    fd_set r; FD_ZERO(&r); FD_SET(s, &r);
+    struct timeval tv = { ms / 1000, (ms % 1000) * 1000 };
+    return select((int)(s + 1), &r, nullptr, nullptr, &tv) > 0;
+}
 static bool sock_timed_out() {
 #ifdef _WIN32
     int e = WSAGetLastError(); return e == WSAETIMEDOUT || e == WSAEWOULDBLOCK;
@@ -593,6 +601,121 @@ static bool sock_timed_out() {
     return errno == EAGAIN || errno == EWOULDBLOCK;
 #endif
 }
+
+// ---- TLS for stratum+ssl:// ------------------------------------------------------
+// Through OpenSSL, loaded at run time like NVML: the system's libssl (3 or 1.1) on Linux,
+// the libssl/libcrypto DLLs shipped next to the miner on Windows. Nothing to install for a
+// plain stratum+tcp:// pool. The pool's certificate chain and host name are checked against
+// the system's CA store (and cacert.pem next to the miner, or --ca-file); --tls-insecure
+// skips the check, for a private pool with its own certificate.
+#ifndef _WIN32
+#include <dlfcn.h>
+#include <limits.h>
+#endif
+namespace tls {
+static int (*init_ssl)(uint64_t, const void *) = nullptr;
+static const void *(*client_method)() = nullptr;
+static void *(*ctx_new)(const void *) = nullptr;
+static int (*ctx_default_paths)(void *) = nullptr;
+static int (*ctx_load_locations)(void *, const char *, const char *) = nullptr;
+static void (*ctx_set_verify)(void *, int, void *) = nullptr;
+static void *(*ssl_new)(void *) = nullptr;
+static int (*set_fd)(void *, int) = nullptr;
+static long (*ssl_ctrl)(void *, int, long, void *) = nullptr;
+static int (*set1_host)(void *, const char *) = nullptr;
+static int (*ssl_connect)(void *) = nullptr;
+static long (*verify_result)(const void *) = nullptr;
+static int (*ssl_read)(void *, void *, int) = nullptr;
+static int (*ssl_pending)(const void *) = nullptr;
+static int (*ssl_write)(void *, const void *, int) = nullptr;
+static int (*get_error)(const void *, int) = nullptr;
+static int (*ssl_shutdown)(void *) = nullptr;
+static void (*ssl_free)(void *) = nullptr;
+static const char *(*verify_err_str)(long) = nullptr;  // libcrypto, for the message only
+static std::once_flag once; static bool ok = false; static std::string why;
+static void *ctx = nullptr;
+static std::string ca_file; static bool insecure = false;   // --ca-file, --tls-insecure
+static const int VERIFY_NONE = 0, VERIFY_PEER = 1, CTRL_SET_TLSEXT_HOSTNAME = 55, ERROR_WANT_READ = 2, ERROR_SYSCALL = 5;
+static std::string exe_dir() {
+#ifdef _WIN32
+    char b[MAX_PATH]; DWORD n = GetModuleFileNameA(nullptr, b, sizeof b); std::string p(b, n);
+#else
+    char b[PATH_MAX]; ssize_t n = readlink("/proc/self/exe", b, sizeof b - 1); std::string p(b, n > 0 ? (size_t)n : 0);
+#endif
+    size_t sl = p.find_last_of("/\\"); return sl == std::string::npos ? "." : p.substr(0, sl);
+}
+static bool load() {
+    std::call_once(once, [] {
+#ifdef _WIN32
+        std::string d = exe_dir() + "\\";
+        HMODULE c = LoadLibraryA((d + "libcrypto-3-x64.dll").c_str()); if (!c) c = LoadLibraryA("libcrypto-3-x64.dll");
+        HMODULE h = LoadLibraryA((d + "libssl-3-x64.dll").c_str()); if (!h) h = LoadLibraryA("libssl-3-x64.dll");
+        if (!h) h = LoadLibraryA("libssl-1_1-x64.dll");
+        if (!c) c = LoadLibraryA("libcrypto-1_1-x64.dll");
+        auto sym = [&](HMODULE m, const char *n) -> void * { return m ? (void *)GetProcAddress(m, n) : nullptr; };
+#else
+        void *h = nullptr, *c = nullptr;
+        for (const char *n : {"libssl.so.3", "libssl.so.1.1", "libssl.so"}) if ((h = dlopen(n, RTLD_NOW))) break;
+        for (const char *n : {"libcrypto.so.3", "libcrypto.so.1.1", "libcrypto.so"}) if ((c = dlopen(n, RTLD_NOW))) break;
+        auto sym = [&](void *m, const char *n) -> void * { return m ? dlsym(m, n) : nullptr; };
+#endif
+        if (!h) { why = "stratum+ssl needs OpenSSL (libssl 3 or 1.1), which was not found"; return; }
+        init_ssl = (decltype(init_ssl))sym(h, "OPENSSL_init_ssl");
+        client_method = (decltype(client_method))sym(h, "TLS_client_method");
+        ctx_new = (decltype(ctx_new))sym(h, "SSL_CTX_new");
+        ctx_default_paths = (decltype(ctx_default_paths))sym(h, "SSL_CTX_set_default_verify_paths");
+        ctx_load_locations = (decltype(ctx_load_locations))sym(h, "SSL_CTX_load_verify_locations");
+        ctx_set_verify = (decltype(ctx_set_verify))sym(h, "SSL_CTX_set_verify");
+        ssl_new = (decltype(ssl_new))sym(h, "SSL_new");
+        set_fd = (decltype(set_fd))sym(h, "SSL_set_fd");
+        ssl_ctrl = (decltype(ssl_ctrl))sym(h, "SSL_ctrl");
+        set1_host = (decltype(set1_host))sym(h, "SSL_set1_host");
+        ssl_connect = (decltype(ssl_connect))sym(h, "SSL_connect");
+        verify_result = (decltype(verify_result))sym(h, "SSL_get_verify_result");
+        ssl_read = (decltype(ssl_read))sym(h, "SSL_read");
+        ssl_pending = (decltype(ssl_pending))sym(h, "SSL_pending");
+        ssl_write = (decltype(ssl_write))sym(h, "SSL_write");
+        get_error = (decltype(get_error))sym(h, "SSL_get_error");
+        ssl_shutdown = (decltype(ssl_shutdown))sym(h, "SSL_shutdown");
+        ssl_free = (decltype(ssl_free))sym(h, "SSL_free");
+        verify_err_str = (decltype(verify_err_str))sym(c, "X509_verify_cert_error_string");
+        if (!init_ssl || !client_method || !ctx_new || !ctx_default_paths || !ctx_load_locations || !ctx_set_verify || !ssl_new || !set_fd ||
+            !ssl_ctrl || !set1_host || !ssl_connect || !verify_result || !ssl_read || !ssl_pending || !ssl_write || !get_error || !ssl_shutdown || !ssl_free) {
+            why = "the OpenSSL library found lacks functions this miner needs (OpenSSL 1.1 or newer required)"; return;
+        }
+        init_ssl(0, nullptr);
+        ctx = ctx_new(client_method());
+        if (!ctx) { why = "OpenSSL: cannot create a TLS context"; return; }
+        if (insecure) ctx_set_verify(ctx, VERIFY_NONE, nullptr);
+        else {
+            ctx_set_verify(ctx, VERIFY_PEER, nullptr);
+            ctx_default_paths(ctx);
+            std::string f = ca_file;
+            if (f.empty()) { std::string g = exe_dir() + "/cacert.pem"; if (FILE *t = fopen(g.c_str(), "rb")) { fclose(t); f = g; } }
+            if (!f.empty() && ctx_load_locations(ctx, f.c_str(), nullptr) != 1) { why = "cannot read the CA file " + f; return; }
+        }
+        ok = true;
+    });
+    return ok;
+}
+// the TLS session on a connected socket: handshake with SNI and the host-name check
+static void *open(sock_t fd, const std::string &host, std::string &err) {
+    if (!load()) { err = why; return nullptr; }
+    void *s = ssl_new(ctx);
+    if (!s) { err = "OpenSSL: cannot create a session"; return nullptr; }
+    set_fd(s, (int)fd);
+    ssl_ctrl(s, CTRL_SET_TLSEXT_HOSTNAME, 0, (void *)host.c_str());
+    if (!insecure) set1_host(s, host.c_str());
+    if (ssl_connect(s) != 1) {
+        long v = verify_result(s);
+        err = "TLS handshake with " + host + " failed";
+        if (v != 0) err += std::string(": certificate not trusted (") + (verify_err_str ? verify_err_str(v) : std::to_string(v).c_str()) + "; --ca-file FILE or --tls-insecure for a private pool)";
+        ssl_free(s); return nullptr;
+    }
+    return s;
+}
+static void close(void *s) { if (s) { ssl_shutdown(s); ssl_free(s); } }
+}  // namespace tls
 struct HttpResp { int status = 0; std::string body; std::string err; };
 static HttpResp http_do(const Url &u, const std::string &method, const std::string &path, const std::string &body, const std::string &token, int timeout_s) {
     HttpResp r;
@@ -777,6 +900,7 @@ struct Shared {
     std::string user;                  // authorized as: "<address>.<worker>" (--user) or the worker name
     std::mutex wmu;                    // guards sfd for writers and the fields below
     sock_t sfd = SOCK_INVALID;
+    void *ssl = nullptr;               // the TLS session for stratum+ssl:// (reads and writes under wmu)
     uint16_t en1 = 0;
     bool subscribed = false;
     uint64_t next_rpc = 100;
@@ -972,7 +1096,7 @@ static void print_banner(Shared &sh, const char *backend) {
     bannerln("");
     bannerln(std::string(g_color ? C_BOLD C_CYAN : "") + "  *** ProxiChorizo " PX_VERSION " (" + backend + ") — nonce seeker for Proxima by suprnova.cc ***" + (g_color ? C_RESET : ""));
     bannerln("      ProxiChorizo License 1.0: free to run for mining; commercial or closed-source reuse needs written permission");
-    if (sh.url.stratum) bannerln("      pool:    stratum+tcp://" + sh.url.host + ":" + std::to_string(sh.url.port) + "   user: " + sh.user);
+    if (sh.url.stratum) bannerln(std::string("      pool:    ") + (sh.url.tls ? "stratum+ssl://" : "stratum+tcp://") + sh.url.host + ":" + std::to_string(sh.url.port) + "   user: " + sh.user);
     else bannerln("      pool:    http://" + sh.url.host + ":" + std::to_string(sh.url.port) + "   worker: " + sh.name);
     bannerln("      key:     " + hexs(sh.pk, 32));
     bannerln("      GPUs:    " + std::to_string(sh.gpus.size()) + " selected (GPU numbers follow the PCI bus order, as nvidia-smi lists them)");
@@ -998,7 +1122,6 @@ static void print_banner(Shared &sh, const char *backend) {
 // GPU ordinal (8 bits) and 40 bits of counter per GPU and job, as with the HTTP nonce_base.
 // Answers: 21 job not found (stale), 22 duplicate, 23 low difficulty, 24 unauthorized, 25 not subscribed.
 
-static std::string json_escape(const std::string &v);
 // a JSON value: just enough of a parser for the stratum messages
 struct JV {
     enum T { NUL, BOOL, NUM, STR, ARR, OBJ } t = NUL;
@@ -1058,7 +1181,12 @@ static bool jparse(const std::string &s, size_t &p, JV &v, int depth = 0) {
     if (e == b) return false;
     v.t = JV::NUM; v.n = d; p += (size_t)(e - b); return true;
 }
-static std::string jstr(const std::string &v) { return "\"" + json_escape(v) + "\""; }
+// a JSON string literal (quotes and backslashes escaped, control characters dropped)
+static std::string jstr(const std::string &v) {
+    std::string o = "\"";
+    for (char c : v) { if (c == '"' || c == '\\') o += '\\'; if ((unsigned char)c >= 0x20) o += c; }
+    return o + "\"";
+}
 
 // one line to the pool; false when the connection is gone
 static bool stratum_send(Shared &sh, const std::string &line) {
@@ -1066,7 +1194,8 @@ static bool stratum_send(Shared &sh, const std::string &line) {
     if (sh.sfd == SOCK_INVALID) return false;
     std::string m = line + "\n"; size_t sent = 0;
     while (sent < m.size()) {
-        ssize_t n = send(sh.sfd, m.data() + sent, (int)(m.size() - sent), MSG_NOSIGNAL);
+        ssize_t n = sh.ssl ? tls::ssl_write(sh.ssl, m.data() + sent, (int)(m.size() - sent))
+                           : send(sh.sfd, m.data() + sent, (int)(m.size() - sent), MSG_NOSIGNAL);
         if (n <= 0) return false;
         sent += (size_t)n;
     }
@@ -1143,18 +1272,42 @@ static void stratum_client(Shared &sh) {
             backoff = std::min(backoff * 2, 30); continue;
         }
         int one = 1; setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, (const char *)&one, sizeof one);
-        sock_timeout(fd, 1);   // recv wakes every second to see sh.stop; sends are small
-        { std::lock_guard<std::mutex> l(sh.wmu); sh.sfd = fd; sh.subscribed = false; sh.pending.clear(); }
+        void *ssl = nullptr;
+        if (sh.url.tls) {
+            ssl = tls::open(fd, sh.url.host, err);
+            if (!ssl) {
+                log_err("stratum: " + err + " (retry in " + std::to_string(backoff) + "s)");
+                sock_close(fd);
+                for (int i = 0; i < backoff * 4 && !sh.stop; i++) std::this_thread::sleep_for(std::chrono::milliseconds(250));
+                backoff = std::min(backoff * 2, 30); continue;
+            }
+        }
+        // recv wakes every second to see sh.stop; a TLS read happens under wmu (an OpenSSL
+        // session is not shared between threads) only once data is there, so it is short
+        sock_timeout_ms(fd, ssl ? 200 : 1000);
+        { std::lock_guard<std::mutex> l(sh.wmu); sh.sfd = fd; sh.ssl = ssl; sh.subscribed = false; sh.pending.clear(); }
         auto connected_at = std::chrono::steady_clock::now();
-        logln("stratum: connected to " + sh.url.host + ":" + std::to_string(sh.url.port));
+        logln(std::string("stratum: connected to ") + sh.url.host + ":" + std::to_string(sh.url.port) + (ssl ? " (TLS)" : ""));
         stratum_send(sh, "{\"id\":1,\"method\":\"mining.subscribe\",\"params\":[\"ProxiChorizo/" PX_VERSION "\"]}");
         stratum_send(sh, "{\"id\":2,\"method\":\"mining.authorize\",\"params\":[" + jstr(sh.user) + "," + jstr(sh.token) + "]}");
         int cur_k = 0, pending_k = -1; bool authFailed = false, reconnect = false;
         std::string buf; char rb[4096];
         auto last_rx = std::chrono::steady_clock::now();
         while (!sh.stop && !reconnect) {
-            ssize_t n = recv(fd, rb, (int)sizeof rb, 0);
-            if (n < 0 && sock_timed_out()) {
+            ssize_t n; bool timedOut = false;
+            if (ssl) {
+                // wait for data outside the lock: a read holding wmu would starve the GPU
+                // threads, which need it to send their shares
+                bool ready; { std::lock_guard<std::mutex> l(sh.wmu); ready = tls::ssl_pending(ssl) > 0; }
+                if (!ready && !sock_readable(fd, 1000)) { n = -1; timedOut = true; }
+                else {
+                    std::lock_guard<std::mutex> l(sh.wmu);
+                    int r = tls::ssl_read(ssl, rb, (int)sizeof rb);
+                    if (r > 0) n = r;
+                    else { int e = tls::get_error(ssl, r); n = -1; timedOut = e == tls::ERROR_WANT_READ || (e == tls::ERROR_SYSCALL && sock_timed_out()); }
+                }
+            } else { n = recv(fd, rb, (int)sizeof rb, 0); timedOut = n < 0 && sock_timed_out(); }
+            if (timedOut) {
                 // a pool sends a job about every slot; three minutes of silence is a dead connection
                 if (std::chrono::steady_clock::now() - last_rx > std::chrono::minutes(3)) { log_warn("stratum: no message for 3 minutes"); break; }
                 continue;
@@ -1203,7 +1356,7 @@ static void stratum_client(Shared &sh) {
                 }
             }
         }
-        { std::lock_guard<std::mutex> l(sh.wmu); sh.sfd = SOCK_INVALID; sh.subscribed = false; sh.pending.clear(); }
+        { std::lock_guard<std::mutex> l(sh.wmu); sh.sfd = SOCK_INVALID; tls::close(sh.ssl); sh.ssl = nullptr; sh.subscribed = false; sh.pending.clear(); }
         sock_close(fd);
         { std::lock_guard<std::mutex> l(sh.mu); sh.job = Job(); }
         if (sh.stop) break;
@@ -1212,6 +1365,31 @@ static void stratum_client(Shared &sh) {
         for (int i = 0; i < wait * 4 && !sh.stop; i++) std::this_thread::sleep_for(std::chrono::milliseconds(250));
         backoff = std::chrono::steady_clock::now() - connected_at > std::chrono::minutes(1) ? 1 : std::min(backoff * 2, 30);
     }
+}
+
+// --check-pool URL: connect (with TLS for stratum+ssl), subscribe, print the answer and exit;
+// needs no GPU, so it also checks a Windows package's OpenSSL DLLs on a machine without one
+static int check_pool(const std::string &u) {
+    Url url;
+    if (!parse_url(u, url) || !url.stratum) { fprintf(stderr, "--check-pool needs a stratum+tcp:// or stratum+ssl:// URL\n"); return 1; }
+    std::string err;
+    sock_t fd = tcp_connect(url, 10, err);
+    if (fd == SOCK_INVALID) { fprintf(stderr, "check-pool: %s\n", err.c_str()); return 1; }
+    void *ssl = nullptr;
+    if (url.tls && !(ssl = tls::open(fd, url.host, err))) { fprintf(stderr, "check-pool: %s\n", err.c_str()); sock_close(fd); return 1; }
+    std::string req = "{\"id\":1,\"method\":\"mining.subscribe\",\"params\":[\"ProxiChorizo/" PX_VERSION " check\"]}\n";
+    bool sent = ssl ? tls::ssl_write(ssl, req.data(), (int)req.size()) == (int)req.size() : send(fd, req.data(), (int)req.size(), MSG_NOSIGNAL) == (ssize_t)req.size();
+    std::string line; char b[1024];
+    for (int i = 0; sent && i < 50 && line.find('\n') == std::string::npos; i++) {
+        int n = ssl ? tls::ssl_read(ssl, b, (int)sizeof b) : (int)recv(fd, b, (int)sizeof b, 0);
+        if (n > 0) line.append(b, (size_t)n); else if (!(ssl ? tls::get_error(ssl, n) == tls::ERROR_WANT_READ : sock_timed_out())) break;
+    }
+    tls::close(ssl); sock_close(fd);
+    line = line.substr(0, line.find('\n'));
+    JV msg; size_t p = 0; const JV *res = nullptr;
+    bool ok = jparse(line, p, msg) && msg.t == JV::OBJ && (res = msg.get("result")) && res->t == JV::ARR;
+    fprintf(stderr, "%s %s:%d%s: %s\n", ok ? "pool OK," : "pool FAILED,", url.host.c_str(), url.port, url.tls ? (tls::insecure ? " (TLS, certificate NOT checked)" : " (TLS, certificate checked)") : "", line.empty() ? "no answer" : line.c_str());
+    return ok ? 0 : 1;
 }
 
 static void submit(Shared &sh, const Job &j, uint64_t nonce, const uint8_t beta[64], uint64_t attempts, int ordinal) {
@@ -1640,10 +1818,13 @@ static int run_verify(const uint8_t pk[32], int dev) {
 static void usage() {
     fprintf(stderr,
         "ProxiChorizo " PX_VERSION " — CUDA nonce seeker for Proxima (suprnova.cc)\n"
-        "  --proxi URL        the pool: stratum+tcp://HOST:PORT (stratum), or the HTTP job server of `proxi node mine`\n"
+        "  --proxi URL        the pool: stratum+tcp://HOST:PORT or stratum+ssl://HOST:PORT (stratum), or the HTTP job server of `proxi node mine`\n"
         "                     and older pools (http://HOST:PORT); -o and --url are the same option\n"
         "  --user ADDR.WORKER stratum login (-u): your payout address and worker name, or just the worker name;\n"
         "                     default: the --name\n"
+        "  --ca-file FILE     CA certificates for stratum+ssl:// besides the system store (PEM)\n"
+        "  --tls-insecure     stratum+ssl:// without checking the pool's certificate (private pools only)\n"
+        "  --check-pool URL   connect to a stratum pool, subscribe, print the answer and exit (no GPU needed)\n"
         "  --token T          the account token from the pool registration (stratum password; --pass and -p are the same)\n"
         "  --token-file FILE  read the bearer token from FILE (first line; keeps it off the command line), or PROXI_TOKEN in the environment\n"
         "  --key-file FILE    unencrypted proxima.key (or --seed-hex HEX / NONCE_SEEKER_SEED)\n"
@@ -1693,7 +1874,7 @@ static void on_signal(int) {
 }
 
 int main(int argc, char **argv) {
-    std::string proxi, token, tokenFile, keyfile, seedhex, name, selftest, gpus, variant, apiBind, user;
+    std::string proxi, token, tokenFile, keyfile, seedhex, name, selftest, gpus, variant, apiBind, user, checkPool;
     sock_init();
     // GPU numbers follow the PCI bus order (as nvidia-smi lists the cards) unless the caller
     // chose an order; the runtime reads this before its first call
@@ -1711,6 +1892,9 @@ int main(int argc, char **argv) {
         if (a == "--help" || a == "-h") { usage(); return 0; }
         else if (a == "--proxi" || a == "-o" || a == "--url") next(proxi);
         else if (a == "--user" || a == "-u") next(user);
+        else if (a == "--ca-file") next(tls::ca_file);
+        else if (a == "--tls-insecure") tls::insecure = true;
+        else if (a == "--check-pool") next(checkPool);
         else if (a == "--token" || a == "--pass" || a == "-p") next(token);
         else if (a == "--token-file") next(tokenFile);
         else if (a == "--key-file") next(keyfile);
@@ -1732,6 +1916,7 @@ int main(int argc, char **argv) {
         else { fprintf(stderr, "unknown option %s\n\n", a.c_str()); usage(); return 1; }
     }
     console_setup(con);
+    if (!checkPool.empty()) return check_pool(checkPool);
     if (listVariants) { for (int v = 0; v < NVARIANTS; v++) fprintf(stderr, "%s\n", VARIANTS[v]->name); return 0; }
     if (token.empty() && !tokenFile.empty()) {
         std::ifstream tf(tokenFile); if (!tf) { fprintf(stderr, "cannot open token file %s\n", tokenFile.c_str()); return 1; }

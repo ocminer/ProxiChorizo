@@ -75,6 +75,15 @@ worker name; without `-u`, the `--name`), the password is your token. Two rigs m
 same worker name; they still search different nonces. The pool's old HTTP port
 (`http://proxi.suprnova.cc:8100`) works with 0.5.x miners until it is switched off.
 
+**Encrypted:** `stratum+ssl://proxi.suprnova.cc:3356` is the same pool over TLS. On Linux the
+miner uses the system's OpenSSL (1.1 or 3; present on HiveOS, MMPOS, SMOS and every current
+distribution) and CA store; the Windows archive brings OpenSSL's DLLs and a `cacert.pem`. The
+pool's certificate and host name are checked; `--ca-file FILE` adds CA certificates,
+`--tls-insecure` skips the check (only for a private pool with its own certificate).
+
+**Check the connection** without mining (no GPU needed):
+`./proxichorizo --check-pool stratum+ssl://proxi.suprnova.cc:3356` prints `pool OK, …` or why not.
+
 ## 2. Solo mining — your own node and `proxi node mine`
 
 Solo, the reference miner `proxi node mine` builds, proves and submits the transits with
@@ -156,8 +165,12 @@ about half of that). `--iters 8` is the best launch geometry on every AMD card m
 ## 6. Options
 
 ```
---proxi URL          the pool: stratum+tcp://proxi.suprnova.cc:3355 (stratum), or the HTTP job server of your proxi node mine
+--proxi URL          the pool: stratum+tcp://proxi.suprnova.cc:3355 or stratum+ssl://proxi.suprnova.cc:3356 (stratum),
+                     or the HTTP job server of your proxi node mine (http://HOST:PORT); -o and --url are the same
 -u ADDRESS.WORKER    stratum login (--user): your PROX address and worker name, or just the worker name (default: --name)
+--ca-file FILE       CA certificates (PEM) for stratum+ssl:// in addition to the system store
+--tls-insecure       stratum+ssl:// without checking the pool's certificate (private pools only)
+--check-pool URL     connect to a stratum pool, subscribe, print the answer and exit
 --token T            the account token from the pool registration (stratum password; -p, --pass) / mine.seeker.token
 --token-file FILE    read the token from a file instead (keeps it off the command line); PROXI_TOKEN in the environment works too
 --key-file FILE      unencrypted proxima.key (or --seed-hex HEX, or env NONCE_SEEKER_SEED)
