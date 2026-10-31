@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # MMPOS custom-miner launcher for ProxiChorizo. MMPOS exports the miner settings as
-# environment variables and captures stdout. Set POOL_URL (job server), TOKEN (pool token)
+# environment variables and captures stdout. Set POOL_URL (the pool), TOKEN (pool token)
 # and SEED (key seed, 64 hex) in the MMPOS miner config; WALLET/PASSWORD are accepted as aliases.
 cd "$(dirname "$0")" || exit 1
 POOL_URL="${POOL_URL:-${POOL:-}}"; TOKEN="${TOKEN:-${WALLET:-}}"; SEED="${SEED:-${PASSWORD:-}}"
-[[ -z $POOL_URL ]] && { echo "POOL_URL missing (e.g. proxi.suprnova.cc:8100)"; exit 1; }
+[[ -z $POOL_URL ]] && { echo "POOL_URL missing (e.g. stratum+tcp://proxi.suprnova.cc:3355)"; exit 1; }
 [[ -z $TOKEN    ]] && { echo "TOKEN missing (your pool registration token)"; exit 1; }
 [[ -z $SEED && -z $KEY_FILE ]] && { echo "SEED missing (first 64 hex chars of private_key in your proxima.key) or KEY_FILE"; exit 1; }
 [[ $POOL_URL == *://* ]] || POOL_URL="http://$POOL_URL"

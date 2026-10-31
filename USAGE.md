@@ -26,11 +26,11 @@ to your PROX address by the pool (PPLNS, 1 % fee) and paid out to it.
 
    Linux
    ```bash
-   ./proxichorizo --proxi http://proxi.suprnova.cc:8100 --token YOUR_TOKEN --key-file proxima.key --name rig1
+   ./proxichorizo --proxi stratum+tcp://proxi.suprnova.cc:3355 --token YOUR_TOKEN --key-file proxima.key --name rig1
    ```
    Windows
    ```bat
-   proxichorizo.exe --proxi http://proxi.suprnova.cc:8100 --token YOUR_TOKEN --key-file proxima.key --name rig1
+   proxichorizo.exe --proxi stratum+tcp://proxi.suprnova.cc:3355 --token YOUR_TOKEN --key-file proxima.key --name rig1
    ```
    `--name` is the worker name shown on the pool; use a different one per rig/GPU.
 
@@ -63,6 +63,17 @@ a yellow log line, and resumes by itself once it has cooled 8 °C below the limi
 Instead of `--key-file` you may pass the key as `--seed-hex <first 64 hex chars of
 "private_key" in proxima.key>` or in the environment variable `NONCE_SEEKER_SEED` —
 that is what the HiveOS/mmpOS/Docker packages do.
+
+### Stratum
+
+From 1.0.0 the miner talks to the pool over stratum (`stratum+tcp://HOST:PORT`): one
+persistent connection, on which the pool sends the jobs and the share difficulty and the
+miner sends its shares. The pool gives every connection its own nonce range and its own
+difficulty, starting low and adjusted to about one share every 20 seconds, so a single GPU
+and a large rig both report regularly. The login is `-u ADDRESS.WORKER` (or just the
+worker name; without `-u`, the `--name`), the password is your token. Two rigs may use the
+same worker name; they still search different nonces. The pool's old HTTP port
+(`http://proxi.suprnova.cc:8100`) works with 0.5.x miners until it is switched off.
 
 ## 2. Solo mining — your own node and `proxi node mine`
 
@@ -107,7 +118,7 @@ release, miner name `proxichorizo`. Flight sheet:
 
 | Field | Value |
 |---|---|
-| Pool URL | `proxi.suprnova.cc:8100` (or your own `proxi node mine` seeker address) |
+| Pool URL | `stratum+tcp://proxi.suprnova.cc:3355` (or your own `proxi node mine` seeker address, `http://HOST:PORT`) |
 | Wallet / template | your pool **token** (or the mine.seeker.token) |
 | Pass | the **seed**: first 64 hex characters of `private_key` in your key file |
 | Extra config | optional `KEY=VALUE` lines: `DEVICES=0,1`, `API_BIND=127.0.0.1:4078`, `EXTRA_ARGS=...`; omit geometry overrides to use automatic GPU profiles. `MINER_GROUPS` overrides the block/workgroup count. |
@@ -128,7 +139,7 @@ MMPOS's API-based "external miner" format is served by `mmp-launch.sh` / `mmp-st
 docker run -d --name proxichorizo --gpus all --restart unless-stopped -p 4078:4078 \
   -e TOKEN=YOUR_TOKEN -e SEED=FIRST_64_HEX_OF_private_key -e WORKER=docker1 ocminersupr/proxichorizo:latest
 ```
-`POOL_URL` defaults to `proxi.suprnova.cc:8100`; `KEY_FILE` (a mounted key) replaces `SEED`;
+`POOL_URL` defaults to `stratum+tcp://proxi.suprnova.cc:3355`; `KEY_FILE` (a mounted key) replaces `SEED`;
 arguments after the image name go straight to the miner. Statistics at `http://localhost:4078/`.
 
 ## 5b. AMD GPUs (OpenCL)
@@ -145,8 +156,9 @@ about half of that). `--iters 8` is the best launch geometry on every AMD card m
 ## 6. Options
 
 ```
---proxi URL          job server: pool (http://proxi.suprnova.cc:8100) or your proxi node mine
---token T            bearer token from the pool registration / mine.seeker.token
+--proxi URL          the pool: stratum+tcp://proxi.suprnova.cc:3355 (stratum), or the HTTP job server of your proxi node mine
+-u ADDRESS.WORKER    stratum login (--user): your PROX address and worker name, or just the worker name (default: --name)
+--token T            the account token from the pool registration (stratum password; -p, --pass) / mine.seeker.token
 --token-file FILE    read the token from a file instead (keeps it off the command line); PROXI_TOKEN in the environment works too
 --key-file FILE      unencrypted proxima.key (or --seed-hex HEX, or env NONCE_SEEKER_SEED)
 --name NAME          worker name shown by the pool (default proxichorizo-<pid>)

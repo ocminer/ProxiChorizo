@@ -9,7 +9,7 @@ docker run -d --name proxichorizo --gpus '"device=0"' --restart unless-stopped -
   ocminersupr/proxichorizo:0.5.9
 ```
 
-`POOL_URL` defaults to `proxi.suprnova.cc:8100`; for solo mining point it at your own
+`POOL_URL` defaults to `stratum+tcp://proxi.suprnova.cc:3355`; for solo mining point it at your own
 `proxi node mine` seeker address and use `mine.seeker.token` as `TOKEN`. Instead of `SEED`,
 mount the key file and set `KEY_FILE=/keys/proxima.key`. Multi-GPU: `--gpus '"device=0,1"'`
 and `DEVICES=0,1`. Statistics: `curl http://localhost:4078/`.

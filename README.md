@@ -55,7 +55,7 @@ code for H100. See the datacenter measurements in `PLATFORMS.md` for the tested 
 
 ## Usage
 ```
-./proxichorizo --proxi http://proxi.suprnova.cc:8100 --token YOUR_TOKEN --key-file proxima.key --name rig1     # pool (or --token-file FILE); every GPU, one process
+./proxichorizo --proxi stratum+tcp://proxi.suprnova.cc:3355 --token YOUR_TOKEN --key-file proxima.key --name rig1   # pool, stratum (or --token-file FILE); every GPU, one process
 ./proxichorizo ... -d 0,2                   # only these GPUs (PCI bus order, as nvidia-smi numbers them)
 ./proxichorizo --proxi http://your-node:8200 --token SEEKER_TOKEN --key-file proxima.key                        # solo, see USAGE.md
 ./proxichorizo --autotune --bench 10        # fastest kernel variant per GPU, then its hashrate

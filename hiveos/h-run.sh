@@ -3,7 +3,7 @@
 cd "$(dirname "$0")" || exit 1
 . h-manifest.conf
 [[ -f $CUSTOM_CONFIG_FILENAME ]] && . "$CUSTOM_CONFIG_FILENAME"
-[[ -z $POOL_URL ]] && echo "POOL_URL missing — set the pool (job server) in the flight sheet" && exit 1
+[[ -z $POOL_URL ]] && echo "POOL_URL missing — set the pool (stratum+tcp://proxi.suprnova.cc:3355) in the flight sheet" && exit 1
 [[ -z $TOKEN    ]] && echo "TOKEN missing — set your pool token as the wallet template" && exit 1
 [[ -z $SEED && -z $KEY_FILE ]] && echo "SEED missing — set the key seed (64 hex) as the pass, or KEY_FILE=/path/proxima.key" && exit 1
 [[ $POOL_URL == *://* ]] || POOL_URL="http://$POOL_URL"

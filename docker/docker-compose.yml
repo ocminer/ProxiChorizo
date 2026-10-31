@@ -13,7 +13,7 @@ services:
       TOKEN: "YOUR_POOL_TOKEN"
       SEED: "FIRST_64_HEX_CHARS_OF_private_key"
       WORKER: "rig1"
-      # POOL_URL defaults to proxi.suprnova.cc:8100
+      # POOL_URL defaults to stratum+tcp://proxi.suprnova.cc:3355
       # DEVICES: "0"
     ports:
       - "4078:4078"   # statistics JSON (/) and the mmpOS line (/mmpos)

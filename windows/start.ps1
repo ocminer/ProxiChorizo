@@ -1,7 +1,7 @@
 param(
     [Parameter(Mandatory=$true)][string]$Token,
     [string]$Worker = 'windows',
-    [string]$Pool = 'http://proxi.suprnova.cc:8100',
+    [string]$Pool = 'stratum+tcp://proxi.suprnova.cc:3355',
     [string]$KeyFile = "$PSScriptRoot/proxima.key",
     [string]$Seed = '',
     [string]$Devices = '',
