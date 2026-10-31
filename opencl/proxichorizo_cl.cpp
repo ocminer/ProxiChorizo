@@ -23,6 +23,8 @@
 #include <fstream>
 #include <sstream>
 #include <map>
+#include <cmath>
+#include <cerrno>
 
 #include "host_common.inc"
 #include "kernel_blob.h"
@@ -550,8 +552,11 @@ static int run_verify(const uint8_t scalar[32], const uint8_t pk[32], int dev) {
 static void usage() {
     fprintf(stderr,
         "ProxiChorizo " PX_VERSION " (OpenCL) — nonce seeker for Proxima (suprnova.cc)\n"
-        "  --proxi URL        job server of the pool or of `proxi node mine` (e.g. http://proxi.suprnova.cc:8100)\n"
-        "  --token T          bearer token (pool registration / mine.seeker.token)\n"
+        "  --proxi URL        the pool: stratum+tcp://HOST:PORT (stratum), or the HTTP job server of `proxi node mine`\n"
+        "                     and older pools (http://HOST:PORT); -o and --url are the same option\n"
+        "  --user ADDR.WORKER stratum login (-u): your payout address and worker name, or just the worker name;\n"
+        "                     default: the --name\n"
+        "  --token T          the account token from the pool registration (stratum password; --pass and -p are the same)\n"
         "  --key-file FILE    unencrypted proxima.key (or --seed-hex HEX / NONCE_SEEKER_SEED)\n"
         "  --seed-hex HEX     32-byte seed\n"
         "  --name NAME        seeker name in the pool's statistics (default proxichorizo-<pid>)\n"
@@ -600,7 +605,7 @@ static void on_signal(int) {
 }
 
 int main(int argc, char **argv) {
-    std::string proxi, token, keyfile, seedhex, name, selftest, gpus, variant, apiBind, kernelFile;
+    std::string proxi, token, keyfile, seedhex, name, selftest, gpus, variant, apiBind, kernelFile, user;
     int groups = 0, iters = 0; double bench = 0, autotuneSecs = 0; bool fetest = false, listVariants = false, listDevices = false, verify = false, verifyPipeline = false;
     ConsoleOpts con;
     sock_init();
@@ -609,8 +614,9 @@ int main(int argc, char **argv) {
         auto next = [&](std::string &dst) { if (i + 1 < argc) dst = argv[++i]; };
         auto optnum = [&](double dflt) { if (i + 1 < argc && isdigit((unsigned char)argv[i + 1][0])) return atof(argv[++i]); return dflt; };
         if (a == "--help" || a == "-h") { usage(); return 0; }
-        else if (a == "--proxi") next(proxi);
-        else if (a == "--token") next(token);
+        else if (a == "--proxi" || a == "-o" || a == "--url") next(proxi);
+        else if (a == "--user" || a == "-u") next(user);
+        else if (a == "--token" || a == "--pass" || a == "-p") next(token);
         else if (a == "--key-file") next(keyfile);
         else if (a == "--seed-hex") next(seedhex);
         else if (a == "--name") next(name);
@@ -719,15 +725,16 @@ int main(int argc, char **argv) {
     Shared sh;
     sh.base_url = proxi; if (!parse_url(proxi, sh.url)) return 1;
     sh.token = token; sh.name = name.empty() ? "proxichorizo-" + std::to_string(getpid()) : name;
+    sh.user = user.empty() ? sh.name : user;
     memcpy(sh.pk, pk, 32); memcpy(sh.scalar, scalar, 32);
     sh.gpus = gstats; sh.api_bind = apiBind; sh.con = con;
     print_banner(sh, "OpenCL");
-    logln("ProxiChorizo " PX_VERSION " (OpenCL): key " + hexs(pk, 32) + ", job server " + sh.url.host + ":" + std::to_string(sh.url.port) + ", " + std::to_string(devs.size()) + " GPU(s), name " + sh.name);
+    logln("ProxiChorizo " PX_VERSION " (OpenCL): key " + hexs(pk, 32) + ", " + (sh.url.stratum ? "stratum " : "job server ") + sh.url.host + ":" + std::to_string(sh.url.port) + ", " + std::to_string(devs.size()) + " GPU(s), " + (sh.url.stratum ? "user " + sh.user : "name " + sh.name));
     for (auto &g : sh.gpus) if (read_sensors(g.bus).temp < 0) log_warn(gpu_tag(g) + ": no temperature sensor readable (hwmon), the thermal limit is not enforced on it");
     g_sh = &sh; signal(SIGINT, on_signal); signal(SIGTERM, on_signal);
     std::vector<std::thread> th;
-    th.emplace_back(poller, std::ref(sh));
-    th.emplace_back(reporter, std::ref(sh));
+    if (sh.url.stratum) th.emplace_back(stratum_client, std::ref(sh));
+    else { th.emplace_back(poller, std::ref(sh)); th.emplace_back(reporter, std::ref(sh)); }
     th.emplace_back(console, std::ref(sh));
     if (!apiBind.empty()) th.emplace_back(api_server, std::ref(sh));
     for (auto &c : cfgs) th.emplace_back(gpu_worker, std::ref(sh), c);

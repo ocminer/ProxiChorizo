@@ -16,7 +16,10 @@
 #include <random>
 #include <fstream>
 #include <sstream>
-#define PX_VERSION "0.5.9"
+#include <map>
+#include <cmath>
+#include <cerrno>
+#define PX_VERSION "1.0.0"
 #include <signal.h>
 // sockets: POSIX or Winsock behind four helpers
 #ifdef _WIN32
@@ -545,16 +548,50 @@ static bool json_bool(const std::string &s, const char *key, bool &out) {
 }
 
 // --- tiny HTTP/1.1 client ---
-struct Url { std::string host; int port = 80; };
+// stratum+tcp://host:port is a stratum pool (one persistent connection, see stratum_client);
+// http://host:port (or host:port) the HTTP seeker protocol of `proxi node mine` and older pools
+struct Url { std::string host; int port = 80; bool stratum = false; };
 static bool parse_url(const std::string &u, Url &out) {
     std::string s = u;
-    if (s.rfind("http://", 0) == 0) s = s.substr(7);
+    if (s.rfind("stratum+tcp://", 0) == 0) { s = s.substr(14); out.stratum = true; }
+    else if (s.rfind("stratum+ssl://", 0) == 0 || s.rfind("stratum+tls://", 0) == 0) { fprintf(stderr, "stratum over TLS is not supported\n"); return false; }
+    else if (s.rfind("http://", 0) == 0) s = s.substr(7);
     else if (s.rfind("https://", 0) == 0) { fprintf(stderr, "https is not supported\n"); return false; }
     size_t slash = s.find('/'); if (slash != std::string::npos) s = s.substr(0, slash);
     size_t colon = s.find(':');
-    if (colon == std::string::npos) { out.host = s; out.port = 80; }
+    if (colon == std::string::npos) {
+        if (out.stratum) { fprintf(stderr, "a stratum URL needs a port: stratum+tcp://host:port\n"); return false; }
+        out.host = s; out.port = 80;
+    }
     else { out.host = s.substr(0, colon); out.port = atoi(s.substr(colon + 1).c_str()); }
-    return !out.host.empty();
+    return !out.host.empty() && out.port > 0 && out.port < 65536;
+}
+// a TCP connection to u with send/receive timeouts; SOCK_INVALID and err on failure
+static sock_t tcp_connect(const Url &u, int timeout_s, std::string &err) {
+    struct addrinfo hints = {}, *res = nullptr;
+    hints.ai_family = AF_UNSPEC; hints.ai_socktype = SOCK_STREAM;
+    char portstr[16]; snprintf(portstr, sizeof portstr, "%d", u.port);
+    if (getaddrinfo(u.host.c_str(), portstr, &hints, &res) != 0) { err = "dns failure for " + u.host; return SOCK_INVALID; }
+    sock_t fd = SOCK_INVALID;
+    for (auto *ai = res; ai; ai = ai->ai_next) {
+        fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (fd == SOCK_INVALID) continue;
+        sock_timeout(fd, timeout_s);
+        int one = 1; setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (const char *)&one, sizeof one);
+        if (connect(fd, ai->ai_addr, (int)ai->ai_addrlen) == 0) break;
+        sock_close(fd); fd = SOCK_INVALID;
+    }
+    freeaddrinfo(res);
+    if (fd == SOCK_INVALID) err = "cannot connect to " + u.host + ":" + portstr;
+    return fd;
+}
+// a recv that failed because its timeout ran out (not because the connection broke)
+static bool sock_timed_out() {
+#ifdef _WIN32
+    int e = WSAGetLastError(); return e == WSAETIMEDOUT || e == WSAEWOULDBLOCK;
+#else
+    return errno == EAGAIN || errno == EWOULDBLOCK;
+#endif
 }
 struct HttpResp { int status = 0; std::string body; std::string err; };
 static HttpResp http_do(const Url &u, const std::string &method, const std::string &path, const std::string &body, const std::string &token, int timeout_s) {
@@ -736,6 +773,15 @@ struct Shared {
     std::string api_bind;
     ConsoleOpts con;                   // thermal limits and console options
     uint64_t last_job_id = 0, last_job_k = 0; std::chrono::steady_clock::time_point last_job_at{};  // for the console's total line
+    // stratum (stratum+tcp:// URL): the connection, its extranonce1 and the shares awaiting an answer
+    std::string user;                  // authorized as: "<address>.<worker>" (--user) or the worker name
+    std::mutex wmu;                    // guards sfd for writers and the fields below
+    sock_t sfd = SOCK_INVALID;
+    uint16_t en1 = 0;
+    bool subscribed = false;
+    uint64_t next_rpc = 100;
+    struct Pending { int ordinal; uint64_t job; };
+    std::map<uint64_t, Pending> pending;
 };
 // console wording for one GPU: "GPU #3" by its device index (nvidia-smi order under PCI_BUS_ID)
 static std::string gpu_tag(const Shared::GpuStat &g) { return "GPU #" + std::to_string(g.dev); }
@@ -938,7 +984,237 @@ static void print_banner(Shared &sh, const char *backend) {
     bannerln("");
 }
 
+
+// ---- stratum client ----------------------------------------------------------
+// The pool's stratum port (NOMP-style stratum v1, newline-delimited JSON-RPC over one
+// persistent TCP connection):
+//   -> mining.subscribe ["ProxiChorizo/<version>"]   <- [[...], "<extranonce1, 2 bytes hex>", 6]
+//   -> mining.authorize ["<address>.<worker>" or "<worker>", "<token>"]   <- true
+//   <- mining.set_difficulty [<2^k>]: applies from the next job, as the pool queues it
+//   <- mining.notify ["<job id hex>", "<pubkey>", "<pred>", <slot>, "<alpha prefix>", <ttl ms>, <clean_jobs>]
+//   -> mining.submit ["<user>", "<job id>", "<extranonce2, 6 bytes hex>", "<beta>"]   <- true or [code, msg, null]
+// The nonce is extranonce1 || extranonce2: the connection's own 16 bits on top, then the
+// GPU ordinal (8 bits) and 40 bits of counter per GPU and job, as with the HTTP nonce_base.
+// Answers: 21 job not found (stale), 22 duplicate, 23 low difficulty, 24 unauthorized, 25 not subscribed.
+
+static std::string json_escape(const std::string &v);
+// a JSON value: just enough of a parser for the stratum messages
+struct JV {
+    enum T { NUL, BOOL, NUM, STR, ARR, OBJ } t = NUL;
+    bool b = false; double n = 0; std::string s;
+    std::vector<JV> a; std::vector<std::pair<std::string, JV>> o;
+    const JV *get(const char *k) const { for (auto &p : o) if (p.first == k) return &p.second; return nullptr; }
+    const JV *at(size_t i) const { return t == ARR && i < a.size() ? &a[i] : nullptr; }
+};
+static void jws(const std::string &s, size_t &p) { while (p < s.size() && (s[p] == ' ' || s[p] == '\t' || s[p] == '\r' || s[p] == '\n')) p++; }
+static bool jparse(const std::string &s, size_t &p, JV &v, int depth = 0) {
+    if (depth > 16) return false;
+    jws(s, p); if (p >= s.size()) return false;
+    char c = s[p];
+    if (c == '{') {
+        v.t = JV::OBJ; p++; jws(s, p);
+        if (p < s.size() && s[p] == '}') { p++; return true; }
+        for (;;) {
+            JV key; if (!jparse(s, p, key, depth + 1) || key.t != JV::STR) return false;
+            jws(s, p); if (p >= s.size() || s[p] != ':') return false; p++;
+            JV val; if (!jparse(s, p, val, depth + 1)) return false;
+            v.o.emplace_back(key.s, std::move(val));
+            jws(s, p); if (p >= s.size()) return false;
+            if (s[p] == ',') { p++; continue; }
+            if (s[p] == '}') { p++; return true; }
+            return false;
+        }
+    }
+    if (c == '[') {
+        v.t = JV::ARR; p++; jws(s, p);
+        if (p < s.size() && s[p] == ']') { p++; return true; }
+        for (;;) {
+            JV val; if (!jparse(s, p, val, depth + 1)) return false;
+            v.a.push_back(std::move(val));
+            jws(s, p); if (p >= s.size()) return false;
+            if (s[p] == ',') { p++; continue; }
+            if (s[p] == ']') { p++; return true; }
+            return false;
+        }
+    }
+    if (c == '"') {
+        v.t = JV::STR; p++;
+        while (p < s.size() && s[p] != '"') {
+            if (s[p] == '\\' && p + 1 < s.size()) {
+                char e = s[p + 1]; p += 2;
+                if (e == 'n') v.s += '\n'; else if (e == 't') v.s += '\t'; else if (e == 'r') v.s += '\r';
+                else if (e == 'u') { v.s += '?'; p += 4; } else v.s += e;
+            } else v.s += s[p++];
+        }
+        if (p >= s.size()) return false;
+        p++; return true;
+    }
+    if (s.compare(p, 4, "true") == 0) { v.t = JV::BOOL; v.b = true; p += 4; return true; }
+    if (s.compare(p, 5, "false") == 0) { v.t = JV::BOOL; v.b = false; p += 5; return true; }
+    if (s.compare(p, 4, "null") == 0) { v.t = JV::NUL; p += 4; return true; }
+    const char *b = s.c_str() + p; char *e = nullptr;
+    double d = strtod(b, &e);
+    if (e == b) return false;
+    v.t = JV::NUM; v.n = d; p += (size_t)(e - b); return true;
+}
+static std::string jstr(const std::string &v) { return "\"" + json_escape(v) + "\""; }
+
+// one line to the pool; false when the connection is gone
+static bool stratum_send(Shared &sh, const std::string &line) {
+    std::lock_guard<std::mutex> l(sh.wmu);
+    if (sh.sfd == SOCK_INVALID) return false;
+    std::string m = line + "\n"; size_t sent = 0;
+    while (sent < m.size()) {
+        ssize_t n = send(sh.sfd, m.data() + sent, (int)(m.size() - sent), MSG_NOSIGNAL);
+        if (n <= 0) return false;
+        sent += (size_t)n;
+    }
+    return true;
+}
+
+// a share found by a GPU: nonce = extranonce1 || extranonce2
+static void stratum_submit(Shared &sh, const Job &j, uint64_t nonce, const uint8_t beta[64], int ordinal) {
+    std::string tag; { std::lock_guard<std::mutex> l(sh.mu); tag = (size_t)ordinal < sh.gpus.size() ? gpu_tag(sh.gpus[ordinal]) : "GPU"; }
+    uint64_t id; uint16_t en1;
+    {
+        std::lock_guard<std::mutex> l(sh.wmu);
+        if (sh.sfd == SOCK_INVALID || !sh.subscribed) { log_warn(tag + ": share of job " + std::to_string(j.id) + " dropped, not connected"); return; }
+        en1 = sh.en1; id = sh.next_rpc++;
+        sh.pending[id] = Shared::Pending{ordinal, j.id};
+    }
+    if ((nonce >> 48) != en1) { log_err(tag + ": nonce outside this connection's range, not submitted"); std::lock_guard<std::mutex> l(sh.wmu); sh.pending.erase(id); return; }
+    char e2[16], jid[24];
+    snprintf(e2, sizeof e2, "%012llx", (unsigned long long)(nonce & 0xffffffffffffULL));
+    snprintf(jid, sizeof jid, "%llx", (unsigned long long)j.id);
+    std::string line = "{\"id\":" + std::to_string(id) + ",\"method\":\"mining.submit\",\"params\":[" + jstr(sh.user) + "," + jstr(jid) + "," + jstr(e2) + "," + jstr(hexs(beta, 64)) + "]}";
+    if (!stratum_send(sh, line)) { std::lock_guard<std::mutex> l(sh.wmu); sh.pending.erase(id); log_warn(tag + ": share of job " + std::to_string(j.id) + " not sent, connection lost"); }
+}
+
+// the pool's answer to a submit: count and log it like the HTTP answers
+static void stratum_share_answer(Shared &sh, const Shared::Pending &pd, const JV &msg) {
+    std::string tag; { std::lock_guard<std::mutex> l(sh.mu); tag = (size_t)pd.ordinal < sh.gpus.size() ? gpu_tag(sh.gpus[pd.ordinal]) : "GPU"; }
+    const JV *res = msg.get("result"), *err = msg.get("error");
+    int code = 0; std::string why;
+    if (err && err->t == JV::ARR) { if (const JV *c = err->at(0)) code = (int)c->n; if (const JV *m = err->at(1)) why = m->s; }
+    bool ok = res && res->t == JV::BOOL && res->b && code == 0;
+    int which = ok ? 0 : code == 21 ? 2 : 1;  // 0 accepted, 1 rejected, 2 stale
+    {
+        std::lock_guard<std::mutex> l(sh.mu);
+        if (which == 0) sh.shares++; else if (which == 1) sh.rejected++; else sh.stale++;
+        if ((size_t)pd.ordinal < sh.gpus.size()) { auto &g = sh.gpus[pd.ordinal]; if (which == 0) g.accepted++; else if (which == 1) g.rejected++; else g.stale++; }
+        if (which == 2 && sh.job.id == pd.job) sh.job.stale = true;  // the pool has moved on: idle until the next notify
+    }
+    char t[64]; snprintf(t, sizeof t, " (%llu/%llu)", (unsigned long long)sh.shares.load(), (unsigned long long)(sh.shares.load() + sh.rejected.load() + sh.stale.load()));
+    if (which == 0) { if (!sh.con.quiet) log_ok(tag + ": share accepted" + t); }
+    else if (which == 2) log_warn(tag + ": share stale, the pool had moved on from job " + std::to_string(pd.job) + t);
+    else log_err(tag + ": share REJECTED (" + std::to_string(code) + " " + why + ") of job " + std::to_string(pd.job) + t);
+}
+
+// mining.notify: the job, under the difficulty last set
+static void stratum_notify(Shared &sh, const JV &params, int &cur_k, int &pending_k) {
+    const JV *jid = params.at(0), *pk = params.at(1), *slot = params.at(3), *alpha = params.at(4), *ttl = params.at(5);
+    if (!jid || jid->t != JV::STR || !pk || !slot || !alpha || !ttl) { log_err("stratum: malformed mining.notify"); return; }
+    if (pending_k >= 0) { cur_k = pending_k; pending_k = -1; }
+    uint64_t id = strtoull(jid->s.c_str(), nullptr, 16);
+    if (id == 0 || cur_k <= 0) { log_err("stratum: mining.notify without a job id or before mining.set_difficulty"); return; }
+    if (pk->s != hexs(sh.pk, 32)) { log_err("the pool sends jobs for key " + pk->s + " but this miner holds " + hexs(sh.pk, 32) + " — check --key-file and --token"); std::lock_guard<std::mutex> l(sh.mu); sh.job = Job(); return; }
+    Job j; j.id = id; j.slot = (uint64_t)slot->n; j.k = cur_k;
+    if (!unhex(alpha->s, j.prefix) || j.prefix.empty() || j.prefix.size() > 64) { log_err("stratum: bad alpha prefix in mining.notify"); return; }
+    uint16_t en1; { std::lock_guard<std::mutex> l(sh.wmu); en1 = sh.en1; }
+    j.nonce_base = (uint64_t)en1 << 48; j.has_base = true;
+    j.has_beat = false; memset(j.beat, 0xff, 64);
+    j.deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds((int64_t)ttl->n);
+    std::lock_guard<std::mutex> l(sh.mu);
+    bool changed = sh.job.id != id;
+    sh.job = j; sh.last_job_id = id; sh.last_job_k = (uint64_t)cur_k; sh.last_job_at = std::chrono::steady_clock::now();
+    if (changed && sh.con.verbose) logln("job " + jid->s + ": slot " + std::to_string(j.slot) + ", k=" + std::to_string(cur_k) + ", ttl " + std::to_string((int64_t)ttl->n) + " ms");
+}
+
+// the connection: subscribe, authorize, then jobs in and shares out until it breaks; reconnects with backoff
+static void stratum_client(Shared &sh) {
+    int backoff = 1;
+    while (!sh.stop) {
+        std::string err;
+        sock_t fd = tcp_connect(sh.url, 10, err);
+        if (fd == SOCK_INVALID) {
+            log_warn("stratum: " + err + " (retry in " + std::to_string(backoff) + "s)");
+            for (int i = 0; i < backoff * 4 && !sh.stop; i++) std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            backoff = std::min(backoff * 2, 30); continue;
+        }
+        int one = 1; setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, (const char *)&one, sizeof one);
+        sock_timeout(fd, 1);   // recv wakes every second to see sh.stop; sends are small
+        { std::lock_guard<std::mutex> l(sh.wmu); sh.sfd = fd; sh.subscribed = false; sh.pending.clear(); }
+        auto connected_at = std::chrono::steady_clock::now();
+        logln("stratum: connected to " + sh.url.host + ":" + std::to_string(sh.url.port));
+        stratum_send(sh, "{\"id\":1,\"method\":\"mining.subscribe\",\"params\":[\"ProxiChorizo/" PX_VERSION "\"]}");
+        stratum_send(sh, "{\"id\":2,\"method\":\"mining.authorize\",\"params\":[" + jstr(sh.user) + "," + jstr(sh.token) + "]}");
+        int cur_k = 0, pending_k = -1; bool authFailed = false, reconnect = false;
+        std::string buf; char rb[4096];
+        auto last_rx = std::chrono::steady_clock::now();
+        while (!sh.stop && !reconnect) {
+            ssize_t n = recv(fd, rb, (int)sizeof rb, 0);
+            if (n < 0 && sock_timed_out()) {
+                // a pool sends a job about every slot; three minutes of silence is a dead connection
+                if (std::chrono::steady_clock::now() - last_rx > std::chrono::minutes(3)) { log_warn("stratum: no message for 3 minutes"); break; }
+                continue;
+            }
+            if (n <= 0) { log_warn("stratum: connection closed by the pool"); break; }
+            last_rx = std::chrono::steady_clock::now();
+            buf.append(rb, (size_t)n);
+            if (buf.size() > 1 << 20) { log_err("stratum: oversized message"); break; }
+            size_t nl;
+            while ((nl = buf.find('\n')) != std::string::npos) {
+                std::string line = buf.substr(0, nl); buf.erase(0, nl + 1);
+                if (line.find_first_not_of(" \r\t") == std::string::npos) continue;
+                JV msg; size_t p = 0;
+                if (!jparse(line, p, msg) || msg.t != JV::OBJ) { log_err("stratum: malformed message: " + line.substr(0, 120)); continue; }
+                const JV *method = msg.get("method"), *params = msg.get("params"), *idv = msg.get("id");
+                if (method && method->t == JV::STR) {
+                    static const JV empty;
+                    const JV &pa = params ? *params : empty;
+                    if (method->s == "mining.set_difficulty") {
+                        const JV *d = pa.at(0);
+                        double k = d && d->n > 0 ? std::log2(d->n) : -1;
+                        if (k < 1 || k > 255 || std::fabs(k - std::round(k)) > 1e-9) { log_err("stratum: difficulty is not a power of two: " + line.substr(0, 120)); continue; }
+                        pending_k = (int)std::lround(k);
+                        if (cur_k == 0) cur_k = pending_k;
+                        if (sh.con.verbose) logln("stratum: difficulty 2^" + std::to_string(pending_k) + " from the next job");
+                    } else if (method->s == "mining.notify") stratum_notify(sh, pa, cur_k, pending_k);
+                    else if (method->s == "client.reconnect") { log_warn("stratum: the pool asks to reconnect"); reconnect = true; break; }
+                    else if (method->s == "client.show_message") { if (const JV *m = pa.at(0)) logln("pool: " + m->s); }
+                    continue;
+                }
+                uint64_t id = idv && idv->t == JV::NUM ? (uint64_t)idv->n : 0;
+                const JV *res = msg.get("result"), *er = msg.get("error");
+                std::string why; if (er && er->t == JV::ARR) { if (const JV *m = er->at(1)) why = m->s; }
+                if (id == 1) {
+                    const JV *en1 = res ? res->at(1) : nullptr, *n2 = res ? res->at(2) : nullptr;
+                    if (!en1 || en1->t != JV::STR || en1->s.size() != 4 || !n2 || (int)n2->n != 6) { log_err("stratum: subscribe refused or unsupported" + (why.empty() ? "" : ": " + why)); reconnect = true; break; }
+                    std::lock_guard<std::mutex> l(sh.wmu);
+                    sh.en1 = (uint16_t)strtoul(en1->s.c_str(), nullptr, 16); sh.subscribed = true;
+                } else if (id == 2) {
+                    if (res && res->t == JV::BOOL && res->b) logln("stratum: authorized as " + sh.user);
+                    else { log_err("stratum: authorization of " + sh.user + " refused" + (why.empty() ? "" : ": " + why) + " — check --token and --user"); authFailed = true; reconnect = true; break; }
+                } else if (id >= 100) {
+                    Shared::Pending pd{-1, 0}; bool found = false;
+                    { std::lock_guard<std::mutex> l(sh.wmu); auto it = sh.pending.find(id); if (it != sh.pending.end()) { pd = it->second; sh.pending.erase(it); found = true; } }
+                    if (found) stratum_share_answer(sh, pd, msg);
+                }
+            }
+        }
+        { std::lock_guard<std::mutex> l(sh.wmu); sh.sfd = SOCK_INVALID; sh.subscribed = false; sh.pending.clear(); }
+        sock_close(fd);
+        { std::lock_guard<std::mutex> l(sh.mu); sh.job = Job(); }
+        if (sh.stop) break;
+        int wait = authFailed ? 30 : reconnect ? 1 : backoff;
+        log_warn("stratum: disconnected, reconnecting in " + std::to_string(wait) + "s");
+        for (int i = 0; i < wait * 4 && !sh.stop; i++) std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        backoff = std::chrono::steady_clock::now() - connected_at > std::chrono::minutes(1) ? 1 : std::min(backoff * 2, 30);
+    }
+}
+
 static void submit(Shared &sh, const Job &j, uint64_t nonce, const uint8_t beta[64], uint64_t attempts, int ordinal) {
+    if (sh.url.stratum) { stratum_submit(sh, j, nonce, beta, ordinal); return; }
     std::string tag; { std::lock_guard<std::mutex> l(sh.mu); tag = (size_t)ordinal < sh.gpus.size() ? gpu_tag(sh.gpus[ordinal]) : "GPU"; }
     auto count = [&](int which) {  // 0 accepted, 1 rejected, 2 stale: process total and this GPU
         std::lock_guard<std::mutex> l(sh.mu);
@@ -1363,8 +1639,11 @@ static int run_verify(const uint8_t pk[32], int dev) {
 static void usage() {
     fprintf(stderr,
         "ProxiChorizo " PX_VERSION " — CUDA nonce seeker for Proxima (suprnova.cc)\n"
-        "  --proxi URL        job server of the pool or of `proxi node mine` (e.g. http://proxi.suprnova.cc:8100)\n"
-        "  --token T          bearer token (pool registration / mine.seeker.token)\n"
+        "  --proxi URL        the pool: stratum+tcp://HOST:PORT (stratum), or the HTTP job server of `proxi node mine`\n"
+        "                     and older pools (http://HOST:PORT); -o and --url are the same option\n"
+        "  --user ADDR.WORKER stratum login (-u): your payout address and worker name, or just the worker name;\n"
+        "                     default: the --name\n"
+        "  --token T          the account token from the pool registration (stratum password; --pass and -p are the same)\n"
         "  --token-file FILE  read the bearer token from FILE (first line; keeps it off the command line), or PROXI_TOKEN in the environment\n"
         "  --key-file FILE    unencrypted proxima.key (or --seed-hex HEX / NONCE_SEEKER_SEED)\n"
         "  --seed-hex HEX     32-byte seed\n"
@@ -1413,7 +1692,7 @@ static void on_signal(int) {
 }
 
 int main(int argc, char **argv) {
-    std::string proxi, token, tokenFile, keyfile, seedhex, name, selftest, gpus, variant, apiBind;
+    std::string proxi, token, tokenFile, keyfile, seedhex, name, selftest, gpus, variant, apiBind, user;
     sock_init();
     // GPU numbers follow the PCI bus order (as nvidia-smi lists the cards) unless the caller
     // chose an order; the runtime reads this before its first call
@@ -1429,8 +1708,9 @@ int main(int argc, char **argv) {
         auto next = [&](std::string &dst) { if (i + 1 < argc) dst = argv[++i]; };
         auto optnum = [&](double dflt) { if (i + 1 < argc && isdigit((unsigned char)argv[i + 1][0])) return atof(argv[++i]); return dflt; };
         if (a == "--help" || a == "-h") { usage(); return 0; }
-        else if (a == "--proxi") next(proxi);
-        else if (a == "--token") next(token);
+        else if (a == "--proxi" || a == "-o" || a == "--url") next(proxi);
+        else if (a == "--user" || a == "-u") next(user);
+        else if (a == "--token" || a == "--pass" || a == "-p") next(token);
         else if (a == "--token-file") next(tokenFile);
         else if (a == "--key-file") next(keyfile);
         else if (a == "--seed-hex") next(seedhex);
@@ -1541,15 +1821,16 @@ int main(int argc, char **argv) {
     Shared sh;
     sh.base_url = proxi; if (!parse_url(proxi, sh.url)) return 1;
     sh.token = token; sh.name = name.empty() ? "proxichorizo-" + std::to_string(getpid()) : name;
+    sh.user = user.empty() ? sh.name : user;
     memcpy(sh.pk, pk, 32); memcpy(sh.scalar, scalar, 32);
     sh.gpus = gstats; sh.api_bind = apiBind; sh.con = con;
     print_banner(sh, "CUDA");
-    logln("ProxiChorizo " PX_VERSION ": key " + hexs(pk, 32) + ", job server " + sh.url.host + ":" + std::to_string(sh.url.port) + ", " + std::to_string(devs.size()) + " GPU(s), name " + sh.name);
+    logln("ProxiChorizo " PX_VERSION ": key " + hexs(pk, 32) + ", " + (sh.url.stratum ? "stratum " : "job server ") + sh.url.host + ":" + std::to_string(sh.url.port) + ", " + std::to_string(devs.size()) + " GPU(s), " + (sh.url.stratum ? "user " + sh.user : "name " + sh.name));
     for (auto &g : sh.gpus) if (read_sensors(g.bus).temp < 0) log_warn(gpu_tag(g) + ": no temperature sensor readable (NVML/hwmon), the thermal limit is not enforced on it");
     g_sh = &sh; signal(SIGINT, on_signal); signal(SIGTERM, on_signal);
     std::vector<std::thread> th;
-    th.emplace_back(poller, std::ref(sh));
-    th.emplace_back(reporter, std::ref(sh));
+    if (sh.url.stratum) th.emplace_back(stratum_client, std::ref(sh));
+    else { th.emplace_back(poller, std::ref(sh)); th.emplace_back(reporter, std::ref(sh)); }
     th.emplace_back(console, std::ref(sh));
     if (!apiBind.empty()) th.emplace_back(api_server, std::ref(sh));
     for (auto &c : cfgs) th.emplace_back(gpu_worker, std::ref(sh), c);
