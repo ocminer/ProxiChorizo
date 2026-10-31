@@ -972,7 +972,8 @@ static void print_banner(Shared &sh, const char *backend) {
     bannerln("");
     bannerln(std::string(g_color ? C_BOLD C_CYAN : "") + "  *** ProxiChorizo " PX_VERSION " (" + backend + ") — nonce seeker for Proxima by suprnova.cc ***" + (g_color ? C_RESET : ""));
     bannerln("      ProxiChorizo License 1.0: free to run for mining; commercial or closed-source reuse needs written permission");
-    bannerln("      pool:    http://" + sh.url.host + ":" + std::to_string(sh.url.port) + "   worker: " + sh.name);
+    if (sh.url.stratum) bannerln("      pool:    stratum+tcp://" + sh.url.host + ":" + std::to_string(sh.url.port) + "   user: " + sh.user);
+    else bannerln("      pool:    http://" + sh.url.host + ":" + std::to_string(sh.url.port) + "   worker: " + sh.name);
     bannerln("      key:     " + hexs(sh.pk, 32));
     bannerln("      GPUs:    " + std::to_string(sh.gpus.size()) + " selected (GPU numbers follow the PCI bus order, as nvidia-smi lists them)");
     for (auto &g : sh.gpus) bannerln("      " + gpu_tag(g) + ": " + short_gpu_name(g.name) + " [" + short_bus(g.bus) + "] " + g.arch + ", " + g.variant + " " + g.geometry);
