@@ -13,6 +13,11 @@ inversion for compression, 1 SHA-512. ≈3,600 field multiplications per attempt
 | `PX_WINDOW` | 0, 2, 4 | scalar multiplication: plain double-and-add (0), 2-bit window with a 3-point table, 4-bit window with a 16-point table in local memory |
 | `PX_LB_THREADS`, `PX_LB_BLOCKS` | 256, 1/2 | `__launch_bounds__` for mine_kernel; 2 blocks/SM caps registers at 128 and raises occupancy |
 | `PX_SQ_MUL` | defined | debugging: squaring falls back to multiplication |
+| `PX_COMBA` | defined | 0.5.8: product-scanning (comba) field multiply and square over three-word columns, fused wide multiplies with predicate carries (round 10) |
+| `PX_WIDECHAIN` | defined (with `PX_COMBA`) | 0.5.10: row-ordered field multiply and square whose products sit two columns apart so each carry rides as the carry-in of the next wide multiply; even/odd column arrays (round 11) |
+| `PX_FOLDSHIFT` | 0 / 1 / 2 | with `PX_WIDECHAIN`: the 2^256 = 38 fold from funnel shifts instead of wide multiplies, in the multiply (1) or in multiply and square (2); measured slower, kept for reference |
+| `PX_FOLDSHIFT_POW` | 0 / 1 | with `PX_WIDECHAIN`: the shift fold only in the exponentiation chains (square roots, inversions); measured slower, kept for reference |
+| `PX_LB_SCALAR` | 1, 2, 3 | blocks per SM for the split-pipeline scalar-multiplication kernel (default 2; 3 caps registers at 80 and spills) |
 | `PX_SHA_OLD` | defined | debugging: SHA-512 with the 80-word schedule instead of the rolling 16-word one |
 
 ## Measurements, 2026-10-19 (German test rig, driver 615.71, CUDA 13.4; the 3070s sit on x1/x4 gen1 risers)
@@ -548,3 +553,56 @@ with its 12-pass retry policy) and live pool mining with the final build: RTX 50
 RTX 5080, 8 minutes, 32.9 MH/s, 18 accepted, 0 rejected. The A100 and H100 keep their 0.5.7
 profiles: the new kernels were not measured there (`--autotune` or `--variant fe32c_wnaf_s16_c` tries them).
 Ada and Turing default to the new variant with the first-start quick tune, which now also includes it.
+
+## Round 11: wide-multiply carry chains — 2026-10-29 (RTX 3070, RTX 5080, RTX 5090, CMP 170HX)
+
+Where the time goes on an RTX 30xx (Nsight Compute, 0.5.9 scalar-multiplication kernel on an RTX 3070, 1.83 GHz, 240 W):
+the pipe that executes the 32×32→64-bit multiplies (`IMAD.WIDE.U32`, two slots each) is busy 88 % of the cycles, the
+integer-add pipe 40 %, the FP32-only pipe 0 %, the schedulers issue on 48 % of the cycles with 4 warps each (128 registers),
+and the stalls are waits on fixed-latency dependencies (3.1 cycles per issue), multiplier-pipe throttle (1.8) and dispatch
+(1.1). So on GA10x the multiplier pipe is the limit, not the integer adds; at 100 % of that pipe the 0.5.9 instruction stream
+could reach about 13 MH/s on a 3070 (the card needs ~140,000 wide products per nonce per lane and does 32 per clock per SM).
+Only changes that remove instructions help there; the FP32 pipe cannot be used for exact 32-bit products.
+
+`PX_WIDECHAIN` (variants `fe32w_*`) rewrites the field multiply and square as a row-ordered schoolbook whose products are
+issued two columns apart: the 2^64 carry of one wide multiply is consumed as the carry-in of the next (`IMAD.WIDE.U32.X`),
+so no per-product add is needed, one `addc` per row captures the chain's last carry, and the other chain of each row ends at
+column i+7 whose carry is provably zero (the partial product has no word there). Products at even columns accumulate on aligned
+64-bit register pairs (array E), those at odd columns in a second array (Od, window (c, c+1) stored at Od[c−1]); the two are added
+once at the end, and the 2^256 = 38 fold is an extra row of the same form. The multiply count is the comba count (72 wide
+multiplies per field multiply, 44 per square); the integer adds drop from ~44 to ~27 per multiply, the register moves from 17 to 10,
+and ptxas no longer needs `IMAD.MOV`/`IMAD.X` moves on the multiplier pipe for most of the carries (static kernel mix on sm_86:
+2327 wide multiplies, 1725 `IADD3.X`, 218 `IMAD.MOV`, 130 `IMAD.X` vs 2314 / 2043 / 564 / 303 in 0.5.9). In isolation on the 3070
+(`tools/febench6.cu`): multiply 31.1 → 33.2 G/s, square 40.9 → 46.6 G/s; 0 mismatches over 52 M full-range operand pairs against
+the comba code; every variant of the final build passes the 16 node vectors, `--fetest`, the 512 independent vectors and `--verify` (identical hit sets, 58 pipeline edge shapes / 5,189 complete outputs) on sm_86 (RTX 3070), sm_120 (RTX 5080, RTX 5090) and sm_80 (CMP 170HX).
+
+Tried and dropped (RTX 3070 unless noted):
+- Karatsuba on top of the wide chains (three 4×4 products, 54 instead of 72 wide multiplies): 29.4 vs 33.2 G multiplies/s in
+  isolation — the assembly adds (and the `IMAD.X` ptxas makes of some of them) cost more than the 18 saved multiplies.
+- The 2^256 = 38 fold from funnel shifts (hi·32 + hi·4 + hi·2, no multiplier at all): 12.09 vs 12.87 MH/s in the kernel although the
+  multiplier pipe is the bottleneck; on GA10x the extra shift/add instructions are not free (the physical pipe is shared with part of
+  the integer work). The same for the squaring and for the exponentiation chains only.
+
+Matched A/B/B/A `--bench 45` of the final 0.5.10 build (all variants, CUDA 12.9) against the 0.5.9 release binary on the same card and
+cap, automatic defaults on both sides (`fe32c_wnaf_s16_c` → `fe32w_wnaf_s16_c`, 128 blocks/SM × 256 × 1), driver-reported power and clock:
+
+| GPU | Power cap | 0.5.9 default | 0.5.10 default | Gain | Power / SM clock (0.5.10) |
+|---|---:|---:|---:|---:|---|
+| RTX 3070 (sm_86, 46 SMs) | 240 W | 11.51 / 11.45 MH/s | **12.74 / 12.73 MH/s** | +11.0 % | 230 W, 1830–1890 MHz |
+| RTX 3070, second card (x1 riser host, 220 W) | 220 W | 11.50 / 11.43 MH/s | **12.71 / 12.69 MH/s** | +10.8 % | 212 W, 1815–1935 MHz |
+| CMP 170HX (sm_80, 74 SMs, core locked at 1300 MHz) | 250 W | 12.46 / 12.46 MH/s | **14.04 / 14.04 MH/s** | +12.7 % | 163 W, 1290 MHz |
+| RTX 5080 (sm_120, 84 SMs) | 360 W | 33.11 / 33.10 MH/s | **35.49 / 35.48 MH/s** | +7.2 % | 335 W, 2790–2850 MHz |
+| RTX 5090 (sm_120, 170 SMs; a verifier process coexists on this card) | 600 W | 64.07 / 63.70 MH/s | **68.01 / 67.96 MH/s** | +6.4 % | 574 W, 2655–2932 MHz |
+| RTX 5090 | 420 W | 48.78 / 48.46 MH/s | **51.04 / 51.03 MH/s** | +5.0 % | 405 W, 1987–2842 MHz |
+
+Development builds earlier in the round (one binary, `--variant`, 45 s arms) gave the same picture: 3070 11.43 / 11.52 → 12.76 / 12.74;
+5090 64.07 / 63.59 → 68.19 / 67.98 at 600 W and 48.07 / 48.44 → 50.85 / 51.19 at 420 W; 5080 32.99 / 33.00 → 35.35 / 35.35.
+
+The 3070 series, same binary (`--variant`), 45 s arms: wide chains 12.83–12.87; + shift fold in the multiply 12.06–12.09; + shift fold in multiply
+and square 11.11; wide chains with the exponentiation chains folding by shifts 12.37; scalar kernel at 3 blocks/SM (80 registers, 644 bytes of
+spills) 12.51–12.52. RTX 5080: wide chains 35.34–35.50; 3 blocks/SM 34.97–35.04; shift fold in the exponentiation chains 35.02–35.03.
+Nsight Compute of the new scalar kernel on the 3070: multiplier pipe 87 % busy (instruction share 47 %), integer pipe 36 %, issue 44 %,
+launch 93.5 ms vs 103.8 ms for the comba kernel over the same nonce range.
+Live pool mining with the final 0.5.10 build at the then-current difficulty (k = 33): RTX 5090 at 600 W, 40 minutes, 67.7 MH/s average,
+23 shares accepted, 0 rejected, 0 stale; RTX 5090 at 420 W, 37 minutes, 50.4 MH/s, 15 accepted, 0 rejected; shorter 8-minute runs on an
+RTX 3070 (12.7 MH/s) and an RTX 5080 (35.1 MH/s) found no share, as expected at that difficulty (about one and two expected).
