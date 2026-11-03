@@ -726,6 +726,14 @@ int main(int argc, char **argv) {
         { auto &g = gstats.back(); g.arch = std::to_string(d.cus) + " CUs"; g.variant = cfg.v->name; g.geometry = std::to_string(cfg.groups) + "x" + std::to_string(cfg.v->wg) + "x" + std::to_string(cfg.iters); }
         cfgs.push_back(cfg);
     }
+    // Every GPU must own a distinct ordinal (its nonce range under the pool's base and its stats row).
+    for (size_t i = 0; i < cfgs.size(); i++) {
+        if (cfgs[i].ordinal != (int)i) {
+            fprintf(stderr, "internal: GPU %d had ordinal %d, using %zu\n", cfgs[i].dev, cfgs[i].ordinal, i);
+            cfgs[i].ordinal = (int)i;
+            if (i < gstats.size()) gstats[i].ordinal = (int)i;
+        }
+    }
     if (bench > 0) { for (auto &c : cfgs) run_bench(get_prog(g_devs[c.dev], c.v), pk, c.groups, c.iters, bench, true); return 0; }
     if (proxi.empty()) { if (autotuneSecs > 0) return 0; usage(); return 1; }
 

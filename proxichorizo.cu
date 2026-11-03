@@ -19,7 +19,7 @@
 #include <map>
 #include <cmath>
 #include <cerrno>
-#define PX_VERSION "1.0.0"
+#define PX_VERSION "1.0.1"
 #include <signal.h>
 // sockets: POSIX or Winsock behind four helpers
 #ifdef _WIN32
@@ -2016,7 +2016,7 @@ int main(int argc, char **argv) {
         uint8_t pk2[32]; int ok = cfg.ops->init(scalar, pk2);
         if (ok != 1) { fprintf(stderr, "device %d: constant derivation failed on %s\n", d, cfg.ops->name); return 2; }
         if (d == devs[0]) memcpy(pk, pk2, 32); else if (memcmp(pk, pk2, 32) != 0) { fprintf(stderr, "device %d derives a different public key\n", d); return 2; }
-        if (autotuneSecs > 0) { cfg = autotune(d, scalar, pk, autotuneSecs, blocks); if (threads > 0) cfg.threads = threads; if (iters > 0) cfg.iters = iters; cfg.ops->init(scalar, pk2); }
+        if (autotuneSecs > 0) { cfg = autotune(d, scalar, pk, autotuneSecs, blocks); if (threads > 0) cfg.threads = threads; if (iters > 0) cfg.iters = iters; cfg.ordinal = (int)cfgs.size(); cfg.ops->init(scalar, pk2); }
         else if (!pl.measured && !forced && blocks <= 0 && threads <= 0 && iters <= 0 && bench <= 0) {
             GpuCfg tuned;
             if (loadTuned(prop, d, tuned)) {
@@ -2032,6 +2032,15 @@ int main(int argc, char **argv) {
         { auto &g = gstats.back(); g.arch = "sm_" + std::to_string(prop.major) + std::to_string(prop.minor); g.variant = cfg.ops->name;
           g.geometry = std::to_string(cfg.blocks) + "x" + std::to_string(cfg.threads) + "x" + std::to_string(cfg.iters); }
         cfgs.push_back(cfg);
+    }
+    // Every GPU must own a distinct ordinal: it selects the GPU's nonce range under the pool's base
+    // (and its stats row). A repeated ordinal makes two cards search the same nonces, so every share is
+    // found twice and the second copy is rejected as a duplicate. Enforce it whatever path built cfg.
+    for (size_t i = 0; i < cfgs.size(); i++) {
+        if (cfgs[i].ordinal != (int)i) {
+            fprintf(stderr, "internal: GPU %d had ordinal %d, using %zu\n", cfgs[i].dev, cfgs[i].ordinal, i);
+            cfgs[i].ordinal = (int)i;
+        }
     }
     if (bench > 0) { for (auto &c : cfgs) run_bench(c.ops, pk, c.dev, c.blocks, c.threads, c.iters, bench, true); return 0; }
     if (proxi.empty()) { if (autotuneSecs > 0) return 0; usage(); return 1; }
