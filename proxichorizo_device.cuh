@@ -211,7 +211,12 @@ __device__ __forceinline__ void fe_add(fe &h, const fe &f, const fe &g) {
     // the carry out of limb 1 is rarer than one in 10^8: propagate it off the hot path
     { uint32_t c2;
       asm("mad.lo.cc.u32 %0, %3, 38, %0;\n\taddc.cc.u32 %1, %1, 0;\n\taddc.u32 %2, 0, 0;" : "+r"(h.v[0]), "+r"(h.v[1]), "=&r"(c2) : "r"(c));
-      if (c2) fe_inc2(h); }
+#if !PX_NOBRANCH
+      if (c2) fe_inc2(h);
+#else
+      (void)c2;
+#endif
+      }
 #else
     { uint32_t k = 38u, c2;
       asm("mad.lo.cc.u32 %0, %9, %10, %0;\n\t"
@@ -239,7 +244,12 @@ __device__ __forceinline__ void fe_sub(fe &h, const fe &f, const fe &g) {
 #ifdef PX_COMBA
     { uint32_t t = (b & 1u) * 38u, b2;
       asm("sub.cc.u32 %0, %0, %3;\n\tsubc.cc.u32 %1, %1, 0;\n\tsubc.u32 %2, 0, 0;" : "+r"(h.v[0]), "+r"(h.v[1]), "=&r"(b2) : "r"(t));
-      if (b2 & 1u) fe_dec2(h); }
+#if !PX_NOBRANCH
+      if (b2 & 1u) fe_dec2(h);
+#else
+      (void)b2;
+#endif
+      }
 #else
     { uint32_t t = (b & 1u) * 38u, b2;
       asm("sub.cc.u32 %0, %0, %9;\n\t"
@@ -401,7 +411,16 @@ __device__ __forceinline__ void fe_fold512(fe &h, uint32_t r[18]) {
 __device__ __forceinline__ void fe_addtop(fe &h, uint32_t t0, uint32_t t1) {
     uint32_t c;   // t1 < 2^11: the carry out of limb 1 is rare, propagate it off the hot path
     asm("add.cc.u32 %0, %0, %3;\n\taddc.cc.u32 %1, %1, %4;\n\taddc.u32 %2, 0, 0;" : "+r"(h.v[0]), "+r"(h.v[1]), "=&r"(c) : "r"(t0), "r"(t1));
+#if !PX_NOBRANCH
     if (c) fe_inc2(h);
+#else
+    (void)c;
+#endif
+}
+// NB = 1: the carry out of limb 1 is dropped instead of propagated (ladder hot path only, see mlad_step_nb)
+template<int NB> __device__ __forceinline__ void fe_addtop_t(fe &h, uint32_t t0, uint32_t t1) {
+    if (NB) { asm("add.cc.u32 %0, %0, %2;\n\taddc.u32 %1, %1, %3;" : "+r"(h.v[0]), "+r"(h.v[1]) : "r"(t0), "r"(t1)); }
+    else fe_addtop(h, t0, t1);
 }
 #ifdef PX_WIDECHAIN
 // ----------------------------------------------------------------------------
@@ -429,7 +448,7 @@ __device__ __forceinline__ uint32_t fe_mul38small(uint32_t t) {
 #ifndef PX_FOLDSHIFT
 #define PX_FOLDSHIFT 0
 #endif
-__device__ void fe_mul(fe &h, const fe &f, const fe &g) {
+template<int NB> __device__ void fe_mul_t(fe &h, const fe &f, const fe &g) {
     const uint32_t *a = f.v, *b = g.v;
     uint32_t E[16], Od[16];
     #pragma unroll
@@ -499,7 +518,7 @@ __device__ void fe_mul(fe &h, const fe &f, const fe &g) {
     PX_ADDSHIFTED(5); PX_ADDSHIFTED(2); PX_ADDSHIFTED(1);
 #undef PX_ADDSHIFTED
     for (int i = 0; i < 8; i++) h.v[i] = L[i];
-    fe_addtop(h, fe_mul38small(L[8]), 0u);   // L[8] <= 40
+    fe_addtop_t<NB>(h, fe_mul38small(L[8]), 0u);   // L[8] <= 40
 #else
     // fold row: 38 * hi into words 0..8
     asm("mad.lo.cc.u32 %0, %17, 38, %0;\n\tmadc.hi.cc.u32 %1, %17, 38, %1;\n\tmadc.lo.cc.u32 %2, %19, 38, %2;\n\tmadc.hi.cc.u32 %3, %19, 38, %3;\n\tmadc.lo.cc.u32 %4, %21, 38, %4;\n\tmadc.hi.cc.u32 %5, %21, 38, %5;\n\tmadc.lo.cc.u32 %6, %23, 38, %6;\n\tmadc.hi.cc.u32 %7, %23, 38, %7;\n\taddc.u32 %8, 0, 0;\n\tmad.lo.cc.u32 %9, %18, 38, %9;\n\tmadc.hi.cc.u32 %10, %18, 38, %10;\n\tmadc.lo.cc.u32 %11, %20, 38, %11;\n\tmadc.hi.cc.u32 %12, %20, 38, %12;\n\tmadc.lo.cc.u32 %13, %22, 38, %13;\n\tmadc.hi.cc.u32 %14, %22, 38, %14;\n\tmadc.lo.cc.u32 %15, %24, 38, %15;\n\tmadc.hi.u32 %16, %24, 38, 0;"
@@ -514,10 +533,11 @@ __device__ void fe_mul(fe &h, const fe &f, const fe &g) {
           "r"(Od[0]), "r"(Od[1]), "r"(Od[2]), "r"(Od[3]), "r"(Od[4]), "r"(Od[5]), "r"(Od[6]), "r"(Od[7]));
     o[0] = E[0];
     for (int i = 0; i < 8; i++) h.v[i] = o[i];
-    fe_addtop(h, fe_mul38small(t8), 0u);
+    fe_addtop_t<NB>(h, fe_mul38small(t8), 0u);
 #endif
 }
-template<int FS> __device__ void fe_sq_impl(fe &h, const fe &f) {
+__device__ __forceinline__ void fe_mul(fe &h, const fe &f, const fe &g) { fe_mul_t<0>(h, f, g); }
+template<int FS, int NB = 0> __device__ void fe_sq_impl(fe &h, const fe &f) {
     const uint32_t *a = f.v;
     uint32_t E[16], Od[16];
     #pragma unroll
@@ -593,7 +613,7 @@ template<int FS> __device__ void fe_sq_impl(fe &h, const fe &f) {
       PX_ADDSHIFTED(5); PX_ADDSHIFTED(2); PX_ADDSHIFTED(1);
 #undef PX_ADDSHIFTED
       for (int i = 0; i < 8; i++) h.v[i] = L[i];
-      fe_addtop(h, fe_mul38small(L[8]), 0u); }
+      fe_addtop_t<NB>(h, fe_mul38small(L[8]), 0u); }
     } else {
     // fold 38 * s[8..15] into s[0..7]: even columns into s itself (aligned), odd columns into Od2, top word t8
     uint32_t Od2[8], t8;
@@ -612,7 +632,7 @@ template<int FS> __device__ void fe_sq_impl(fe &h, const fe &f) {
           "r"(Od2[0]), "r"(Od2[1]), "r"(Od2[2]), "r"(Od2[3]), "r"(Od2[4]), "r"(Od2[5]), "r"(Od2[6]), "r"(Od2[7]));
     o[0] = s[0];
     for (int i = 0; i < 8; i++) h.v[i] = o[i];
-    fe_addtop(h, fe_mul38small(t8), 0u);
+    fe_addtop_t<NB>(h, fe_mul38small(t8), 0u);
     }
 }
 __device__ __forceinline__ void fe_sq(fe &h, const fe &f) { fe_sq_impl<(PX_FOLDSHIFT >= 2)>(h, f); }
@@ -1732,6 +1752,440 @@ __global__ void __launch_bounds__(256, 1) finish_batch_kernel(const JobDev *job,
     }
 }
 #endif
+
+#if PX_LADDER
+// ----------------------------------------------------------------------------
+// PX_LADDER: the scalar stage as an x-only Montgomery ladder on Curve25519
+// (RFC 7748 step: 5M + 4S + one small multiplication per scalar bit) instead of
+// the Edwards wNAF. The ladder keeps no table: two projective points and the
+// base u fit in registers, so the stage has no local-memory traffic at all (the
+// wNAF table and its spills cost about 15 GB of DRAM traffic per launch on an
+// RTX 5090 and with it board power and clock under a power cap).
+//   prep_kernel   Edwards (x, y) of H -> Montgomery (u, v) = ((1+y)/(1-y), c*u/x),
+//                 c = sqrt(-486664), one shared inversion per PX_PREP_BATCH points
+//   ladder_kernel u -> (X:Z) of s*H and (s+1)*H for the job scalar s; then the
+//                 v-coordinate of s*H is recovered exactly from v of H
+//                 (Okeya-Sakurai, as in Costello-Smith "Montgomery curves and
+//                 their arithmetic", Alg. 5), and the point is written back in
+//                 projective Edwards form for the unchanged finish stage:
+//                 x = c*U/V, y = (U-Z)/(U+Z) over the common denominator V*(U+Z).
+// The result is the exact point, with the sign of x, so every output is the same
+// beta as the reference pipeline (no candidate sign, no host-side re-check).
+// ----------------------------------------------------------------------------
+__device__ fe d_MONT_C;   // sqrt(-486664), the scale of the Edwards <-> Montgomery map
+__constant__ int c_ladder_top;   // index of the scalar's top set bit
+#define PX_MONT_A 486662u
+#define PX_MONT_A24 121665u
+// branch-free add / sub for the ladder hot path: identical to fe_add / fe_sub except that a carry (borrow) out of
+// limb 1 after the 38-fold is dropped. That needs limb 0 within 38 of 2^32 and limb 1 = 2^32 - 1 at once, about
+// 2^-58 per operation on the uniformly distributed values of a ladder; a corrupted point only produces a wrong
+// candidate, which the exact resolve stage discards (PX_XONLY). Never used where values are structured.
+__device__ __forceinline__ void fe_add_nb(fe &h, const fe &f, const fe &g) {
+    uint32_t c;
+    asm("add.cc.u32 %0, %9, %17;\n\t"
+        "addc.cc.u32 %1, %10, %18;\n\t" "addc.cc.u32 %2, %11, %19;\n\t" "addc.cc.u32 %3, %12, %20;\n\t"
+        "addc.cc.u32 %4, %13, %21;\n\t" "addc.cc.u32 %5, %14, %22;\n\t" "addc.cc.u32 %6, %15, %23;\n\t"
+        "addc.cc.u32 %7, %16, %24;\n\t" "addc.u32 %8, 0, 0;"
+        : "=&r"(h.v[0]), "=&r"(h.v[1]), "=&r"(h.v[2]), "=&r"(h.v[3]), "=&r"(h.v[4]), "=&r"(h.v[5]), "=&r"(h.v[6]), "=&r"(h.v[7]), "=&r"(c)
+        : "r"(f.v[0]), "r"(f.v[1]), "r"(f.v[2]), "r"(f.v[3]), "r"(f.v[4]), "r"(f.v[5]), "r"(f.v[6]), "r"(f.v[7]),
+          "r"(g.v[0]), "r"(g.v[1]), "r"(g.v[2]), "r"(g.v[3]), "r"(g.v[4]), "r"(g.v[5]), "r"(g.v[6]), "r"(g.v[7]));
+    asm("mad.lo.cc.u32 %0, %2, 38, %0;\n\taddc.u32 %1, %1, 0;" : "+r"(h.v[0]), "+r"(h.v[1]) : "r"(c));
+}
+__device__ __forceinline__ void fe_sub_nb(fe &h, const fe &f, const fe &g) {
+    uint32_t b;
+    asm("sub.cc.u32 %0, %9, %17;\n\t"
+        "subc.cc.u32 %1, %10, %18;\n\t" "subc.cc.u32 %2, %11, %19;\n\t" "subc.cc.u32 %3, %12, %20;\n\t"
+        "subc.cc.u32 %4, %13, %21;\n\t" "subc.cc.u32 %5, %14, %22;\n\t" "subc.cc.u32 %6, %15, %23;\n\t"
+        "subc.cc.u32 %7, %16, %24;\n\t" "subc.u32 %8, 0, 0;"
+        : "=&r"(h.v[0]), "=&r"(h.v[1]), "=&r"(h.v[2]), "=&r"(h.v[3]), "=&r"(h.v[4]), "=&r"(h.v[5]), "=&r"(h.v[6]), "=&r"(h.v[7]), "=&r"(b)
+        : "r"(f.v[0]), "r"(f.v[1]), "r"(f.v[2]), "r"(f.v[3]), "r"(f.v[4]), "r"(f.v[5]), "r"(f.v[6]), "r"(f.v[7]),
+          "r"(g.v[0]), "r"(g.v[1]), "r"(g.v[2]), "r"(g.v[3]), "r"(g.v[4]), "r"(g.v[5]), "r"(g.v[6]), "r"(g.v[7]));
+    uint32_t t = (b & 1u) * 38u;
+    asm("sub.cc.u32 %0, %0, %2;\n\tsubc.u32 %1, %1, 0;" : "+r"(h.v[0]), "+r"(h.v[1]) : "r"(t));
+}
+// h = f * k for a small constant k < 2^20: eight 32x32->64 products, one carry chain, the top word folded as 38
+template<int NB> __device__ __forceinline__ void fe_mul_small_t(fe &h, const fe &f, uint32_t k) {
+    uint32_t lo[8], hi[8], top;
+    #pragma unroll
+    for (int i = 0; i < 8; i++) { lo[i] = f.v[i] * k; hi[i] = __umulhi(f.v[i], k); }
+    asm("add.cc.u32 %1, %9, %17;\n\t"
+        "addc.cc.u32 %2, %10, %18;\n\t" "addc.cc.u32 %3, %11, %19;\n\t" "addc.cc.u32 %4, %12, %20;\n\t"
+        "addc.cc.u32 %5, %13, %21;\n\t" "addc.cc.u32 %6, %14, %22;\n\t" "addc.cc.u32 %7, %15, %23;\n\t"
+        "addc.u32 %8, %16, 0;\n\t" "mov.u32 %0, %24;"
+        : "=&r"(h.v[0]), "=&r"(h.v[1]), "=&r"(h.v[2]), "=&r"(h.v[3]), "=&r"(h.v[4]), "=&r"(h.v[5]), "=&r"(h.v[6]), "=&r"(h.v[7]), "=&r"(top)
+        : "r"(lo[1]), "r"(lo[2]), "r"(lo[3]), "r"(lo[4]), "r"(lo[5]), "r"(lo[6]), "r"(lo[7]), "r"(hi[7]),
+          "r"(hi[0]), "r"(hi[1]), "r"(hi[2]), "r"(hi[3]), "r"(hi[4]), "r"(hi[5]), "r"(hi[6]), "r"(lo[0]));
+    fe_addtop_t<NB>(h, fe_mul38small(top), 0);   // top < 2^20: top*38 < 2^26
+}
+__device__ __forceinline__ void fe_mul_small(fe &h, const fe &f, uint32_t k) { fe_mul_small_t<0>(h, f, k); }
+// one ladder step: (x2:z2) <- 2*(x2:z2), (x3:z3) <- (x2:z2) + (x3:z3), whose difference has affine u = x1
+__device__ __forceinline__ void mlad_step(fe &x2, fe &z2, fe &x3, fe &z3, const fe &x1) {
+    fe A, B, C, D, AA, BB, E, DA, CB;
+    fe_add(A, x2, z2); fe_sub(B, x2, z2);
+    fe_add(C, x3, z3); fe_sub(D, x3, z3);
+    fe_mul(DA, D, A); fe_mul(CB, C, B);
+    fe_sq(AA, A); fe_sq(BB, B);
+    fe_add(x3, DA, CB); fe_sq(x3, x3);
+    fe_sub(z3, DA, CB); fe_sq(z3, z3); fe_mul(z3, z3, x1);
+    fe_mul(x2, AA, BB);
+    fe_sub(E, AA, BB);
+    fe_mul_small(C, E, PX_MONT_A24); fe_add(C, C, AA); fe_mul(z2, E, C);
+}
+// the same step on the branch-free arithmetic (no rare-carry branches; see fe_add_nb)
+__device__ __forceinline__ void mlad_step_nb(fe &x2, fe &z2, fe &x3, fe &z3, const fe &x1) {
+    fe A, B, C, D, AA, BB, E, DA, CB;
+    fe_add_nb(A, x2, z2); fe_sub_nb(B, x2, z2);
+    fe_add_nb(C, x3, z3); fe_sub_nb(D, x3, z3);
+    fe_mul_t<1>(DA, D, A); fe_mul_t<1>(CB, C, B);
+    fe_sq_impl<0, 1>(AA, A); fe_sq_impl<0, 1>(BB, B);
+    fe_add_nb(x3, DA, CB); fe_sq_impl<0, 1>(x3, x3);
+    fe_sub_nb(z3, DA, CB); fe_sq_impl<0, 1>(z3, z3); fe_mul_t<1>(z3, z3, x1);
+    fe_mul_t<1>(x2, AA, BB);
+    fe_sub_nb(E, AA, BB);
+    fe_mul_small_t<1>(C, E, PX_MONT_A24); fe_add_nb(C, C, AA); fe_mul_t<1>(z2, E, C);
+}
+#if PX_LADDER_NB
+#define PX_XSTEP mlad_step_nb
+#else
+#define PX_XSTEP mlad_step
+#endif
+#ifndef PX_PREP_BATCH
+#define PX_PREP_BATCH 16
+#endif
+// in place: pts[i].X = u, pts[i].Y = v (Montgomery, affine); u = 0 marks a point the ladder skips (x = 0: y = +-1, torsion)
+__global__ void __launch_bounds__(256, 1) prep_kernel(const unsigned *n_ptr, HPoint *pts) {
+    unsigned n = *n_ptr, total = gridDim.x * blockDim.x;
+    for (unsigned base = blockIdx.x * blockDim.x + threadIdx.x; base < n; base += total * PX_PREP_BATCH) {
+        fe prefix[PX_PREP_BATCH], prod; fe_1(prod);
+        #pragma unroll
+        for (int k = 0; k < PX_PREP_BATCH; k++) {
+            unsigned i = base + (unsigned)k * total;
+            fe_copy(prefix[k], prod);
+            if (i < n) {
+                fe one, d; fe_1(one);
+                fe_sub(d, one, pts[i].Y); fe_mul(d, d, pts[i].X);       // (1 - y) * x
+                if (!fe_iszero(d)) fe_mul(prod, prod, d);
+            }
+        }
+        fe inv; fe_invert(inv, prod);
+        #pragma unroll
+        for (int k = PX_PREP_BATCH - 1; k >= 0; k--) {
+            unsigned i = base + (unsigned)k * total;
+            if (i < n) {
+                fe x, y, one, d, di, p1, u, v;
+                fe_copy(x, pts[i].X); fe_copy(y, pts[i].Y); fe_1(one);
+                fe_sub(d, one, y); fe_mul(d, d, x);
+                if (fe_iszero(d)) { fe_0(pts[i].X); fe_0(pts[i].Y); continue; }
+                fe_mul(di, inv, prefix[k]); fe_mul(inv, inv, d);        // di = 1 / ((1 - y) x)
+                fe_add(p1, one, y); fe_mul(v, p1, di);                  // (1 + y) / ((1 - y) x)
+                fe_mul(u, v, x);                                        // u = (1 + y) / (1 - y)
+                fe_mul(v, v, d_MONT_C);                                 // v = c u / x
+                fe_copy(pts[i].X, u); fe_copy(pts[i].Y, v);
+            }
+        }
+    }
+}
+#ifndef PX_LB_LADDER
+#define PX_LB_LADDER 2
+#endif
+__global__ void __launch_bounds__(256, PX_LB_LADDER) ladder_kernel(const HPoint *pts, const unsigned *n_ptr, ProjectivePoint *out) {
+    unsigned n = *n_ptr;
+    for (unsigned i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += gridDim.x * blockDim.x) {
+        fe xP, yP; fe_copy(xP, pts[i].X); fe_copy(yP, pts[i].Y);
+        out[i].nonce = pts[i].nonce;
+        if (fe_iszero(xP)) { out[i].valid = 0; fe_1(out[i].Z); continue; }
+        fe x2, z2, x3, z3;
+        fe_1(x2); fe_0(z2); fe_copy(x3, xP); fe_1(z3);              // R0 = O, R1 = P
+        // the scalar is the same for every thread: the branch below is warp-uniform
+        for (int b = c_ladder_top; b >= 0; b--) {
+            if ((c_scalar[b >> 3] >> (b & 7)) & 1) mlad_step(x3, z3, x2, z2, xP);
+            else mlad_step(x2, z2, x3, z3, xP);
+        }
+        // Q = (x2:z2) = s*P, R = (x3:z3) = (s+1)*P: recover v of Q (B = 1)
+        fe v1, v2, v3, v4, X, Y, Z;
+        fe_mul(v1, xP, z2);
+        fe_add(v2, x2, v1); fe_sub(v3, x2, v1);
+        fe_sq(v3, v3); fe_mul(v3, v3, x3);
+        fe_mul_small(v1, z2, 2u * PX_MONT_A);
+        fe_add(v2, v2, v1);
+        fe_mul(v4, xP, x2); fe_add(v4, v4, z2);
+        fe_mul(v2, v2, v4);
+        fe_mul(v1, v1, z2);
+        fe_sub(v2, v2, v1);
+        fe_mul(v2, v2, z3);
+        fe_sub(Y, v2, v3);
+        fe_add(v1, yP, yP);
+        fe_mul(v1, v1, z2); fe_mul(v1, v1, z3);
+        fe_mul(X, v1, x2); fe_mul(Z, v1, z2);
+        // Montgomery (X:Y:Z) -> Edwards over the denominator Y (X + Z)
+        fe s, t;
+        fe_add(s, X, Z); fe_sub(t, X, Z);
+        fe_mul(out[i].Z, Y, s);
+        fe_mul(out[i].Y, t, Y);
+        fe_mul(X, X, s); fe_mul(out[i].X, X, d_MONT_C);
+        // s*P = O (z2 = 0) only for a torsion P; the denominator is then zero, and must not enter the batch inversion
+        out[i].valid = !fe_iszero(out[i].Z);
+        if (!out[i].valid) fe_1(out[i].Z);
+    }
+}
+#if PX_XONLY
+// ----------------------------------------------------------------------------
+// PX_XONLY: hash-to-curve without a square root. A hash is a valid encoding iff
+// w = (y^2 - 1)(d y^2 + 1) is a square or zero (the same condition as the square
+// root in ge_frombytes, since d y^2 + 1 != 0); that is decided by a Legendre
+// symbol computed with a binary GCD on 64-bit approximations (divsteps, 29 per
+// round, the 2x2 transition matrix then applied to the full values). The x-only
+// ladder needs only y of H. Without x the sign of x(s*H) is unknown, so the
+// finish hashes both encodings of y(s*H); every candidate that meets the target
+// is then recomputed exactly (vrf_beta, one thread per candidate) and only the
+// true output is kept (resolve_kernel): the reported hits equal the reference.
+// ----------------------------------------------------------------------------
+#ifndef PX_JAC_STEPS
+#define PX_JAC_STEPS 29
+#endif
+#ifndef PX_JAC_MAXR
+#define PX_JAC_MAXR 24
+#endif
+// r = (f*a + g*b) / 2^PX_JAC_STEPS for |f|, |g| <= 2^PX_JAC_STEPS (exact division); returns 1 if the result was
+// negative (r is then its absolute value)
+__device__ __forceinline__ uint32_t jac_lin(uint32_t r[8], int32_t f, int32_t g, const uint32_t a[8], const uint32_t b[8]) {
+    // positive and negative parts accumulated separately as unsigned 9-word sums
+    uint32_t fa = (uint32_t)(f < 0 ? -f : f), ga = (uint32_t)(g < 0 ? -g : g);
+    uint32_t P[9], N[9];
+    uint64_t cp = 0, cn = 0;
+    #pragma unroll
+    for (int i = 0; i < 8; i++) {
+        uint64_t x = (uint64_t)fa * a[i], y = (uint64_t)ga * b[i];
+        uint64_t px = f < 0 ? 0 : x, nx = f < 0 ? x : 0, py = g < 0 ? 0 : y, ny = g < 0 ? y : 0;
+        // each sum of two 64-bit products plus a carry < 2^34 stays below 2^64 (products < 2^61)
+        uint64_t sp = px + py + cp, sn = nx + ny + cn;
+        P[i] = (uint32_t)sp; cp = sp >> 32;
+        N[i] = (uint32_t)sn; cn = sn >> 32;
+    }
+    P[8] = (uint32_t)cp; N[8] = (uint32_t)cn;
+    uint32_t D[9], bw;
+    asm("sub.cc.u32 %0, %10, %19;\n\tsubc.cc.u32 %1, %11, %20;\n\tsubc.cc.u32 %2, %12, %21;\n\tsubc.cc.u32 %3, %13, %22;\n\t"
+        "subc.cc.u32 %4, %14, %23;\n\tsubc.cc.u32 %5, %15, %24;\n\tsubc.cc.u32 %6, %16, %25;\n\tsubc.cc.u32 %7, %17, %26;\n\t"
+        "subc.cc.u32 %8, %18, %27;\n\tsubc.u32 %9, 0, 0;"
+        : "=&r"(D[0]), "=&r"(D[1]), "=&r"(D[2]), "=&r"(D[3]), "=&r"(D[4]), "=&r"(D[5]), "=&r"(D[6]), "=&r"(D[7]), "=&r"(D[8]), "=&r"(bw)
+        : "r"(P[0]), "r"(P[1]), "r"(P[2]), "r"(P[3]), "r"(P[4]), "r"(P[5]), "r"(P[6]), "r"(P[7]), "r"(P[8]),
+          "r"(N[0]), "r"(N[1]), "r"(N[2]), "r"(N[3]), "r"(N[4]), "r"(N[5]), "r"(N[6]), "r"(N[7]), "r"(N[8]));
+    uint32_t neg = bw & 1u;
+    // absolute value: (D ^ m) - m with m = all ones when negative
+    uint32_t m = 0u - neg;
+    #pragma unroll
+    for (int i = 0; i < 9; i++) D[i] ^= m;
+    asm("sub.cc.u32 %0, %0, %9;\n\tsubc.cc.u32 %1, %1, %9;\n\tsubc.cc.u32 %2, %2, %9;\n\tsubc.cc.u32 %3, %3, %9;\n\t"
+        "subc.cc.u32 %4, %4, %9;\n\tsubc.cc.u32 %5, %5, %9;\n\tsubc.cc.u32 %6, %6, %9;\n\tsubc.cc.u32 %7, %7, %9;\n\tsubc.u32 %8, %8, %9;"
+        : "+r"(D[0]), "+r"(D[1]), "+r"(D[2]), "+r"(D[3]), "+r"(D[4]), "+r"(D[5]), "+r"(D[6]), "+r"(D[7]), "+r"(D[8]) : "r"(m));
+    #pragma unroll
+    for (int i = 0; i < 8; i++) r[i] = __funnelshift_r(D[i], D[i + 1], PX_JAC_STEPS);
+    return neg;
+}
+// true when w is a square or zero modulo p (exact: a value the binary GCD does not finish within PX_JAC_MAXR
+// rounds, never seen in 2*10^4 random trials beyond 14, is decided by Euler's criterion instead)
+__device__ bool fe_is_square_or_zero(const fe &w) {
+    uint32_t a[8], b[8];
+    fe_canon(a, w);
+    b[0] = 0xFFFFFFEDu; b[1] = b[2] = b[3] = b[4] = b[5] = b[6] = 0xFFFFFFFFu; b[7] = 0x7FFFFFFFu;
+    uint32_t ls = 0;
+    int r = 0;
+    for (; r < PX_JAC_MAXR; r++) {
+        uint32_t anz = a[0] | a[1] | a[2] | a[3] | a[4] | a[5] | a[6] | a[7];
+        if (!anz) break;
+        // top word index of max(a, b) (at least 1), then the 64-bit approximations: low 32 bits exact,
+        // high 32 bits = the 32 bits of a (b) just below the common bit length n
+        uint32_t ah = a[7], al = a[6], bh = b[7], bl = b[6];
+        #pragma unroll
+        for (int i = 6; i >= 1; i--) {
+            bool z = (ah | bh) == 0;
+            ah = z ? a[i] : ah; al = z ? a[i - 1] : al; bh = z ? b[i] : bh; bl = z ? b[i - 1] : bl;
+        }
+        int s = __clz(ah | bh);
+        uint32_t ta = __funnelshift_l(al, ah, s), tb = __funnelshift_l(bl, bh, s);
+        // n <= 64 (a, b both in words 0..1): use the exact values
+        bool small = ((a[2] | a[3] | a[4] | a[5] | a[6] | a[7] | b[2] | b[3] | b[4] | b[5] | b[6] | b[7]) == 0);
+        uint64_t xa = ((uint64_t)(small ? a[1] : ta) << 32) | a[0];
+        uint64_t xb = ((uint64_t)(small ? b[1] : tb) << 32) | b[0];
+        int32_t f0 = 1, g0 = 0, f1 = 0, g1 = 1;
+        #pragma unroll
+        for (int j = 0; j < PX_JAC_STEPS; j++) {
+            uint32_t odd = (uint32_t)xa & 1u;
+            bool sw = odd && xa < xb;
+            // swap when a odd and a < b, with the reciprocity sign: both = 3 mod 4
+            ls ^= sw ? (((uint32_t)xa & (uint32_t)xb) >> 1) & 1u : 0u;
+            uint64_t na = sw ? xb : xa, nb = sw ? xa : xb;
+            int32_t nf0 = sw ? f1 : f0, ng0 = sw ? g1 : g0, nf1 = sw ? f0 : f1, ng1 = sw ? g0 : g1;
+            // a odd: a -= b (even afterwards); then a /= 2 with the (2/b) sign: b = 3, 5 mod 8
+            na -= odd ? nb : 0; nf0 -= odd ? nf1 : 0; ng0 -= odd ? ng1 : 0;
+            xa = na >> 1; xb = nb; f0 = nf0; g0 = ng0; f1 = nf1 << 1; g1 = ng1 << 1;
+            ls ^= (((uint32_t)xb + 2u) >> 2) & 1u;
+        }
+        uint32_t na[8], nb[8];
+        uint32_t nega = jac_lin(na, f0, g0, a, b);
+        (void)jac_lin(nb, f1, g1, a, b);                       // b stays positive (it is always an earlier a or b)
+        ls ^= nega & ((nb[0] >> 1) & 1u);                      // (-1/b) = -1 for b = 3 mod 4
+        #pragma unroll
+        for (int i = 0; i < 8; i++) { a[i] = na[i]; b[i] = nb[i]; }
+    }
+    if (r == PX_JAC_MAXR) {    // not finished: Euler's criterion w^((p-1)/2), from w^(2^250-1) and w^11
+        // (p-1)/2 = 2^254 - 10 = (2^250 - 1) * 2^4 + 6
+        fe t19, t3, t, one, m1; fe_pow22501(t19, t3, w);
+        fe w2, w4, w6; fe_sq(w2, w); fe_sq(w4, w2); fe_mul(w6, w4, w2);
+        fe_pow2k(t, t19, 4); fe_mul(t, t, w6);
+        fe_1(one); fe_neg(m1, one);
+        return !fe_eq(t, m1);
+    }
+    uint32_t bo = b[1] | b[2] | b[3] | b[4] | b[5] | b[6] | b[7];
+    if (b[0] != 1u || bo) return true;                        // gcd = p: w = 0, which is a valid encoding (x = 0)
+    return (ls & 1u) == 0u;
+}
+// one attempt: true and y stored when the hash is a valid encoding
+__device__ __forceinline__ bool h2c_try_y(const JobDev *job, const uint64_t *mid, uint64_t nonce, uint8_t ctr, fe &Y) {
+    uint8_t dg[64];
+#if PX_H2C_MID
+    if (job->prefix_len == PX_MID_PREFIX) sha512_h2c_mid(mid, nonce, ctr, dg);
+    else
+#else
+    (void)mid;
+#endif
+    {
+        uint8_t msg[128];
+        int n = 0;
+        msg[n++] = 0x03; msg[n++] = 0x01;
+        for (int k = 0; k < 32; k++) msg[n++] = job->pk[k];
+        for (int k = 0; k < job->prefix_len; k++) msg[n++] = job->prefix[k];
+        for (int k = 0; k < 8; k++) msg[n++] = (uint8_t)(nonce >> (56 - 8 * k));
+        msg[n++] = ctr; msg[n++] = 0;
+        sha512_single(msg, n, dg);
+    }
+    fe YY, one, u, v;
+    fe_frombytes(Y, dg); fe_1(one);
+    fe_sq(YY, Y); fe_sub(u, YY, one);
+    fe_mul(v, YY, d_EDWARDS_D); fe_add(v, v, one);
+    fe_mul(u, u, v);
+    return fe_is_square_or_zero(u);
+}
+__global__ void __launch_bounds__(256, PX_LB_H2C) h2cx_kernel(const JobDev *job, const uint64_t *mid, uint64_t nonce_base, const uint64_t *in_nonce, const uint8_t *in_ctr, const unsigned *n_in_ptr,
+                                                   HPoint *pts, unsigned *n_pts, uint64_t *out_nonce, uint8_t *out_ctr, unsigned *n_out) {
+    unsigned n_in = *n_in_ptr;
+    unsigned gid = blockIdx.x * blockDim.x + threadIdx.x, total = gridDim.x * blockDim.x;
+    for (unsigned i = gid; i < n_in; i += total) {
+        uint64_t nonce = in_nonce ? in_nonce[i] : nonce_base + i;
+        uint8_t ctr = in_nonce ? in_ctr[i] : 0;
+        fe Y;
+        if (h2c_try_y(job, mid, nonce, ctr, Y)) {
+            unsigned o = atomicAdd(n_pts, 1u);
+            fe_copy(pts[o].Y, Y); pts[o].nonce = nonce;
+        } else if (ctr < 255) {
+            unsigned o = atomicAdd(n_out, 1u);
+            out_nonce[o] = nonce; out_ctr[o] = ctr + 1;
+        }
+    }
+}
+// in place: pts[i].X = u = (1 + y) / (1 - y); u = 0 marks a point the ladder skips (y = 1: identity, y = -1: order 2)
+__global__ void __launch_bounds__(256, 1) prepx_kernel(const unsigned *n_ptr, HPoint *pts) {
+    unsigned n = *n_ptr, total = gridDim.x * blockDim.x;
+    for (unsigned base = blockIdx.x * blockDim.x + threadIdx.x; base < n; base += total * PX_PREP_BATCH) {
+        fe prefix[PX_PREP_BATCH], prod; fe_1(prod);
+        #pragma unroll
+        for (int k = 0; k < PX_PREP_BATCH; k++) {
+            unsigned i = base + (unsigned)k * total;
+            fe_copy(prefix[k], prod);
+            if (i < n) { fe one, d; fe_1(one); fe_sub(d, one, pts[i].Y); if (!fe_iszero(d)) fe_mul(prod, prod, d); }
+        }
+        fe inv; fe_invert(inv, prod);
+        #pragma unroll
+        for (int k = PX_PREP_BATCH - 1; k >= 0; k--) {
+            unsigned i = base + (unsigned)k * total;
+            if (i < n) {
+                fe y, one, d, di, u; fe_copy(y, pts[i].Y); fe_1(one);
+                fe_sub(d, one, y);
+                if (fe_iszero(d)) { fe_0(pts[i].X); continue; }
+                fe_mul(di, inv, prefix[k]); fe_mul(inv, inv, d);
+                fe_add(u, one, y); fe_mul(u, u, di);
+                fe_copy(pts[i].X, u);
+            }
+        }
+    }
+}
+// x-only: out.Y = X - Z, out.Z = X + Z of s*P, so y(s*P) = out.Y / out.Z
+__global__ void __launch_bounds__(256, PX_LB_LADDER) ladderx_kernel(const HPoint *pts, const unsigned *n_ptr, ProjectivePoint *out) {
+    unsigned n = *n_ptr;
+    for (unsigned i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += gridDim.x * blockDim.x) {
+        fe xP; fe_copy(xP, pts[i].X);
+        out[i].nonce = pts[i].nonce;
+        if (fe_iszero(xP)) { out[i].valid = 0; fe_1(out[i].Z); continue; }
+        fe x2, z2, x3, z3;
+        fe_1(x2); fe_0(z2); fe_copy(x3, xP); fe_1(z3);
+        for (int b = c_ladder_top; b >= 0; b--) {
+            if ((c_scalar[b >> 3] >> (b & 7)) & 1) PX_XSTEP(x3, z3, x2, z2, xP);
+            else PX_XSTEP(x2, z2, x3, z3, xP);
+        }
+        fe_sub(out[i].Y, x2, z2); fe_add(out[i].Z, x2, z2);
+        // s*P = O (z2 = 0) only for a torsion P; X + Z = 0 cannot occur on the curve. Neither enters the inversion.
+        out[i].valid = !fe_iszero(z2) && !fe_iszero(out[i].Z);
+        if (!out[i].valid) fe_1(out[i].Z);
+    }
+}
+__device__ __forceinline__ void finishx_point(const JobDev *job, const fe &y, uint64_t nonce, Hit *hits, unsigned *nhits) {
+    uint8_t m2[35];
+    m2[0] = 0x03; m2[1] = 0x03;
+    fe_tobytes(m2 + 2, y);
+    m2[34] = 0x00;
+    #pragma unroll 1
+    for (int sgn = 0; sgn < 2; sgn++) {
+        m2[33] = (m2[33] & 0x7f) | (uint8_t)(sgn << 7);
+        uint8_t beta[64];
+        sha512_single(m2, 35, beta);
+        if (trailing_zero_bits(beta) >= job->k && below(beta, job->beat)) {
+            unsigned idx = atomicAdd(nhits, 1u);
+            if (idx < MAX_HITS) { hits[idx].nonce = nonce; for (int k = 0; k < 64; k++) hits[idx].beta[k] = beta[k]; }
+        }
+    }
+}
+__global__ void __launch_bounds__(256, 1) finishx_kernel(const JobDev *job, const ProjectivePoint *pts, const unsigned *n_ptr, Hit *hits, unsigned *nhits) {
+    unsigned n = *n_ptr, total = gridDim.x * blockDim.x;
+    for (unsigned base = blockIdx.x * blockDim.x + threadIdx.x; base < n; base += total * PX_SPLIT_FINISH) {
+        fe prefix[PX_SPLIT_FINISH], prod; fe_1(prod);
+        #pragma unroll
+        for (int k = 0; k < PX_SPLIT_FINISH; k++) {
+            unsigned i = base + (unsigned)k * total;
+            fe_copy(prefix[k], prod);
+            if (i < n) fe_mul(prod, prod, pts[i].Z);
+        }
+        fe inv; fe_invert(inv, prod);
+        #pragma unroll
+        for (int k = PX_SPLIT_FINISH - 1; k >= 0; k--) {
+            unsigned i = base + (unsigned)k * total;
+            if (i < n) {
+                fe zi; fe_mul(zi, inv, prefix[k]); fe_mul(inv, inv, pts[i].Z);
+                if (pts[i].valid) { fe y; fe_mul(y, pts[i].Y, zi); finishx_point(job, y, pts[i].nonce, hits, nhits); }
+            }
+        }
+    }
+}
+// keep only candidates whose beta is the exact output of their nonce; one block, any hit count up to MAX_HITS
+__global__ void __launch_bounds__(128, 1) resolve_kernel(const JobDev *job, Hit *hits, unsigned *nhits) {
+    __shared__ uint8_t keep[MAX_HITS];
+    unsigned n = *nhits; if (n > MAX_HITS) n = MAX_HITS;
+    JobDev j = *job;
+    for (unsigned i = threadIdx.x; i < n; i += blockDim.x) {
+        uint8_t beta[64];
+        bool ok = vrf_beta(j, hits[i].nonce, beta, nullptr, nullptr);
+        bool same = ok;
+        for (int k = 0; k < 64 && same; k++) same = beta[k] == hits[i].beta[k];
+        keep[i] = same;
+    }
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        unsigned o = 0;
+        for (unsigned i = 0; i < n; i++) if (keep[i]) { if (o != i) hits[o] = hits[i]; o++; }
+        *nhits = o;
+    }
+}
+#endif
+#endif
 // self-test: beta for a complete alpha (= prefix 37 + nonce 8) plus intermediates
 __global__ void test_kernel(const JobDev *job, uint64_t nonce, uint8_t *out_beta, uint8_t *out_h, uint8_t *out_cg, int *ok) {
     *ok = vrf_beta(*job, nonce, out_beta, out_h, out_cg) ? 1 : 0;
@@ -1833,6 +2287,12 @@ __global__ void init_kernel(const uint8_t *scalar, uint8_t *pk_out, int *ok) {
     fe m1; fe_1(m1); fe_neg(m1, m1);
     fe chk; fe_sq(chk, d_SQRT_M1);
     *ok = fe_eq(chk, m1) ? 1 : 0;
+#if PX_LADDER
+    { fe a2, one, c, c2; fe_0(a2); a2.v[0] = PX_MONT_A + 2u; fe_neg(a2, a2); fe_1(one);
+      if (!fe_sqrt_ratio_i(c, a2, one)) { *ok = -3; return; }
+      fe_sq(c2, c); if (!fe_eq(c2, a2)) { *ok = -3; return; }       // c^2 = -486664 exactly
+      fe_copy(d_MONT_C, c); }
+#endif
     // base point: y = 4/5
     fe four, five, y; fe_0(four); four.v[0] = 4; fe_0(five); five.v[0] = 5;
     fe_invert(t, five); fe_mul(y, four, t);
@@ -1877,6 +2337,10 @@ static void v_set_scalar(const uint8_t *scalar_in) {
     const uint8_t *scalar = scalar_in;
 #endif
     CUDA_CHECK(cudaMemcpyToSymbol(c_scalar, scalar, 32));
+#if PX_LADDER
+    { int top = 0; for (int b = 255; b >= 0; b--) if ((scalar[b >> 3] >> (b & 7)) & 1) { top = b; break; }
+      CUDA_CHECK(cudaMemcpyToSymbol(c_ladder_top, &top, sizeof top)); }
+#endif
     uint8_t k[40]; memset(k, 0, sizeof k); memcpy(k, scalar, 32);
     int8_t digits[260]; memset(digits, 0, sizeof digits);
     int len = 0;
@@ -1913,7 +2377,7 @@ static int v_init(const uint8_t *scalar, uint8_t pk_out[32]) {
 }
 // scratch for the compacted pipeline: points found, two alternating retry queues, counters
 // (cnt[0] = points, cnt[1..PX_MAX_PASSES] = retries per pass, cnt[PX_MAX_PASSES+1] = N)
-static void *v_alloc(size_t n) {
+static void *v_alloc_one(size_t n) {
 #if PX_COMPACT
     Scratch *sc = new Scratch(); sc->n = n;
     CUDA_CHECK(cudaMalloc(&sc->pts, n * sizeof(HPoint)));
@@ -1931,7 +2395,7 @@ static void *v_alloc(size_t n) {
     (void)n; return nullptr;
 #endif
 }
-static void v_free(void *scratch) {
+static void v_free_one(void *scratch) {
 #if PX_COMPACT
     Scratch *sc = (Scratch *)scratch; if (!sc) return;
 #ifdef PX_SPLIT_FINISH
@@ -1945,7 +2409,75 @@ static void v_free(void *scratch) {
     (void)scratch;
 #endif
 }
+#if !(PX_XONLY && PX_SLICES > 1)
+static void *v_alloc(size_t n) { return v_alloc_one(n); }
+static void v_free(void *scratch) { v_free_one(scratch); }
+#endif
+#if PX_XONLY
+#define PX_H2C_K h2cx_kernel
+#else
+#define PX_H2C_K h2c_kernel
+#endif
+#if PX_XONLY && PX_SLICES > 1
+// PX_SLICES: the launch is split into slices on their own streams. Slice i hashes to the curve only after slice
+// i-1 has (event chain), so its short, poorly occupied kernels (hash-to-curve passes, prep) run underneath the
+// other slices' ladders instead of on an otherwise idle GPU; the finish stages overlap the same way.
+struct SliceSet { Scratch *sc[PX_SLICES]; size_t n[PX_SLICES]; cudaStream_t st[PX_SLICES]; cudaEvent_t h2c_done[PX_SLICES]; };
+static void *v_alloc_one(size_t n);
+static void v_free_one(void *scratch);
+static void *v_alloc_slices(size_t n) {
+    SliceSet *ss = new SliceSet();
+    size_t base = n / PX_SLICES, rem = n % PX_SLICES;
+    for (int i = 0; i < PX_SLICES; i++) {
+        ss->n[i] = base + ((size_t)i < rem ? 1 : 0);
+        ss->sc[i] = (Scratch *)v_alloc_one(ss->n[i] ? ss->n[i] : 1);
+        if (!ss->n[i]) { unsigned z = 0; CUDA_CHECK(cudaMemcpy(ss->sc[i]->cnt + PX_MAX_PASSES + 1, &z, sizeof z, cudaMemcpyHostToDevice)); }
+        CUDA_CHECK(cudaStreamCreate(&ss->st[i]));
+        CUDA_CHECK(cudaEventCreateWithFlags(&ss->h2c_done[i], cudaEventDisableTiming));
+    }
+    return ss;
+}
+static void v_free_slices(void *scratch) {
+    SliceSet *ss = (SliceSet *)scratch; if (!ss) return;
+    for (int i = 0; i < PX_SLICES; i++) { v_free_one(ss->sc[i]); cudaStreamDestroy(ss->st[i]); cudaEventDestroy(ss->h2c_done[i]); }
+    delete ss;
+}
+static void mine_x_slice(Scratch *sc, size_t N, cudaStream_t st, cudaEvent_t wait_ev, cudaEvent_t done_ev, int blocks, int threads,
+                         const JobDev *job, uint64_t nonce_base, Hit *hits, unsigned *nhits) {
+    if (wait_ev) CUDA_CHECK(cudaStreamWaitEvent(st, wait_ev, 0));
+    CUDA_CHECK(cudaMemsetAsync(sc->cnt, 0, (PX_MAX_PASSES + 1) * sizeof(unsigned), st));
+    int g1 = (int)((N + 255) / 256); if (g1 < 1) g1 = 1;
+#if PX_H2C_MID
+    const uint64_t *mid = sc->mid;
+    sha_prep_kernel<<<1, 32, 0, st>>>(job, sc->mid);
+#else
+    const uint64_t *mid = nullptr;
+#endif
+    h2cx_kernel<<<g1, 256, 0, st>>>(job, mid, nonce_base, nullptr, nullptr, sc->cnt + PX_MAX_PASSES + 1, sc->pts, sc->cnt, sc->nonce[0], sc->ctr[0], sc->cnt + 1);
+    for (int p = 1; p < PX_MAX_PASSES; p++) {
+        int in = (p - 1) & 1, out = p & 1;
+        int gp = max(1, g1 >> p);
+        h2cx_kernel<<<gp, 256, 0, st>>>(job, mid, nonce_base, sc->nonce[in], sc->ctr[in], sc->cnt + p, sc->pts, sc->cnt, sc->nonce[out], sc->ctr[out], sc->cnt + p + 1);
+    }
+    CUDA_CHECK(cudaEventRecord(done_ev, st));
+    prepx_kernel<<<max(1, (blocks + PX_PREP_BATCH - 1) / PX_PREP_BATCH), threads, 0, st>>>(sc->cnt, sc->pts);
+    ladderx_kernel<<<max(1, blocks), threads, 0, st>>>(sc->pts, sc->cnt, sc->projective);
+    finishx_kernel<<<max(1, (blocks + PX_SPLIT_FINISH - 1) / PX_SPLIT_FINISH), threads, 0, st>>>(job, sc->projective, sc->cnt, hits, nhits);
+}
+#endif
 static void v_mine(int blocks, int threads, const JobDev *job, uint64_t nonce_base, uint64_t stride, int iters, Hit *hits, unsigned *nhits, void *scratch) {
+#if PX_XONLY && PX_SLICES > 1
+    {   SliceSet *ss = (SliceSet *)scratch;
+        int sb = (blocks + PX_SLICES - 1) / PX_SLICES;
+        uint64_t off = 0;
+        for (int i = 0; i < PX_SLICES; i++) {
+            mine_x_slice(ss->sc[i], ss->n[i], ss->st[i], i ? ss->h2c_done[i - 1] : nullptr, ss->h2c_done[i], sb, threads, job, nonce_base + off, hits, nhits);
+            off += ss->n[i];
+        }
+        (void)stride; (void)iters;
+        resolve_kernel<<<1, 128>>>(job, hits, nhits);   // legacy default stream: after every slice
+        return; }
+#endif
 #if PX_COMPACT
     Scratch *sc = (Scratch *)scratch;
     size_t N = stride * (size_t)iters;
@@ -1958,7 +2490,7 @@ static void v_mine(int blocks, int threads, const JobDev *job, uint64_t nonce_ba
 #else
     const uint64_t *mid = nullptr;
 #endif
-    h2c_kernel<<<g1, 256>>>(job, mid, nonce_base, nullptr, nullptr, sc->cnt + PX_MAX_PASSES + 1, sc->pts, sc->cnt, sc->nonce[0], sc->ctr[0], sc->cnt + 1);
+    PX_H2C_K<<<g1, 256>>>(job, mid, nonce_base, nullptr, nullptr, sc->cnt + PX_MAX_PASSES + 1, sc->pts, sc->cnt, sc->nonce[0], sc->ctr[0], sc->cnt + 1);
 #if PX_H2C_TAIL
     const int last = PX_H2C_TAIL;
 #else
@@ -1967,13 +2499,22 @@ static void v_mine(int blocks, int threads, const JobDev *job, uint64_t nonce_ba
     for (int p = 1; p < last; p++) {
         int in = (p - 1) & 1, out = p & 1;
         int gp = max(1, g1 >> p); // the queue halves every pass
-        h2c_kernel<<<gp, 256>>>(job, mid, nonce_base, sc->nonce[in], sc->ctr[in], sc->cnt + p, sc->pts, sc->cnt, sc->nonce[out], sc->ctr[out], sc->cnt + p + 1);
+        PX_H2C_K<<<gp, 256>>>(job, mid, nonce_base, sc->nonce[in], sc->ctr[in], sc->cnt + p, sc->pts, sc->cnt, sc->nonce[out], sc->ctr[out], sc->cnt + p + 1);
     }
 #if PX_H2C_TAIL
     { int in = (last - 1) & 1;
       h2c_tail_kernel<<<max(1, g1 >> last), 256>>>(job, mid, sc->nonce[in], sc->ctr[in], sc->cnt + last, sc->pts, sc->cnt); }
 #endif
-#ifdef PX_SPLIT_FINISH
+#if PX_XONLY
+    prepx_kernel<<<(blocks + PX_PREP_BATCH - 1) / PX_PREP_BATCH, threads>>>(sc->cnt, sc->pts);
+    ladderx_kernel<<<blocks, threads>>>(sc->pts, sc->cnt, sc->projective);
+    finishx_kernel<<<(blocks+PX_SPLIT_FINISH-1)/PX_SPLIT_FINISH,threads>>>(job,sc->projective,sc->cnt,hits,nhits);
+    resolve_kernel<<<1, 128>>>(job, hits, nhits);
+#elif PX_LADDER
+    prep_kernel<<<(blocks + PX_PREP_BATCH - 1) / PX_PREP_BATCH, threads>>>(sc->cnt, sc->pts);
+    ladder_kernel<<<blocks, threads>>>(sc->pts, sc->cnt, sc->projective);
+    finish_batch_kernel<<<(blocks+PX_SPLIT_FINISH-1)/PX_SPLIT_FINISH,threads>>>(job,sc->projective,sc->cnt,hits,nhits);
+#elif defined(PX_SPLIT_FINISH)
 #if PX_SCALAR_THREADS != 256
     // the scalar stage runs its own block size (launch bounds); same total thread count
     scalar_kernel<<<(int)(((size_t)blocks*threads+PX_SCALAR_THREADS-1)/PX_SCALAR_THREADS),PX_SCALAR_THREADS>>>(sc->pts,sc->cnt,sc->projective);
@@ -1989,6 +2530,10 @@ static void v_mine(int blocks, int threads, const JobDev *job, uint64_t nonce_ba
     mine_kernel<<<blocks, threads>>>(job, nonce_base, stride, iters, hits, nhits);
 #endif
 }
+#if PX_XONLY && PX_SLICES > 1
+static void *v_alloc(size_t n) { return v_alloc_slices(n); }
+static void v_free(void *scratch) { v_free_slices(scratch); }
+#endif
 static int v_test(const JobDev *d_job, uint64_t nonce, uint8_t beta[64], uint8_t h[32], uint8_t cg[32]) {
     uint8_t *d_beta, *d_h, *d_cg; int *d_ok;
     CUDA_CHECK(cudaMalloc(&d_beta, 64)); CUDA_CHECK(cudaMalloc(&d_h, 32)); CUDA_CHECK(cudaMalloc(&d_cg, 32)); CUDA_CHECK(cudaMalloc(&d_ok, 4));
@@ -2026,6 +2571,19 @@ static const VariantOps ops = { PX_VARIANT_NAME,
 #undef PX_WIDECHAIN
 #undef PX_FOLDSHIFT
 #undef PX_LB_SCALAR
+#undef PX_LADDER
+#undef PX_SLICES
+#undef PX_LADDER_NB
+#undef PX_XSTEP
+#undef PX_XONLY
+#undef PX_H2C_K
+#undef PX_JAC_STEPS
+#undef PX_JAC_MAXR
+#undef PX_NOBRANCH
+#undef PX_PREP_BATCH
+#undef PX_LB_LADDER
+#undef PX_MONT_A
+#undef PX_MONT_A24
 #undef PX_SCALAR_THREADS
 #undef PX_SQRT_DEC
 #undef PX_H2C_MID

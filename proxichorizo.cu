@@ -73,7 +73,7 @@ struct JobDev {
     int k;
 };
 struct Hit { uint64_t nonce; uint8_t beta[64]; };
-#define MAX_HITS 256
+#define MAX_HITS 1024
 
 // ---- kernel variants ---------------------------------------------------------
 // Each variant is the whole device side compiled with one setting of the field
@@ -278,6 +278,118 @@ namespace v_fe32w_wnaf_s16_c {
 namespace v_fe32x_wnaf_s32_c {
 #include "proxichorizo_device.cuh"
 }
+#undef PX_FE32
+#undef PX_COMBA
+#undef PX_WIDECHAIN
+#undef PX_MERGE8
+#undef PX_WINDOW
+#undef PX_LB_BLOCKS
+#undef PX_LB_H2C
+#undef PX_COMPACT
+#undef PX_SPLIT_FINISH
+#undef PX_ADD_NOT
+#undef PX_DBL6
+#undef PX_TBL_CACHED
+#undef PX_SQRT_DEC
+#undef PX_H2C_MID
+#undef PX_VARIANT_NAME
+#undef PX_LB_THREADS
+
+// x-only Montgomery ladder scalar stage (no table, no local memory) with exact v-recovery; same hash-to-curve and finish
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_WINDOW 5
+#define PX_LB_BLOCKS 2
+#define PX_LB_H2C 2
+#define PX_COMPACT 1
+#define PX_SPLIT_FINISH 32
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_VARIANT_NAME "fe32x_mlad_c"
+namespace v_fe32x_mlad_c {
+#include "proxichorizo_device.cuh"
+}
+#ifdef PX_DEV_LADDER
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#undef PX_VARIANT_NAME
+#define PX_VARIANT_NAME "fe32x_mladx_c"
+namespace v_fe32x_mladx_c {
+#include "proxichorizo_device.cuh"
+}
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#undef PX_VARIANT_NAME
+#define PX_VARIANT_NAME "fe32x_mladxn_c"
+namespace v_fe32x_mladxn_c {
+#include "proxichorizo_device.cuh"
+}
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_SLICES 2
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#undef PX_VARIANT_NAME
+#define PX_VARIANT_NAME "fe32x_mladxs2_c"
+namespace v_fe32x_mladxs2_c {
+#include "proxichorizo_device.cuh"
+}
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_SLICES 4
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#undef PX_VARIANT_NAME
+#define PX_VARIANT_NAME "fe32x_mladxs4_c"
+namespace v_fe32x_mladxs4_c {
+#include "proxichorizo_device.cuh"
+}
+#endif
 #undef PX_FE32
 #undef PX_COMBA
 #undef PX_WIDECHAIN
@@ -577,7 +689,9 @@ namespace v_fe32_w4_linear_split8_c {
 
 #endif // PX_LEAN
 #ifdef PX_LEAN
-#ifdef PX_DEV_OPT
+#ifdef PX_DEV_LADDER
+static const VariantOps *VARIANTS[] = { &v_fe32x_wnaf_s32_c::ops, &v_fe32x_mladxn_c::ops, &v_fe32x_mladxs2_c::ops, &v_fe32x_mladxs4_c::ops };
+#elif defined(PX_DEV_OPT)
 static const VariantOps *VARIANTS[] = { &v_fe32w_wnaf_s16_c::ops, &v_fe32x_wnaf_s32_c::ops, &v_fe32xm_wnaf_s32_c::ops, &v_fe32xt6_wnaf_s32_c::ops, &v_fe32xt4_wnaf_s32_c::ops, &v_fe32xmt_wnaf_s32_c::ops };
 #elif defined(PX_DEV_AMPERE)
 static const VariantOps *VARIANTS[] = { &v_fe32c_wnaf_s16_c::ops, &v_fe32w_wnaf_s16_c::ops };
