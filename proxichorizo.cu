@@ -19,7 +19,7 @@
 #include <map>
 #include <cmath>
 #include <cerrno>
-#define PX_VERSION "1.0.3"
+#define PX_VERSION "1.0.4"
 #include <signal.h>
 // sockets: POSIX or Winsock behind four helpers
 #ifdef _WIN32
@@ -1679,6 +1679,7 @@ static void gpu_worker(Shared &sh, GpuCfg cfg) {
     uint64_t stride = (uint64_t)cfg.blocks * cfg.threads;
     void *scratch = cfg.ops->alloc(stride * (size_t)cfg.iters);
     cudaEvent_t ev0, ev1; CUDA_CHECK(cudaEventCreate(&ev0)); CUDA_CHECK(cudaEventCreate(&ev1));
+    float last_ms = 0;   // kernel time of the previous launch: how long the next wait can sleep
     // test hook: PX_TEST_FAIL_GPU=<device>:<seconds> makes this worker issue one invalid CUDA call
     // after that many seconds, to exercise the dead-GPU path without real hardware trouble
     double failAfter = -1; auto t_start = std::chrono::steady_clock::now();
@@ -1714,8 +1715,19 @@ static void gpu_worker(Shared &sh, GpuCfg cfg) {
         cfg.ops->mine(cfg.blocks, cfg.threads, d_job, nonce, stride, cfg.iters, d_hits, d_n, scratch);
         GPU_TRY(cudaGetLastError());
         GPU_TRY(cudaEventRecord(ev1));
-        GPU_TRY(cudaDeviceSynchronize());
+        // wait for the launch without burning a CPU core: cudaDeviceSynchronize spin-waits for the whole launch
+        // (~100 ms), and a blocking-sync wait costs ~0.5 % hashrate in wake-up latency. So sleep until shortly
+        // before the launch is expected to end (the previous launch's time), then poll the event briefly.
+        if (last_ms > 4.0f) std::this_thread::sleep_for(std::chrono::microseconds((int64_t)((last_ms - 2.5f) * 1000.0f)));
+        for (;;) {
+            cudaError_t q = cudaEventQuery(ev1);
+            if (q == cudaSuccess) break;
+            if (q != cudaErrorNotReady) { GPU_TRY(q); }
+            std::this_thread::yield();
+        }
+        if (!fail.empty()) break;
         float ms = 0; GPU_TRY(cudaEventElapsedTime(&ms, ev0, ev1));
+        last_ms = ms;
         uint64_t done = stride * cfg.iters;
         nonce += done;
         sh.attempts += done;
