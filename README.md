@@ -98,6 +98,9 @@ Your workers and earnings: https://proxi.suprnova.cc (enter your PROX address).
 Everything else — options, thermal limits, the stats API, solo mining, troubleshooting — is
 in **[USAGE.md](USAGE.md)**, included in every release archive.
 
+Writing your own miner or proxy for the pool? The stratum protocol (messages, nonce layout,
+share rule, error codes, a worked example) is specified in **[STRATUM-SPEC.md](STRATUM-SPEC.md)**.
+
 **Older versions:** ProxiChorizo 0.5.x speaks the pool's old HTTP protocol (port 8100),
 which stays open for a while and will then be switched off. Update to 1.0.3.
 

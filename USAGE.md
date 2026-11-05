@@ -84,6 +84,8 @@ pool's certificate and host name are checked; `--ca-file FILE` adds CA certifica
 **Check the connection** without mining (no GPU needed):
 `./proxichorizo --check-pool stratum+ssl://proxi.suprnova.cc:3356` prints `pool OK, …` or why not.
 
+The wire protocol between miner and pool is documented in [STRATUM-SPEC.md](STRATUM-SPEC.md).
+
 ## 2. Solo mining — your own node and `proxi node mine`
 
 Solo, the reference miner `proxi node mine` builds, proves and submits the transits with
