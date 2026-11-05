@@ -137,7 +137,7 @@ code for H100. See the datacenter measurements in `PLATFORMS.md` for the tested 
 ./proxichorizo ... --max-temp 85 --log-interval 10 --quiet   # thermal limit per GPU (default 88 C, pauses only that card), console cadence
 ```
 Without a GPU argument the miner takes every GPU in the machine in one process; a GPU that overheats pauses alone and resumes when cool, a GPU with a device error is disabled alone. The console shows a start-up banner, per-GPU lines with temperature, power and clock, share results per GPU and a total line (colours on a terminal, plain text in logs).
-Measured (1.0.0, `--bench`, platform defaults): RTX 5090 ≈ 68 MH/s at 600 W / ≈ 51 at 420 W, RTX 5080 ≈ 35.5 MH/s, RTX 3070 ≈ 12.7 MH/s, CMP 170HX ≈ 14 MH/s; unchanged from earlier releases: RTX PRO 6000 ≈ 43 MH/s (0.5.6), H100 SXM ≈ 21.6 MH/s (0.5.7), A100 ≈ 12.7 MH/s (0.5.7), RTX A6000 ≈ 12 MH/s (0.5.6); one CPU core of the reference seeker ≈ 37 kH/s. See the [benchmarks](#benchmarks) below.
+Measured (1.0.2, `--bench`, platform defaults): RTX 5090 ≈ 70 MH/s at 600 W / ≈ 56.6 at 420 W, RTX 5080 ≈ 37 MH/s, RTX 3070 ≈ 13.7 MH/s, RTX 4070 Ti SUPER ≈ 28.4 MH/s, CMP 170HX ≈ 15.7 MH/s; unchanged from earlier releases: RTX PRO 6000 ≈ 43 MH/s (0.5.6), H100 SXM ≈ 21.6 MH/s (0.5.7), A100 ≈ 12.7 MH/s (0.5.7), RTX A6000 ≈ 12 MH/s (0.5.6); one CPU core of the reference seeker ≈ 37 kH/s. See the [benchmarks](#benchmarks) below.
 **[USAGE.md](USAGE.md)** has the full guide: registering at the pool, solo mining with `proxi node mine`, HiveOS / MMPOS / SMOS flight sheets, Docker, Windows, every option, troubleshooting.
 
 ## Build
@@ -159,14 +159,44 @@ glibc 2.31 so they run on HiveOS and mmpOS images.
 Per attempt: SHA-512, try-and-increment hash-to-curve (one field exponentiation per try),
 a 254-bit scalar multiplication on Ed25519, cofactor ×8, compression (one inversion),
 SHA-512. See `PLATFORMS.md` for the measured variants and why each exists.
-Reference points (the same binary, platform defaults): RTX 5090 ≈ 68 MH/s (600 W), RTX 5080 ≈ 35 MH/s,
-RTX 3070 ≈ 12.7 MH/s, CMP 170HX ≈ 14 MH/s, one CPU core of the reference Rust seeker ≈ 37 kH/s.
+Reference points (the same binary, platform defaults): RTX 5090 ≈ 70 MH/s (600 W), RTX 5080 ≈ 37 MH/s,
+RTX 3070 ≈ 13.7 MH/s, RTX 4070 Ti SUPER ≈ 28.4 MH/s, CMP 170HX ≈ 15.7 MH/s, one CPU core of the reference Rust seeker ≈ 37 kH/s.
 
 ## Benchmarks
 
-`--bench 45` on our own cards, platform defaults, driver-reported power; 1.0.0 numbers are matched A/B/B/A
-against the 0.5.9 kernels (0.5.8 arithmetic) on the same card and power cap (details and raw series in PLATFORMS.md, round 11, where the 1.0.0 kernels were developed;
-the 0.5.7 → 0.5.8 step is round 10). Other cards keep the rates measured with the release noted; pool rates are a little lower (job changes, idle gaps).
+`--bench` on our own cards with platform defaults and driver-reported power. 1.0.2 numbers are matched A/B/B/A runs
+(eight 60 s arms) of the 1.0.2 release build against the published 1.0.1 binary on the same card, power cap and clocks
+(CMP 170HX and RTX 4070 Ti SUPER: a single-architecture build of the same source whose kernels are instruction-identical
+to the release build).
+Pool rates are a little lower (job changes, idle gaps).
+
+| GPU | Power cap | 1.0.1 | **1.0.2** | Gain over 1.0.1 | Power drawn (1.0.2) | MH/s per W (1.0.2) |
+|---|---:|---:|---:|---:|---:|---:|
+| RTX 5090 (sm_120, 170 SMs) | 600 W | 67.4 MH/s | **69.8 MH/s** | +3.5 % | 600 W | 0.116 |
+| RTX 5090 | 420 W | 54.1 MH/s | **56.6 MH/s** | +4.6 % | 418 W | 0.135 |
+| RTX 5080 (sm_120) | 360 W | 36.2 MH/s | **37.4 MH/s** | +3.4 % | 360 W | 0.104 |
+| RTX 5080 (second card) | 360 W | 35.6 MH/s | **36.6 MH/s** | +3.0 % | 322 W | 0.114 |
+| RTX 4070 Ti SUPER (sm_89) | 285 W | 27.3 MH/s | **28.4 MH/s** | +3.8 % | 284 W | 0.100 |
+| RTX 3070 (sm_86) | 240 W | 13.1 MH/s | **13.7 MH/s** | +4.7 % | 238 W | 0.058 |
+| CMP 170HX (sm_80, 74 SMs, default clocks) | 250 W | 14.9 MH/s | **15.7 MH/s** | +5.5 % | 182 W | 0.087 |
+
+Measured with an earlier release and not re-measured for 1.0.2 (these cards keep their earlier kernels or were not available):
+
+| GPU | Power cap | Rate | Measured with |
+|---|---:|---:|---|
+| RTX PRO 6000 Blackwell | 600 W | 43.0 MH/s | 0.5.6 (1.0.2 uses the Blackwell default; not re-measured) |
+| H100 SXM (datacenter profile) | 700 W | 21.6 MH/s | 0.5.7 |
+| A100-SXM4-80GB (datacenter profile) | 400 W | 12.7 MH/s | 0.5.7 |
+| RTX A6000 | 300 W | 12 MH/s | 0.5.6 |
+| RX 7900 XTX (OpenCL) | 244 W | 11.3 MH/s | 0.5.7 / AMD profiles 2026-10-24 |
+| MI50 (OpenCL) | | 4.75–4.84 MH/s | AMD profiles 2026-10-24 |
+| RX 7600 XT (OpenCL) | | 4.00 MH/s | AMD profiles 2026-10-24 |
+
+The CMP 170HX and the RTX 4070 Ti SUPER each shared the card with another program that stayed idle during the runs
+(not a material effect on the rates). At a reduced power cap an RTX 5090 gains a little from `nvidia-smi -lmc 7001,7001` (+1.4 % at 420 W,
+nothing measurable at 600 W); never lock the memory below 7001 MHz.
+
+Earlier releases (1.0.0 table, the same `--bench` method against 0.5.9; history in PLATFORMS.md rounds 10 and 11):
 
 | GPU | Power cap | 0.5.7 | 0.5.8 / 0.5.9 | **1.0.0** | Gain over 0.5.9 | MH/s per W (1.0.0) |
 |---|---:|---:|---:|---:|---:|---:|

@@ -608,3 +608,24 @@ launch 93.5 ms vs 103.8 ms for the comba kernel over the same nonce range.
 Live pool mining with the final 0.5.10 build at the then-current difficulty (k = 33): RTX 5090 at 600 W, 40 minutes, 67.7 MH/s average,
 23 shares accepted, 0 rejected, 0 stale; RTX 5090 at 420 W, 37 minutes, 50.4 MH/s, 15 accepted, 0 rejected; shorter 8-minute runs on an
 RTX 3070 (12.7 MH/s) and an RTX 5080 (35.1 MH/s) found no share, as expected at that difficulty (about one and two expected).
+
+## Round 12: 1.0.2 kernel `fe32x_wnaf_s32_c` — 2026-11-05 (RTX 5090, RTX 5080, RTX 4070 Ti SUPER, RTX 3070, CMP 170HX)
+
+New default on sm_120, sm_89, sm_86 and the CMP 170HX (Turing tunes on first start; A100/H100 rows and AMD unchanged).
+Bit-identical outputs (16 node vectors, 512 independent vectors, field test, `--verify` and 58 launch shapes on every
+architecture). Matched `--bench` A/B/B/A, eight 60 s arms, 1.0.2 vs the published 1.0.1, same card/cap/clocks:
+
+| GPU | cap | 1.0.1 | 1.0.2 | gain |
+|---|---:|---:|---:|---:|
+| RTX 5090 | 600 W | 67.41 | 69.79 | +3.5 % |
+| RTX 5090 | 420 W | 54.11 | 56.59 | +4.6 % |
+| RTX 5080 | 360 W | 36.22 | 37.44 | +3.4 % |
+| RTX 5080 (second card) | 360 W | 35.57 | 36.64 | +3.0 % |
+| RTX 4070 Ti SUPER | 285 W | 27.33 | 28.38 | +3.8 % |
+| RTX 3070 | 240 W | 13.08 | 13.70 | +4.7 % |
+| CMP 170HX | 250 W | 14.93 | 15.75 | +5.5 % |
+
+Measured and not used: a lower register cap per thread for more resident warps (spills, −2.5 to −4.2 % on a 5090), one
+block per SM (−1 to −9.5 %), and one looping launch for the last hash-to-curve retries (−0.2 to −0.5 %). Memory clock:
+an RTX 5090 at a reduced power cap gains from 7001 MHz (+1.4 % at 420 W, +0.8 % at 575 W, ±0 at 600 W); 810 MHz is far
+too slow; RTX 5080 and RTX 3070 do not gain.
