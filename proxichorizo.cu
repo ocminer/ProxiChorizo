@@ -19,7 +19,7 @@
 #include <map>
 #include <cmath>
 #include <cerrno>
-#define PX_VERSION "1.0.1"
+#define PX_VERSION "1.0.2"
 #include <signal.h>
 // sockets: POSIX or Winsock behind four helpers
 #ifdef _WIN32
@@ -258,7 +258,8 @@ namespace v_fe32w_wnaf_s16_c {
 // round 12 (2026-11): the 0.5.10 wide-chain kernel with point-level savings — no T product in the
 // wNAF-loop addition (a doubling always follows), a doubling with two field add/subs fewer (negated
 // projective representative), the 2P table step as a cached addition, the decode-only square-root
-// check — plus hash-to-curve without register spills (2 blocks/SM) and 32 points per inversion
+// check — plus hash-to-curve without register spills (2 blocks/SM), its SHA-512 started from the job-constant
+// state after round 8, and 32 points per inversion
 #define PX_FE32 1
 #define PX_COMBA 1
 #define PX_WIDECHAIN 1
@@ -272,6 +273,7 @@ namespace v_fe32w_wnaf_s16_c {
 #define PX_DBL6 1
 #define PX_TBL_CACHED 1
 #define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
 #define PX_VARIANT_NAME "fe32x_wnaf_s32_c"
 namespace v_fe32x_wnaf_s32_c {
 #include "proxichorizo_device.cuh"
@@ -289,6 +291,7 @@ namespace v_fe32x_wnaf_s32_c {
 #undef PX_DBL6
 #undef PX_TBL_CACHED
 #undef PX_SQRT_DEC
+#undef PX_H2C_MID
 #undef PX_VARIANT_NAME
 #undef PX_LB_THREADS
 
@@ -398,68 +401,16 @@ namespace v_fe32c_wnaf_m8s16_c {
 #define PX_MERGE8 1
 #define PX_WINDOW 5
 #define PX_LB_BLOCKS 2
-#define PX_LB_H2C 3
+#define PX_LB_H2C 2
 #define PX_COMPACT 1
-#define PX_SPLIT_FINISH 16
-#define PX_ADD_NOT 1
-#define PX_VARIANT_NAME "fe32x1_wnaf_s16_c"
-namespace v_fe32x1_wnaf_s16_c {
-#include "proxichorizo_device.cuh"
-}
-#undef PX_FE32
-#undef PX_COMBA
-#undef PX_WIDECHAIN
-#undef PX_MERGE8
-#undef PX_WINDOW
-#undef PX_LB_BLOCKS
-#undef PX_LB_H2C
-#undef PX_COMPACT
-#undef PX_SPLIT_FINISH
-#undef PX_ADD_NOT
-#undef PX_VARIANT_NAME
-#undef PX_LB_THREADS
-#define PX_FE32 1
-#define PX_COMBA 1
-#define PX_WIDECHAIN 1
-#define PX_MERGE8 1
-#define PX_WINDOW 5
-#define PX_LB_BLOCKS 2
-#define PX_LB_H2C 3
-#define PX_COMPACT 1
-#define PX_SPLIT_FINISH 16
-#define PX_ADD_NOT 1
-#define PX_DBL6 1
-#define PX_VARIANT_NAME "fe32x2_wnaf_s16_c"
-namespace v_fe32x2_wnaf_s16_c {
-#include "proxichorizo_device.cuh"
-}
-#undef PX_FE32
-#undef PX_COMBA
-#undef PX_WIDECHAIN
-#undef PX_MERGE8
-#undef PX_WINDOW
-#undef PX_LB_BLOCKS
-#undef PX_LB_H2C
-#undef PX_COMPACT
-#undef PX_SPLIT_FINISH
-#undef PX_ADD_NOT
-#undef PX_DBL6
-#undef PX_VARIANT_NAME
-#undef PX_LB_THREADS
-#define PX_FE32 1
-#define PX_COMBA 1
-#define PX_WIDECHAIN 1
-#define PX_MERGE8 1
-#define PX_WINDOW 5
-#define PX_LB_BLOCKS 2
-#define PX_LB_H2C 3
-#define PX_COMPACT 1
-#define PX_SPLIT_FINISH 16
+#define PX_SPLIT_FINISH 32
 #define PX_ADD_NOT 1
 #define PX_DBL6 1
 #define PX_TBL_CACHED 1
-#define PX_VARIANT_NAME "fe32x3_wnaf_s16_c"
-namespace v_fe32x3_wnaf_s16_c {
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_VARIANT_NAME "fe32xm_wnaf_s32_c"
+namespace v_fe32xm_wnaf_s32_c {
 #include "proxichorizo_device.cuh"
 }
 #undef PX_FE32
@@ -474,6 +425,8 @@ namespace v_fe32x3_wnaf_s16_c {
 #undef PX_ADD_NOT
 #undef PX_DBL6
 #undef PX_TBL_CACHED
+#undef PX_SQRT_DEC
+#undef PX_H2C_MID
 #undef PX_VARIANT_NAME
 #undef PX_LB_THREADS
 #define PX_FE32 1
@@ -484,12 +437,14 @@ namespace v_fe32x3_wnaf_s16_c {
 #define PX_LB_BLOCKS 2
 #define PX_LB_H2C 2
 #define PX_COMPACT 1
-#define PX_SPLIT_FINISH 16
+#define PX_SPLIT_FINISH 32
 #define PX_ADD_NOT 1
 #define PX_DBL6 1
 #define PX_TBL_CACHED 1
-#define PX_VARIANT_NAME "fe32x3h2_wnaf_s16_c"
-namespace v_fe32x3h2_wnaf_s16_c {
+#define PX_SQRT_DEC 1
+#define PX_H2C_TAIL 6
+#define PX_VARIANT_NAME "fe32xt6_wnaf_s32_c"
+namespace v_fe32xt6_wnaf_s32_c {
 #include "proxichorizo_device.cuh"
 }
 #undef PX_FE32
@@ -504,6 +459,8 @@ namespace v_fe32x3h2_wnaf_s16_c {
 #undef PX_ADD_NOT
 #undef PX_DBL6
 #undef PX_TBL_CACHED
+#undef PX_SQRT_DEC
+#undef PX_H2C_TAIL
 #undef PX_VARIANT_NAME
 #undef PX_LB_THREADS
 #define PX_FE32 1
@@ -512,14 +469,16 @@ namespace v_fe32x3h2_wnaf_s16_c {
 #define PX_MERGE8 1
 #define PX_WINDOW 5
 #define PX_LB_BLOCKS 2
-#define PX_LB_H2C 3
+#define PX_LB_H2C 2
 #define PX_COMPACT 1
 #define PX_SPLIT_FINISH 32
 #define PX_ADD_NOT 1
 #define PX_DBL6 1
 #define PX_TBL_CACHED 1
-#define PX_VARIANT_NAME "fe32x3f32_wnaf_s16_c"
-namespace v_fe32x3f32_wnaf_s16_c {
+#define PX_SQRT_DEC 1
+#define PX_H2C_TAIL 4
+#define PX_VARIANT_NAME "fe32xt4_wnaf_s32_c"
+namespace v_fe32xt4_wnaf_s32_c {
 #include "proxichorizo_device.cuh"
 }
 #undef PX_FE32
@@ -534,6 +493,8 @@ namespace v_fe32x3f32_wnaf_s16_c {
 #undef PX_ADD_NOT
 #undef PX_DBL6
 #undef PX_TBL_CACHED
+#undef PX_SQRT_DEC
+#undef PX_H2C_TAIL
 #undef PX_VARIANT_NAME
 #undef PX_LB_THREADS
 #define PX_FE32 1
@@ -542,15 +503,17 @@ namespace v_fe32x3f32_wnaf_s16_c {
 #define PX_MERGE8 1
 #define PX_WINDOW 5
 #define PX_LB_BLOCKS 2
-#define PX_LB_H2C 3
+#define PX_LB_H2C 2
 #define PX_COMPACT 1
-#define PX_SPLIT_FINISH 16
+#define PX_SPLIT_FINISH 32
 #define PX_ADD_NOT 1
 #define PX_DBL6 1
 #define PX_TBL_CACHED 1
-#define PX_LB_SCALAR 1
-#define PX_VARIANT_NAME "fe32x3s1_wnaf_s16_c"
-namespace v_fe32x3s1_wnaf_s16_c {
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_H2C_TAIL 6
+#define PX_VARIANT_NAME "fe32xmt_wnaf_s32_c"
+namespace v_fe32xmt_wnaf_s32_c {
 #include "proxichorizo_device.cuh"
 }
 #undef PX_FE32
@@ -565,75 +528,9 @@ namespace v_fe32x3s1_wnaf_s16_c {
 #undef PX_ADD_NOT
 #undef PX_DBL6
 #undef PX_TBL_CACHED
-#undef PX_LB_SCALAR
-#undef PX_VARIANT_NAME
-#undef PX_LB_THREADS
-#define PX_FE32 1
-#define PX_COMBA 1
-#define PX_WIDECHAIN 1
-#define PX_MERGE8 1
-#define PX_WINDOW 5
-#define PX_LB_BLOCKS 2
-#define PX_LB_H2C 3
-#define PX_COMPACT 1
-#define PX_SPLIT_FINISH 16
-#define PX_ADD_NOT 1
-#define PX_DBL6 1
-#define PX_TBL_CACHED 1
-#define PX_SCALAR_THREADS 128
-#define PX_LB_SCALAR 5
-#define PX_VARIANT_NAME "fe32x3t5_wnaf_s16_c"
-namespace v_fe32x3t5_wnaf_s16_c {
-#include "proxichorizo_device.cuh"
-}
-#undef PX_FE32
-#undef PX_COMBA
-#undef PX_WIDECHAIN
-#undef PX_MERGE8
-#undef PX_WINDOW
-#undef PX_LB_BLOCKS
-#undef PX_LB_H2C
-#undef PX_COMPACT
-#undef PX_SPLIT_FINISH
-#undef PX_ADD_NOT
-#undef PX_DBL6
-#undef PX_TBL_CACHED
-#undef PX_SCALAR_THREADS
-#undef PX_LB_SCALAR
-#undef PX_VARIANT_NAME
-#undef PX_LB_THREADS
-#define PX_FE32 1
-#define PX_COMBA 1
-#define PX_WIDECHAIN 1
-#define PX_MERGE8 1
-#define PX_WINDOW 5
-#define PX_LB_BLOCKS 2
-#define PX_LB_H2C 3
-#define PX_COMPACT 1
-#define PX_SPLIT_FINISH 16
-#define PX_ADD_NOT 1
-#define PX_DBL6 1
-#define PX_TBL_CACHED 1
-#define PX_SCALAR_THREADS 128
-#define PX_LB_SCALAR 6
-#define PX_VARIANT_NAME "fe32x3t6_wnaf_s16_c"
-namespace v_fe32x3t6_wnaf_s16_c {
-#include "proxichorizo_device.cuh"
-}
-#undef PX_FE32
-#undef PX_COMBA
-#undef PX_WIDECHAIN
-#undef PX_MERGE8
-#undef PX_WINDOW
-#undef PX_LB_BLOCKS
-#undef PX_LB_H2C
-#undef PX_COMPACT
-#undef PX_SPLIT_FINISH
-#undef PX_ADD_NOT
-#undef PX_DBL6
-#undef PX_TBL_CACHED
-#undef PX_SCALAR_THREADS
-#undef PX_LB_SCALAR
+#undef PX_SQRT_DEC
+#undef PX_H2C_MID
+#undef PX_H2C_TAIL
 #undef PX_VARIANT_NAME
 #undef PX_LB_THREADS
 #endif // PX_DEV_OPT
@@ -681,7 +578,7 @@ namespace v_fe32_w4_linear_split8_c {
 #endif // PX_LEAN
 #ifdef PX_LEAN
 #ifdef PX_DEV_OPT
-static const VariantOps *VARIANTS[] = { &v_fe32w_wnaf_s16_c::ops, &v_fe32x1_wnaf_s16_c::ops, &v_fe32x2_wnaf_s16_c::ops, &v_fe32x3_wnaf_s16_c::ops, &v_fe32x3h2_wnaf_s16_c::ops, &v_fe32x3f32_wnaf_s16_c::ops, &v_fe32x3s1_wnaf_s16_c::ops, &v_fe32x3t5_wnaf_s16_c::ops, &v_fe32x3t6_wnaf_s16_c::ops, &v_fe32x_wnaf_s32_c::ops };
+static const VariantOps *VARIANTS[] = { &v_fe32w_wnaf_s16_c::ops, &v_fe32x_wnaf_s32_c::ops, &v_fe32xm_wnaf_s32_c::ops, &v_fe32xt6_wnaf_s32_c::ops, &v_fe32xt4_wnaf_s32_c::ops, &v_fe32xmt_wnaf_s32_c::ops };
 #elif defined(PX_DEV_AMPERE)
 static const VariantOps *VARIANTS[] = { &v_fe32c_wnaf_s16_c::ops, &v_fe32w_wnaf_s16_c::ops };
 #elif defined(PX_DEV_EXTRA)

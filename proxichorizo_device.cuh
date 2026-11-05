@@ -1476,20 +1476,90 @@ struct Scratch {
 #ifdef PX_SPLIT_FINISH
     ProjectivePoint *projective;
 #endif
-    HPoint *pts; uint64_t *nonce[2]; uint8_t *ctr[2]; unsigned *cnt; size_t n; };
+    HPoint *pts; uint64_t *nonce[2]; uint8_t *ctr[2]; unsigned *cnt; size_t n;
+#if PX_H2C_MID
+    uint64_t *mid;   // per launch: SHA-512 state after the job-constant rounds 0..7 + message words 0..8 (see sha_prep_kernel)
+#endif
+};
 #define PX_MAX_PASSES 12
+#if PX_H2C_MID
+// PX_H2C_MID: the hash-to-curve message is 0x03 0x01 | pk (32) | prefix | nonce (8, big endian) | ctr | 0. With the usual
+// 37-byte prefix the first 71 bytes are the same for every nonce of a job, so message words 0..7 and with them rounds 0..7
+// of SHA-512 are job constants: one thread computes that state once per launch and every hash starts at round 8. Word 8
+// carries the nonce's top byte, word 9 the other seven and the counter. Any other prefix length takes the generic hash.
+#define PX_MID_PREFIX 37
+__global__ void sha_prep_kernel(const JobDev *job, uint64_t *mid) {
+    if (threadIdx.x || blockIdx.x || job->prefix_len != PX_MID_PREFIX) return;
+    uint8_t m[72];
+    int n = 0;
+    m[n++] = 0x03; m[n++] = 0x01;
+    for (int k = 0; k < 32; k++) m[n++] = job->pk[k];
+    for (int k = 0; k < PX_MID_PREFIX; k++) m[n++] = job->prefix[k];
+    m[n++] = 0;                                   // byte 71 = nonce top byte, ORed in per nonce
+    uint64_t W[9];
+    for (int i = 0; i < 9; i++) { uint64_t w = 0; for (int j = 0; j < 8; j++) w = (w << 8) | m[i * 8 + j]; W[i] = w; }
+    uint64_t a = 0x6a09e667f3bcc908ULL, b = 0xbb67ae8584caa73bULL, c = 0x3c6ef372fe94f82bULL, d = 0xa54ff53a5f1d36f1ULL;
+    uint64_t e = 0x510e527fade682d1ULL, f = 0x9b05688c2b3e6c1fULL, g = 0x1f83d9abfb41bd6bULL, h = 0x5be0cd19137e2179ULL;
+    for (int i = 0; i < 8; i++) {
+        uint64_t S1 = rotr64(e, 14) ^ rotr64(e, 18) ^ rotr64(e, 41);
+        uint64_t ch = (e & f) ^ (~e & g);
+        uint64_t t1 = h + S1 + ch + c_K512[i] + W[i];
+        uint64_t S0 = rotr64(a, 28) ^ rotr64(a, 34) ^ rotr64(a, 39);
+        uint64_t mj = (a & b) ^ (a & c) ^ (b & c);
+        h = g; g = f; f = e; e = d + t1; d = c; c = b; b = a; a = t1 + S0 + mj;
+    }
+    mid[0] = a; mid[1] = b; mid[2] = c; mid[3] = d; mid[4] = e; mid[5] = f; mid[6] = g; mid[7] = h;
+    for (int i = 0; i < 9; i++) mid[8 + i] = W[i];
+}
+// the hash-to-curve SHA-512 from round 8 on; identical arithmetic to sha512_single for the 81-byte message
+__device__ void sha512_h2c_mid(const uint64_t *mid, uint64_t nonce, uint8_t ctr, uint8_t out[64]) {
+    uint64_t W[16];
+    #pragma unroll
+    for (int i = 0; i < 8; i++) W[i] = mid[8 + i];
+    W[8] = mid[16] | (nonce >> 56);
+    W[9] = (nonce << 8) | ctr;
+    W[10] = 0x0080000000000000ULL;                // byte 80 = 0, byte 81 = 0x80 (padding)
+    W[11] = 0; W[12] = 0; W[13] = 0; W[14] = 0;
+    W[15] = (uint64_t)(2 + 32 + PX_MID_PREFIX + 8 + 2) * 8;
+    uint64_t a = mid[0], b = mid[1], c = mid[2], d = mid[3], e = mid[4], f = mid[5], g = mid[6], h = mid[7];
+    #pragma unroll
+    for (int i = 8; i < 80; i++) {
+        uint64_t wi;
+        if (i < 16) wi = W[i];
+        else {
+            uint64_t w15 = W[(i - 15) & 15], w2 = W[(i - 2) & 15];
+            uint64_t s0 = rotr64(w15, 1) ^ rotr64(w15, 8) ^ (w15 >> 7);
+            uint64_t s1 = rotr64(w2, 19) ^ rotr64(w2, 61) ^ (w2 >> 6);
+            wi = W[i & 15] + s0 + W[(i - 7) & 15] + s1;
+            W[i & 15] = wi;
+        }
+        uint64_t S1 = rotr64(e, 14) ^ rotr64(e, 18) ^ rotr64(e, 41);
+        uint64_t ch = (e & f) ^ (~e & g);
+        uint64_t t1 = h + S1 + ch + c_K512[i] + wi;
+        uint64_t S0 = rotr64(a, 28) ^ rotr64(a, 34) ^ rotr64(a, 39);
+        uint64_t mj = (a & b) ^ (a & c) ^ (b & c);
+        uint64_t t2 = S0 + mj;
+        h = g; g = f; f = e; e = d + t1; d = c; c = b; b = a; a = t1 + t2;
+    }
+    uint64_t st[8] = { a + 0x6a09e667f3bcc908ULL, b + 0xbb67ae8584caa73bULL, c + 0x3c6ef372fe94f82bULL, d + 0xa54ff53a5f1d36f1ULL,
+                       e + 0x510e527fade682d1ULL, f + 0x9b05688c2b3e6c1fULL, g + 0x1f83d9abfb41bd6bULL, h + 0x5be0cd19137e2179ULL };
+    for (int i = 0; i < 8; i++) for (int j = 0; j < 8; j++) out[i * 8 + j] = st[i] >> (56 - 8 * j);
+}
+#endif
 
 #ifndef PX_LB_H2C
 #define PX_LB_H2C 1
 #endif
-__global__ void __launch_bounds__(256, PX_LB_H2C) h2c_kernel(const JobDev *job, uint64_t nonce_base, const uint64_t *in_nonce, const uint8_t *in_ctr, const unsigned *n_in_ptr,
-                                                  HPoint *pts, unsigned *n_pts, uint64_t *out_nonce, uint8_t *out_ctr, unsigned *n_out) {
-    unsigned n_in = *n_in_ptr;
-    unsigned gid = blockIdx.x * blockDim.x + threadIdx.x, total = gridDim.x * blockDim.x;
-    if (gid >= n_in) return;
-    for (unsigned i = gid; i < n_in; i += total) {
-        uint64_t nonce = in_nonce ? in_nonce[i] : nonce_base + i;
-        uint8_t ctr = in_nonce ? in_ctr[i] : 0;
+// one hash-to-curve attempt for (nonce, ctr): true and H decoded when the hash is a valid encoding
+__device__ __forceinline__ bool h2c_try(const JobDev *job, const uint64_t *mid, uint64_t nonce, uint8_t ctr, ge &H) {
+    uint8_t dg[64];
+#if PX_H2C_MID
+    if (job->prefix_len == PX_MID_PREFIX) sha512_h2c_mid(mid, nonce, ctr, dg);
+    else
+#else
+    (void)mid;
+#endif
+    {
         uint8_t msg[128];
         int n = 0;
         msg[n++] = 0x03; msg[n++] = 0x01;
@@ -1497,10 +1567,20 @@ __global__ void __launch_bounds__(256, PX_LB_H2C) h2c_kernel(const JobDev *job, 
         for (int k = 0; k < job->prefix_len; k++) msg[n++] = job->prefix[k];
         for (int k = 0; k < 8; k++) msg[n++] = (uint8_t)(nonce >> (56 - 8 * k));
         msg[n++] = ctr; msg[n++] = 0;
-        uint8_t dg[64];
         sha512_single(msg, n, dg);
+    }
+    return ge_frombytes(H, dg);
+}
+__global__ void __launch_bounds__(256, PX_LB_H2C) h2c_kernel(const JobDev *job, const uint64_t *mid, uint64_t nonce_base, const uint64_t *in_nonce, const uint8_t *in_ctr, const unsigned *n_in_ptr,
+                                                  HPoint *pts, unsigned *n_pts, uint64_t *out_nonce, uint8_t *out_ctr, unsigned *n_out) {
+    unsigned n_in = *n_in_ptr;
+    unsigned gid = blockIdx.x * blockDim.x + threadIdx.x, total = gridDim.x * blockDim.x;
+    if (gid >= n_in) return;
+    for (unsigned i = gid; i < n_in; i += total) {
+        uint64_t nonce = in_nonce ? in_nonce[i] : nonce_base + i;
+        uint8_t ctr = in_nonce ? in_ctr[i] : 0;
         ge H;
-        if (ge_frombytes(H, dg)) {
+        if (h2c_try(job, mid, nonce, ctr, H)) {
             unsigned o = atomicAdd(n_pts, 1u);
             fe_copy(pts[o].X, H.X); fe_copy(pts[o].Y, H.Y); pts[o].nonce = nonce;
         } else if (ctr < 255) {
@@ -1509,6 +1589,27 @@ __global__ void __launch_bounds__(256, PX_LB_H2C) h2c_kernel(const JobDev *job, 
         }
     }
 }
+#if PX_H2C_TAIL
+// PX_H2C_TAIL = K: passes K..PX_MAX_PASSES-1 merged into one launch. Each queued item retries its counters in a loop up
+// to the same bound as the separate passes (counters < PX_MAX_PASSES), so the same points come out; the few items left
+// after K compacted passes no longer pay one launch per counter.
+__global__ void __launch_bounds__(256, PX_LB_H2C) h2c_tail_kernel(const JobDev *job, const uint64_t *mid, const uint64_t *in_nonce, const uint8_t *in_ctr, const unsigned *n_in_ptr,
+                                                       HPoint *pts, unsigned *n_pts) {
+    unsigned n_in = *n_in_ptr;
+    unsigned gid = blockIdx.x * blockDim.x + threadIdx.x, total = gridDim.x * blockDim.x;
+    for (unsigned i = gid; i < n_in; i += total) {
+        uint64_t nonce = in_nonce[i];
+        for (unsigned c = in_ctr[i]; c < PX_MAX_PASSES; c++) {
+            ge H;
+            if (h2c_try(job, mid, nonce, (uint8_t)c, H)) {
+                unsigned o = atomicAdd(n_pts, 1u);
+                fe_copy(pts[o].X, H.X); fe_copy(pts[o].Y, H.Y); pts[o].nonce = nonce;
+                break;
+            }
+        }
+    }
+}
+#endif
 
 // one point: cofactor, scalar multiplication, cofactor; false for the identity
 __device__ __forceinline__ bool mult_point(ge &G, const HPoint &pt) {
@@ -1820,6 +1921,9 @@ static void *v_alloc(size_t n) {
     CUDA_CHECK(cudaMalloc(&sc->projective,n*sizeof(ProjectivePoint)));
 #endif
     for (int b = 0; b < 2; b++) { CUDA_CHECK(cudaMalloc(&sc->nonce[b], n * sizeof(uint64_t))); CUDA_CHECK(cudaMalloc(&sc->ctr[b], n)); }
+#if PX_H2C_MID
+    CUDA_CHECK(cudaMalloc(&sc->mid, 17 * sizeof(uint64_t)));
+#endif
     CUDA_CHECK(cudaMalloc(&sc->cnt, (PX_MAX_PASSES + 2) * sizeof(unsigned)));
     unsigned N = (unsigned)n; CUDA_CHECK(cudaMemcpy(sc->cnt + PX_MAX_PASSES + 1, &N, sizeof N, cudaMemcpyHostToDevice));
     return sc;
@@ -1833,6 +1937,9 @@ static void v_free(void *scratch) {
 #ifdef PX_SPLIT_FINISH
     cudaFree(sc->projective);
 #endif
+#if PX_H2C_MID
+    cudaFree(sc->mid);
+#endif
     cudaFree(sc->pts); for (int b = 0; b < 2; b++) { cudaFree(sc->nonce[b]); cudaFree(sc->ctr[b]); } cudaFree(sc->cnt); delete sc;
 #else
     (void)scratch;
@@ -1845,12 +1952,27 @@ static void v_mine(int blocks, int threads, const JobDev *job, uint64_t nonce_ba
     CUDA_CHECK(cudaMemsetAsync(sc->cnt, 0, (PX_MAX_PASSES + 1) * sizeof(unsigned)));
     int g1 = (int)((N + 255) / 256);
     // pass 0 over all nonces, then the retry queues, alternating buffers
-    h2c_kernel<<<g1, 256>>>(job, nonce_base, nullptr, nullptr, sc->cnt + PX_MAX_PASSES + 1, sc->pts, sc->cnt, sc->nonce[0], sc->ctr[0], sc->cnt + 1);
-    for (int p = 1; p < PX_MAX_PASSES; p++) {
+#if PX_H2C_MID
+    const uint64_t *mid = sc->mid;
+    sha_prep_kernel<<<1, 32>>>(job, sc->mid);
+#else
+    const uint64_t *mid = nullptr;
+#endif
+    h2c_kernel<<<g1, 256>>>(job, mid, nonce_base, nullptr, nullptr, sc->cnt + PX_MAX_PASSES + 1, sc->pts, sc->cnt, sc->nonce[0], sc->ctr[0], sc->cnt + 1);
+#if PX_H2C_TAIL
+    const int last = PX_H2C_TAIL;
+#else
+    const int last = PX_MAX_PASSES;
+#endif
+    for (int p = 1; p < last; p++) {
         int in = (p - 1) & 1, out = p & 1;
         int gp = max(1, g1 >> p); // the queue halves every pass
-        h2c_kernel<<<gp, 256>>>(job, nonce_base, sc->nonce[in], sc->ctr[in], sc->cnt + p, sc->pts, sc->cnt, sc->nonce[out], sc->ctr[out], sc->cnt + p + 1);
+        h2c_kernel<<<gp, 256>>>(job, mid, nonce_base, sc->nonce[in], sc->ctr[in], sc->cnt + p, sc->pts, sc->cnt, sc->nonce[out], sc->ctr[out], sc->cnt + p + 1);
     }
+#if PX_H2C_TAIL
+    { int in = (last - 1) & 1;
+      h2c_tail_kernel<<<max(1, g1 >> last), 256>>>(job, mid, sc->nonce[in], sc->ctr[in], sc->cnt + last, sc->pts, sc->cnt); }
+#endif
 #ifdef PX_SPLIT_FINISH
 #if PX_SCALAR_THREADS != 256
     // the scalar stage runs its own block size (launch bounds); same total thread count
@@ -1906,6 +2028,9 @@ static const VariantOps ops = { PX_VARIANT_NAME,
 #undef PX_LB_SCALAR
 #undef PX_SCALAR_THREADS
 #undef PX_SQRT_DEC
+#undef PX_H2C_MID
+#undef PX_H2C_TAIL
+#undef PX_MID_PREFIX
 #undef PX_FOLDSHIFT_POW
 #undef PX_HAVE_SQ_POW
 #undef fe_sq_pow
