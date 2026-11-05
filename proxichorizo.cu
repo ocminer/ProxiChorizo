@@ -255,6 +255,43 @@ namespace v_fe32w_wnaf_s16_c {
 #undef PX_SPLIT_FINISH
 
 
+// round 12 (2026-11): the 0.5.10 wide-chain kernel with point-level savings — no T product in the
+// wNAF-loop addition (a doubling always follows), a doubling with two field add/subs fewer (negated
+// projective representative), the 2P table step as a cached addition, the decode-only square-root
+// check — plus hash-to-curve without register spills (2 blocks/SM) and 32 points per inversion
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_WINDOW 5
+#define PX_LB_BLOCKS 2
+#define PX_LB_H2C 2
+#define PX_COMPACT 1
+#define PX_SPLIT_FINISH 32
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_SQRT_DEC 1
+#define PX_VARIANT_NAME "fe32x_wnaf_s32_c"
+namespace v_fe32x_wnaf_s32_c {
+#include "proxichorizo_device.cuh"
+}
+#undef PX_FE32
+#undef PX_COMBA
+#undef PX_WIDECHAIN
+#undef PX_MERGE8
+#undef PX_WINDOW
+#undef PX_LB_BLOCKS
+#undef PX_LB_H2C
+#undef PX_COMPACT
+#undef PX_SPLIT_FINISH
+#undef PX_ADD_NOT
+#undef PX_DBL6
+#undef PX_TBL_CACHED
+#undef PX_SQRT_DEC
+#undef PX_VARIANT_NAME
+#undef PX_LB_THREADS
+
 #ifdef PX_DEV_EXTRA
 // development-only comba combinations (not in release builds)
 #define PX_FE32 1
@@ -353,6 +390,254 @@ namespace v_fe32c_wnaf_m8s16_c {
 #undef PX_SPLIT_FINISH
 #endif // PX_DEV_EXTRA
 
+
+#ifdef PX_DEV_OPT
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_WINDOW 5
+#define PX_LB_BLOCKS 2
+#define PX_LB_H2C 3
+#define PX_COMPACT 1
+#define PX_SPLIT_FINISH 16
+#define PX_ADD_NOT 1
+#define PX_VARIANT_NAME "fe32x1_wnaf_s16_c"
+namespace v_fe32x1_wnaf_s16_c {
+#include "proxichorizo_device.cuh"
+}
+#undef PX_FE32
+#undef PX_COMBA
+#undef PX_WIDECHAIN
+#undef PX_MERGE8
+#undef PX_WINDOW
+#undef PX_LB_BLOCKS
+#undef PX_LB_H2C
+#undef PX_COMPACT
+#undef PX_SPLIT_FINISH
+#undef PX_ADD_NOT
+#undef PX_VARIANT_NAME
+#undef PX_LB_THREADS
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_WINDOW 5
+#define PX_LB_BLOCKS 2
+#define PX_LB_H2C 3
+#define PX_COMPACT 1
+#define PX_SPLIT_FINISH 16
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_VARIANT_NAME "fe32x2_wnaf_s16_c"
+namespace v_fe32x2_wnaf_s16_c {
+#include "proxichorizo_device.cuh"
+}
+#undef PX_FE32
+#undef PX_COMBA
+#undef PX_WIDECHAIN
+#undef PX_MERGE8
+#undef PX_WINDOW
+#undef PX_LB_BLOCKS
+#undef PX_LB_H2C
+#undef PX_COMPACT
+#undef PX_SPLIT_FINISH
+#undef PX_ADD_NOT
+#undef PX_DBL6
+#undef PX_VARIANT_NAME
+#undef PX_LB_THREADS
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_WINDOW 5
+#define PX_LB_BLOCKS 2
+#define PX_LB_H2C 3
+#define PX_COMPACT 1
+#define PX_SPLIT_FINISH 16
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_VARIANT_NAME "fe32x3_wnaf_s16_c"
+namespace v_fe32x3_wnaf_s16_c {
+#include "proxichorizo_device.cuh"
+}
+#undef PX_FE32
+#undef PX_COMBA
+#undef PX_WIDECHAIN
+#undef PX_MERGE8
+#undef PX_WINDOW
+#undef PX_LB_BLOCKS
+#undef PX_LB_H2C
+#undef PX_COMPACT
+#undef PX_SPLIT_FINISH
+#undef PX_ADD_NOT
+#undef PX_DBL6
+#undef PX_TBL_CACHED
+#undef PX_VARIANT_NAME
+#undef PX_LB_THREADS
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_WINDOW 5
+#define PX_LB_BLOCKS 2
+#define PX_LB_H2C 2
+#define PX_COMPACT 1
+#define PX_SPLIT_FINISH 16
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_VARIANT_NAME "fe32x3h2_wnaf_s16_c"
+namespace v_fe32x3h2_wnaf_s16_c {
+#include "proxichorizo_device.cuh"
+}
+#undef PX_FE32
+#undef PX_COMBA
+#undef PX_WIDECHAIN
+#undef PX_MERGE8
+#undef PX_WINDOW
+#undef PX_LB_BLOCKS
+#undef PX_LB_H2C
+#undef PX_COMPACT
+#undef PX_SPLIT_FINISH
+#undef PX_ADD_NOT
+#undef PX_DBL6
+#undef PX_TBL_CACHED
+#undef PX_VARIANT_NAME
+#undef PX_LB_THREADS
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_WINDOW 5
+#define PX_LB_BLOCKS 2
+#define PX_LB_H2C 3
+#define PX_COMPACT 1
+#define PX_SPLIT_FINISH 32
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_VARIANT_NAME "fe32x3f32_wnaf_s16_c"
+namespace v_fe32x3f32_wnaf_s16_c {
+#include "proxichorizo_device.cuh"
+}
+#undef PX_FE32
+#undef PX_COMBA
+#undef PX_WIDECHAIN
+#undef PX_MERGE8
+#undef PX_WINDOW
+#undef PX_LB_BLOCKS
+#undef PX_LB_H2C
+#undef PX_COMPACT
+#undef PX_SPLIT_FINISH
+#undef PX_ADD_NOT
+#undef PX_DBL6
+#undef PX_TBL_CACHED
+#undef PX_VARIANT_NAME
+#undef PX_LB_THREADS
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_WINDOW 5
+#define PX_LB_BLOCKS 2
+#define PX_LB_H2C 3
+#define PX_COMPACT 1
+#define PX_SPLIT_FINISH 16
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_LB_SCALAR 1
+#define PX_VARIANT_NAME "fe32x3s1_wnaf_s16_c"
+namespace v_fe32x3s1_wnaf_s16_c {
+#include "proxichorizo_device.cuh"
+}
+#undef PX_FE32
+#undef PX_COMBA
+#undef PX_WIDECHAIN
+#undef PX_MERGE8
+#undef PX_WINDOW
+#undef PX_LB_BLOCKS
+#undef PX_LB_H2C
+#undef PX_COMPACT
+#undef PX_SPLIT_FINISH
+#undef PX_ADD_NOT
+#undef PX_DBL6
+#undef PX_TBL_CACHED
+#undef PX_LB_SCALAR
+#undef PX_VARIANT_NAME
+#undef PX_LB_THREADS
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_WINDOW 5
+#define PX_LB_BLOCKS 2
+#define PX_LB_H2C 3
+#define PX_COMPACT 1
+#define PX_SPLIT_FINISH 16
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_SCALAR_THREADS 128
+#define PX_LB_SCALAR 5
+#define PX_VARIANT_NAME "fe32x3t5_wnaf_s16_c"
+namespace v_fe32x3t5_wnaf_s16_c {
+#include "proxichorizo_device.cuh"
+}
+#undef PX_FE32
+#undef PX_COMBA
+#undef PX_WIDECHAIN
+#undef PX_MERGE8
+#undef PX_WINDOW
+#undef PX_LB_BLOCKS
+#undef PX_LB_H2C
+#undef PX_COMPACT
+#undef PX_SPLIT_FINISH
+#undef PX_ADD_NOT
+#undef PX_DBL6
+#undef PX_TBL_CACHED
+#undef PX_SCALAR_THREADS
+#undef PX_LB_SCALAR
+#undef PX_VARIANT_NAME
+#undef PX_LB_THREADS
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_WINDOW 5
+#define PX_LB_BLOCKS 2
+#define PX_LB_H2C 3
+#define PX_COMPACT 1
+#define PX_SPLIT_FINISH 16
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_SCALAR_THREADS 128
+#define PX_LB_SCALAR 6
+#define PX_VARIANT_NAME "fe32x3t6_wnaf_s16_c"
+namespace v_fe32x3t6_wnaf_s16_c {
+#include "proxichorizo_device.cuh"
+}
+#undef PX_FE32
+#undef PX_COMBA
+#undef PX_WIDECHAIN
+#undef PX_MERGE8
+#undef PX_WINDOW
+#undef PX_LB_BLOCKS
+#undef PX_LB_H2C
+#undef PX_COMPACT
+#undef PX_SPLIT_FINISH
+#undef PX_ADD_NOT
+#undef PX_DBL6
+#undef PX_TBL_CACHED
+#undef PX_SCALAR_THREADS
+#undef PX_LB_SCALAR
+#undef PX_VARIANT_NAME
+#undef PX_LB_THREADS
+#endif // PX_DEV_OPT
+
 #ifndef PX_LEAN
 #define PX_FE32 1
 #define PX_WINDOW 5
@@ -395,15 +680,17 @@ namespace v_fe32_w4_linear_split8_c {
 
 #endif // PX_LEAN
 #ifdef PX_LEAN
-#ifdef PX_DEV_AMPERE
+#ifdef PX_DEV_OPT
+static const VariantOps *VARIANTS[] = { &v_fe32w_wnaf_s16_c::ops, &v_fe32x1_wnaf_s16_c::ops, &v_fe32x2_wnaf_s16_c::ops, &v_fe32x3_wnaf_s16_c::ops, &v_fe32x3h2_wnaf_s16_c::ops, &v_fe32x3f32_wnaf_s16_c::ops, &v_fe32x3s1_wnaf_s16_c::ops, &v_fe32x3t5_wnaf_s16_c::ops, &v_fe32x3t6_wnaf_s16_c::ops, &v_fe32x_wnaf_s32_c::ops };
+#elif defined(PX_DEV_AMPERE)
 static const VariantOps *VARIANTS[] = { &v_fe32c_wnaf_s16_c::ops, &v_fe32w_wnaf_s16_c::ops };
 #elif defined(PX_DEV_EXTRA)
 static const VariantOps *VARIANTS[] = { &v_fe32_wnaf_lb2_c::ops, &v_fe32c_wnaf_lb2_c::ops, &v_fe32c_wnaf_s16_c::ops, &v_fe32c_wnaf_lb1_c::ops, &v_fe32c_wnaf_split16_c::ops, &v_fe32c_wnaf_inv4_c::ops, &v_fe32c_wnaf_m8_c::ops, &v_fe32c_wnaf_m8s16_c::ops, &v_fe32w_wnaf_s16_c::ops };
 #else
-static const VariantOps *VARIANTS[] = { &v_fe32_wnaf_lb2_c::ops, &v_fe32c_wnaf_lb2_c::ops, &v_fe32c_wnaf_s16_c::ops, &v_fe32w_wnaf_s16_c::ops };
+static const VariantOps *VARIANTS[] = { &v_fe32_wnaf_lb2_c::ops, &v_fe32c_wnaf_lb2_c::ops, &v_fe32c_wnaf_s16_c::ops, &v_fe32w_wnaf_s16_c::ops, &v_fe32x_wnaf_s32_c::ops };
 #endif
 #else
-static const VariantOps *VARIANTS[] = { &v_fe32_w0_lb2::ops, &v_fe32_w4_lb2::ops, &v_fe32_w0_lb2_c::ops, &v_fe32_w4_lb2_c::ops, &v_fe32_wnaf_lb2_c::ops, &v_fe51_w4_lb1::ops, &v_fe32_wnaf_split16_c::ops, &v_fe32_w4_linear_split8_c::ops, &v_fe32c_wnaf_lb2_c::ops, &v_fe32c_wnaf_s16_c::ops, &v_fe32w_wnaf_s16_c::ops };
+static const VariantOps *VARIANTS[] = { &v_fe32_w0_lb2::ops, &v_fe32_w4_lb2::ops, &v_fe32_w0_lb2_c::ops, &v_fe32_w4_lb2_c::ops, &v_fe32_wnaf_lb2_c::ops, &v_fe51_w4_lb1::ops, &v_fe32_wnaf_split16_c::ops, &v_fe32_w4_linear_split8_c::ops, &v_fe32c_wnaf_lb2_c::ops, &v_fe32c_wnaf_s16_c::ops, &v_fe32w_wnaf_s16_c::ops, &v_fe32x_wnaf_s32_c::ops };
 #endif
 static const int NVARIANTS = sizeof(VARIANTS) / sizeof(VARIANTS[0]);
 
@@ -1708,7 +1995,7 @@ static GpuCfg autotune(int dev, const uint8_t scalar[32], const uint8_t pk[32], 
     const int ngeo = quick ? 2 : 6;
     fprintf(stderr, "autotune GPU %d %s (sm_%d%d), %.0fs per trial:\n", dev, prop.name, prop.major, prop.minor, seconds);
     for (int v = 0; v < NVARIANTS; v++) {
-        if (quick && strcmp(VARIANTS[v]->name, "fe32w_wnaf_s16_c") != 0 && strcmp(VARIANTS[v]->name, "fe32c_wnaf_s16_c") != 0 && strcmp(VARIANTS[v]->name, "fe32_wnaf_lb2_c") != 0 && strcmp(VARIANTS[v]->name, "fe32_w4_lb2_c") != 0) continue;
+        if (quick && strcmp(VARIANTS[v]->name, "fe32x_wnaf_s32_c") != 0 && strcmp(VARIANTS[v]->name, "fe32w_wnaf_s16_c") != 0 && strcmp(VARIANTS[v]->name, "fe32c_wnaf_s16_c") != 0 && strcmp(VARIANTS[v]->name, "fe32_wnaf_lb2_c") != 0 && strcmp(VARIANTS[v]->name, "fe32_w4_lb2_c") != 0) continue;
         uint8_t pk2[32];
         if (VARIANTS[v]->init(scalar, pk2) != 1 || memcmp(pk2, pk, 32) != 0) { fprintf(stderr, "  %-12s: init failed, skipped\n", VARIANTS[v]->name); continue; }
         for (int gi = 0; gi < ngeo; gi++) {

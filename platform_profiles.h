@@ -4,13 +4,13 @@
 
 struct Platform { int major, minor; const char *variant; int threads, iters, blocksPerSM; bool measured; const char *note; };
 static const Platform PLATFORMS[] = {
-    { 12, -1, "fe32w_wnaf_s16_c", 256, 1, 128, true,  "Blackwell (RTX 50xx, RTX PRO 6000): 0.5.10 wide-multiply carry chains (68.1 MH/s on a 5090 at 600 W, 35.3 on a 5080)" },
+    { 12, -1, "fe32x_wnaf_s32_c", 256, 1, 128, true,  "Blackwell (RTX 50xx, RTX PRO 6000): round-12 point-level savings on the wide-multiply chains (69.1 MH/s on a 5090 at 600 W, 37.0 on a 5080)" },
     {  9, -1, "fe32_w4_lb2_c",    256, 1, 128, true,  "Hopper (H100): the 4-bit table beats wNAF here (21.2 vs 19.3 MH/s on an H100 SXM), large launches; 0.5.8/0.5.10 kernels not measured on Hopper" },
-    {  8,  9, "fe32w_wnaf_s16_c", 256, 1, 128, false, "Ada (RTX 40xx): not measured here, tuned on first start" },
-    {  8,  6, "fe32w_wnaf_s16_c", 256, 1, 128, true,  "Ampere GA10x (RTX 30xx): 0.5.10 wide-multiply carry chains (12.8 MH/s on a 3070)" },
-    {  8,  0, "fe32w_wnaf_s16_c", 256, 1, 128, true,  "Ampere GA100 (CMP 170HX): 0.5.10 wide-multiply carry chains" },
-    {  7,  5, "fe32w_wnaf_s16_c", 256, 1, 128, false, "Turing: not measured here, tuned on first start" },
-    { -1, -1, "fe32w_wnaf_s16_c", 256, 1, 128, false, "unknown generation: tuned on first start" },
+    {  8,  9, "fe32x_wnaf_s32_c", 256, 1, 128, false, "Ada (RTX 40xx): not measured here, tuned on first start" },
+    {  8,  6, "fe32x_wnaf_s32_c", 256, 1, 128, true,  "Ampere GA10x (RTX 30xx): round-12 point-level savings on the wide-multiply chains (13.6 MH/s on a 3070)" },
+    {  8,  0, "fe32w_wnaf_s16_c", 256, 1, 128, true,  "Ampere GA100 (CMP 170HX): 0.5.10 wide-multiply carry chains (round-12 kernel not measured on GA100 yet: --variant fe32x_wnaf_s32_c)" },
+    {  7,  5, "fe32x_wnaf_s32_c", 256, 1, 128, false, "Turing: not measured here, tuned on first start" },
+    { -1, -1, "fe32x_wnaf_s32_c", 256, 1, 128, false, "unknown generation: tuned on first start" },
 };
 
 // A100 and CMP 170HX share SM80 but have different measured profiles. The A100 and H100

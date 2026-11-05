@@ -975,12 +975,19 @@ __device__ bool fe_sqrt_ratio_i(fe &r, const fe &u, const fe &v) {
     fe_mul(r, uv3, t);
     fe_sq(check, r); fe_mul(check, check, v);
     fe_neg(nu, u);
-    fe_mul(nui, nu, d_SQRT_M1);
     bool correct = fe_eq(check, u);
     bool flipped = fe_eq(check, nu);
-    bool flipped_i = fe_eq(check, nui);
     fe_mul(rp, r, d_SQRT_M1);
+#if PX_SQRT_DEC
+    // only point decoding calls this, and it discards r unless u/v is a square (correct or flipped):
+    // the check against -u*sqrt(-1) can only change r in the rejected case
+    (void)nui;
+    if (flipped) fe_copy(r, rp);
+#else
+    fe_mul(nui, nu, d_SQRT_M1);
+    bool flipped_i = fe_eq(check, nui);
     if (flipped || flipped_i) fe_copy(r, rp);
+#endif
     if (fe_isnegative(r)) fe_neg(r, r);
     return correct || flipped;
 }
@@ -1058,6 +1065,25 @@ __device__ void ge_dbl_opt(ge &r, const ge &p, bool wantT) {
     fe_mul(r.X, E, F); fe_mul(r.Y, G, H); fe_mul(r.Z, F, G);
     if (wantT) fe_mul(r.T, E, H);
 }
+#if PX_DBL6
+// The same doubling with two linear operations fewer: with s = A + B the formulas give
+// H = -s, and F' = C - G = -F. (X3:Y3:Z3:T3) = (E F', G s, F' G, E s) is the negated
+// projective representative of (E F : G H : F G : E H), i.e. the same point.
+__device__ void ge_dbl_opt6(ge &r, const ge &p, bool wantT) {
+    fe A, B, C, E, F, G, s, t;
+    fe_sq(A, p.X);
+    fe_sq(B, p.Y);
+    fe_sq(C, p.Z); fe_add(C, C, C);
+    fe_add(t, p.X, p.Y); fe_sq(t, t);
+    fe_add(s, A, B);
+    fe_sub(E, t, s);
+    fe_sub(G, B, A);
+    fe_sub(F, C, G);
+    fe_mul(r.X, E, F); fe_mul(r.Y, G, s); fe_mul(r.Z, F, G);
+    if (wantT) fe_mul(r.T, E, s);
+}
+#define ge_dbl_opt ge_dbl_opt6
+#endif
 __device__ void ge_add(ge &r, const ge &p, const ge &q) {
     fe A, B, C, D, E, F, G, H, t1, t2;
     fe_sub(t1, p.Y, p.X); fe_sub(t2, q.Y, q.X); fe_mul(A, t1, t2);
@@ -1103,6 +1129,15 @@ __constant__ int8_t c_wnaf_next[260];
 #ifndef PX_MERGE8
 #define PX_MERGE8 0
 #endif
+#ifndef PX_DBL6
+#define PX_DBL6 0
+#endif
+#ifndef PX_ADD_NOT
+#define PX_ADD_NOT 0
+#endif
+#ifndef PX_TBL_CACHED
+#define PX_TBL_CACHED 0
+#endif
 #if PX_MERGE8 && PX_WINDOW != 5
 #error PX_MERGE8 requires the wNAF scalar multiplication
 #endif
@@ -1123,6 +1158,24 @@ __device__ void ge_add_cached(ge &r, const ge &p, const geCached &q, bool neg) {
     fe_sub(E, B, A); fe_sub(F, D, C); fe_add(G, D, C); fe_add(H, B, A);
     fe_mul(r.X, E, F); fe_mul(r.Y, G, H); fe_mul(r.T, E, H); fe_mul(r.Z, F, G);
 }
+#if PX_ADD_NOT
+// The addition inside the wNAF loop: the next operation is always a doubling (wNAF digits are
+// never adjacent), which does not read T, and the result after the last digit is only compared
+// and compressed. So the T product is never needed there (one multiplication per addition).
+__device__ void ge_add_cached_noT(ge &r, const ge &p, const geCached &q, bool neg) {
+    fe A, B, C, D, E, F, G, H, t1, t2;
+    fe_sub(t1, p.Y, p.X); fe_add(t2, p.Y, p.X);
+    fe_mul(A, t1, neg ? q.YpX : q.YmX);
+    fe_mul(B, t2, neg ? q.YmX : q.YpX);
+    fe_mul(C, p.T, q.T2d); if (neg) fe_neg(C, C);
+    fe_mul(D, p.Z, q.Z2);
+    fe_sub(E, B, A); fe_sub(F, D, C); fe_add(G, D, C); fe_add(H, B, A);
+    fe_mul(r.X, E, F); fe_mul(r.Y, G, H); fe_mul(r.Z, F, G);
+}
+#define PX_LOOP_ADD ge_add_cached_noT
+#else
+#define PX_LOOP_ADD ge_add_cached
+#endif
 
 #if PX_WINDOW == 5
 // width-5 wNAF over the constant scalar: 8 cached odd multiples P, 3P, ..., 15P,
@@ -1133,8 +1186,15 @@ __device__ void ge_scalarmult_const(ge &r, const ge &p) {
     ge_dbl(P2, p);
     ge_copy(acc, p);
     ge_cache(T[0], acc);
+#if PX_TBL_CACHED
+    // 2P cached once: each table step is then a cached addition (8 instead of 9 multiplications)
+    { geCached C2; ge_cache(C2, P2);
+      #pragma unroll 1
+      for (int i = 1; i < 8; i++) { ge_add_cached(acc, acc, C2, false); ge_cache(T[i], acc); } }
+#else
     #pragma unroll 1
     for (int i = 1; i < 8; i++) { ge_add(acc, acc, P2); ge_cache(T[i], acc); }
+#endif
     ge_identity(r);
     // The loop body is the hot code of the whole miner; with one doubling and
     // one addition site it is about half the size of the two-plus-two version
@@ -1143,7 +1203,7 @@ __device__ void ge_scalarmult_const(ge &r, const ge &p) {
         int d = c_wnaf[i];
         // the digit is uniform across the grid: no divergence
         ge_dbl_opt(r, r, d != 0);
-        if (d) ge_add_cached(r, r, T[(d < 0 ? -d : d) >> 1], d < 0);
+        if (d) PX_LOOP_ADD(r, r, T[(d < 0 ? -d : d) >> 1], d < 0);
 #if PX_PREFETCH
         // The table lives in local memory and, at 1 KB per thread, misses L1
         // (30 % hit rate measured): fetch the next entry while the doublings
@@ -1534,7 +1594,10 @@ __global__ void __launch_bounds__(PX_LB_THREADS, PX_LB_MULT_BLOCKS) mult_kernel(
 #ifndef PX_LB_SCALAR
 #define PX_LB_SCALAR 2
 #endif
-__global__ void __launch_bounds__(256, PX_LB_SCALAR) scalar_kernel(const HPoint *pts,const unsigned *n_ptr,ProjectivePoint *out) {
+#ifndef PX_SCALAR_THREADS
+#define PX_SCALAR_THREADS 256
+#endif
+__global__ void __launch_bounds__(PX_SCALAR_THREADS, PX_LB_SCALAR) scalar_kernel(const HPoint *pts,const unsigned *n_ptr,ProjectivePoint *out) {
     unsigned n=*n_ptr;
     for(unsigned i=blockIdx.x*blockDim.x+threadIdx.x;i<n;i+=gridDim.x*blockDim.x) {
         ge G; bool ok=mult_point(G,pts[i]);
@@ -1789,7 +1852,12 @@ static void v_mine(int blocks, int threads, const JobDev *job, uint64_t nonce_ba
         h2c_kernel<<<gp, 256>>>(job, nonce_base, sc->nonce[in], sc->ctr[in], sc->cnt + p, sc->pts, sc->cnt, sc->nonce[out], sc->ctr[out], sc->cnt + p + 1);
     }
 #ifdef PX_SPLIT_FINISH
+#if PX_SCALAR_THREADS != 256
+    // the scalar stage runs its own block size (launch bounds); same total thread count
+    scalar_kernel<<<(int)(((size_t)blocks*threads+PX_SCALAR_THREADS-1)/PX_SCALAR_THREADS),PX_SCALAR_THREADS>>>(sc->pts,sc->cnt,sc->projective);
+#else
     scalar_kernel<<<blocks,threads>>>(sc->pts,sc->cnt,sc->projective);
+#endif
     finish_batch_kernel<<<(blocks+PX_SPLIT_FINISH-1)/PX_SPLIT_FINISH,threads>>>(job,sc->projective,sc->cnt,hits,nhits);
 #else
     mult_kernel<<<(blocks + PX_INV_BATCH - 1) / PX_INV_BATCH, threads>>>(job, sc->pts, sc->cnt, hits, nhits);
@@ -1836,7 +1904,14 @@ static const VariantOps ops = { PX_VARIANT_NAME,
 #undef PX_WIDECHAIN
 #undef PX_FOLDSHIFT
 #undef PX_LB_SCALAR
+#undef PX_SCALAR_THREADS
+#undef PX_SQRT_DEC
 #undef PX_FOLDSHIFT_POW
 #undef PX_HAVE_SQ_POW
 #undef fe_sq_pow
 #undef PX_LB_H2C
+#undef PX_DBL6
+#undef PX_ADD_NOT
+#undef PX_TBL_CACHED
+#undef PX_LOOP_ADD
+#undef ge_dbl_opt
