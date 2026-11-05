@@ -65,7 +65,7 @@ distribution); the Windows archive brings its own. The pool's certificate is che
   token, password = the seed of your key file. Worker name = the rig name.
 * **MMPOS / SMOS:** the same tarball, launchers `mmpos-run.sh` / `smos-run.sh`; pool URL as
   above, user = token, password = key seed (see [USAGE.md](USAGE.md)).
-* **Docker (NVIDIA):** `ocminersupr/proxichorizo:1.0.2` with `TOKEN`, `KEY_FILE` (or `SEED`)
+* **Docker (NVIDIA):** `ocminersupr/proxichorizo:1.0.3` with `TOKEN`, `KEY_FILE` (or `SEED`)
   and optionally `POOL_URL` (default `stratum+tcp://proxi.suprnova.cc:3355`); see `docker/README.md`.
 
 ### Is it working?
@@ -77,7 +77,7 @@ Test the connection first, without mining (no GPU needed):
 stratum: connected to proxi.suprnova.cc:3355
 stratum: authorized as rig1
 GPU #0: share accepted (1/1)
-Total: 49.75 MH/s on 1/1 GPUs | accepted 42, rejected 0, stale 0 | job 1a19… k=30 | uptime 00:10:00
+Total: 49.75 MH/s on 1/1 GPUs, 418 W (0.119 MH/W) | accepted 42, rejected 0, stale 0 | job 1a19… k=30 | uptime 00:10:00
 ```
 
 The first shares come within seconds at a low difficulty; within a minute or two the pool
@@ -99,7 +99,7 @@ Everything else — options, thermal limits, the stats API, solo mining, trouble
 in **[USAGE.md](USAGE.md)**, included in every release archive.
 
 **Older versions:** ProxiChorizo 0.5.x speaks the pool's old HTTP protocol (port 8100),
-which stays open for a while and will then be switched off. Update to 1.0.2.
+which stays open for a while and will then be switched off. Update to 1.0.3.
 
 ## Which kernel runs on which card
 
@@ -167,8 +167,8 @@ RTX 3070 ≈ 13.7 MH/s, RTX 4070 Ti SUPER ≈ 28.4 MH/s, CMP 170HX ≈ 15.7 MH/s
 `--bench` on our own cards with platform defaults and driver-reported power. 1.0.2 numbers are matched A/B/B/A runs
 (eight 60 s arms) of the 1.0.2 release build against the published 1.0.1 binary on the same card, power cap and clocks
 (CMP 170HX and RTX 4070 Ti SUPER: a single-architecture build of the same source whose kernels are instruction-identical
-to the release build).
-Pool rates are a little lower (job changes, idle gaps).
+to the release build). 1.0.3 runs the same kernels as 1.0.2 (identical device code; it changes only the console and the
+statistics), so these rates apply to 1.0.3 unchanged. Pool rates are a little lower (job changes, idle gaps).
 
 | GPU | Power cap | 1.0.1 | **1.0.2** | Gain over 1.0.1 | Power drawn (1.0.2) | MH/s per W (1.0.2) |
 |---|---:|---:|---:|---:|---:|---:|

@@ -19,7 +19,7 @@
 #include <map>
 #include <cmath>
 #include <cerrno>
-#define PX_VERSION "1.0.2"
+#define PX_VERSION "1.0.3"
 #include <signal.h>
 // sockets: POSIX or Winsock behind four helpers
 #ifdef _WIN32
@@ -996,7 +996,7 @@ struct Job {
 // Read where the driver offers them: NVML loaded at run time (NVIDIA, Linux and
 // Windows; no build dependency) or the kernel's hwmon files under the device's
 // PCI node (AMD on Linux). A GPU without either simply reports no sensors.
-struct GpuSensors { int temp = -1; int fan = -1; double power = -1; int mem_temp = -1; int clock = -1; };  // degrees C, percent, watts, degrees C, MHz; -1 = unknown
+struct GpuSensors { int temp = -1; int fan = -1; double power = -1; int mem_temp = -1; int clock = -1; int mem_clock = -1; };  // degrees C, percent, watts, degrees C, core MHz, memory MHz; -1 = unknown
 #ifndef _WIN32
 #include <dlfcn.h>
 #include <dirent.h>
@@ -1042,6 +1042,7 @@ static bool read(const std::string &bus, GpuSensors &s) {
     if (Fan && Fan(d, &v) == 0) s.fan = (int)v;           // fails on passive (server) cards: stays -1
     if (Power && Power(d, &v) == 0) s.power = v / 1000.0;  // milliwatts
     if (Clock && Clock(d, 1 /* NVML_CLOCK_SM */, &v) == 0) s.clock = (int)v;
+    if (Clock && Clock(d, 2 /* NVML_CLOCK_MEM */, &v) == 0) s.mem_clock = (int)v;
     if (Fields) {  // memory temperature: HBM/GDDR6X cards report it, most consumer cards do not (stays -1)
         FieldValue f; memset(&f, 0, sizeof f); f.fieldId = 83 /* NVML_FI_DEV_MEMORY_TEMP */;
         if (Fields(d, 1, &f) == 0 && f.nvmlReturn == 0 && f.value.u > 0 && f.value.u < 200) s.mem_temp = (int)f.value.u;
@@ -1063,25 +1064,28 @@ static bool sysfs_sensors(const std::string &bus, GpuSensors &s) {
     else if (rd("pwm1", v)) s.fan = (int)(v / 2.55 + 0.5);
     if (rd("power1_average", v) || rd("power1_input", v)) s.power = v / 1e6;  // microwatts
     if (rd("temp3_input", v)) s.mem_temp = (int)(v / 1000);                     // amdgpu: temp1 edge, temp2 junction, temp3 memory
-    if (rd("freq1_input", v)) s.clock = (int)(v / 1e6);                         // Hz
+    if (rd("freq1_input", v)) s.clock = (int)(v / 1e6);                         // Hz (amdgpu sclk)
+    if (rd("freq2_input", v)) s.mem_clock = (int)(v / 1e6);                     // Hz (amdgpu mclk)
     return s.temp >= 0 || s.power >= 0;
 #endif
 }
 static GpuSensors read_sensors(const std::string &bus) { GpuSensors s; if (!nvml::read(bus, s)) sysfs_sensors(bus, s); return s; }
-// "65C, 533 W, 2422 MHz, fan n/a" (memory temperature as "65C/72C mem" where reported) for the per-GPU line
+// "65C, 533 W, core 2422 / mem 13801 MHz, fan n/a" (memory temperature as "65C/72C mem" where reported) for the per-GPU line
 static std::string sensors_str(const GpuSensors &s) {
     char b[96]; std::string o;
     if (s.temp >= 0) { snprintf(b, sizeof b, "%dC", s.temp); o += b; if (s.mem_temp >= 0) { snprintf(b, sizeof b, "/%dC mem", s.mem_temp); o += b; } }
     else o += "temp n/a";
     if (s.power >= 0) { snprintf(b, sizeof b, ", %.0f W", s.power); o += b; } else o += ", power n/a";
-    if (s.clock >= 0) { snprintf(b, sizeof b, ", %d MHz", s.clock); o += b; }
+    if (s.clock >= 0 && s.mem_clock >= 0) { snprintf(b, sizeof b, ", core %d / mem %d MHz", s.clock, s.mem_clock); o += b; }
+    else if (s.clock >= 0) { snprintf(b, sizeof b, ", core %d MHz", s.clock); o += b; }
+    else if (s.mem_clock >= 0) { snprintf(b, sizeof b, ", mem %d MHz", s.mem_clock); o += b; }
     if (s.fan >= 0) { snprintf(b, sizeof b, ", fan %d%%", s.fan); o += b; } else o += ", fan n/a";
     return o;
 }
 static std::string sensors_json(const GpuSensors &s) {
     auto num = [](double v, bool f) { if (v < 0) return std::string("null"); char b[32]; snprintf(b, sizeof b, f ? "%.1f" : "%.0f", v); return std::string(b); };
     return ",\"temp\":" + num(s.temp, false) + ",\"fan\":" + num(s.fan, false) + ",\"power\":" + num(s.power, true) +
-           ",\"mem_temp\":" + num(s.mem_temp, false) + ",\"clock\":" + num(s.clock, false);
+           ",\"mem_temp\":" + num(s.mem_temp, false) + ",\"clock\":" + num(s.clock, false) + ",\"mem_clock\":" + num(s.mem_clock, false);
 }
 
 struct Shared {
@@ -1198,7 +1202,7 @@ static void reporter(Shared &sh) {
     }
 }
 
-// "GPU #0: RTX PRO 6000 Blackwell Server Edition [1D:00.0] 63.52 MH/s, 65C, 533 W, 2422 MHz, fan n/a"
+// "GPU #0: RTX PRO 6000 Blackwell Server Edition [1D:00.0] 63.52 MH/s, 65C, 533 W, core 2422 / mem 13801 MHz, fan n/a"
 static std::string gpu_line(const Shared::GpuStat &g, double secs, bool verbose) {
     char b[160]; std::string o = gpu_tag(g) + ": " + short_gpu_name(g.name) + " [" + short_bus(g.bus) + "] ";
     if (g.dead) return o + "DEAD (" + g.reason + ")";
@@ -1233,18 +1237,22 @@ static void console(Shared &sh) {
             // inside that gap is not "no job"; say so only after 10 s without one
             if (id == 0 && sh.last_job_id && now - sh.last_job_at < std::chrono::seconds(10)) { id = sh.last_job_id; k = sh.last_job_k; }
         }
-        double total = 0;
+        double total = 0, watts = 0; bool have_watts = false;
         for (auto &g : snap) {
             total += g.rate;
+            if (!g.dead && g.sens.power >= 0) { watts += g.sens.power; have_watts = true; }
             if (sh.con.quiet) continue;
             if (g.dead) log_err(gpu_line(g, secs, sh.con.verbose));
             else if (g.paused) log_warn(gpu_line(g, secs, sh.con.verbose));
             else logln(gpu_line(g, secs, sh.con.verbose));
         }
         char b[256];
-        snprintf(b, sizeof b, "Total: %.2f MH/s on %d/%zu GPUs | accepted %llu, rejected %llu, stale %llu", total / 1e6, alive, snap.size(),
-                 (unsigned long long)sh.shares.load(), (unsigned long long)sh.rejected.load(), (unsigned long long)sh.stale.load());
+        snprintf(b, sizeof b, "Total: %.2f MH/s on %d/%zu GPUs", total / 1e6, alive, snap.size());
         std::string line = b;
+        if (have_watts) { snprintf(b, sizeof b, ", %.0f W (%.3f MH/W)", watts, watts > 0 ? total / 1e6 / watts : 0.0); line += b; }
+        snprintf(b, sizeof b, " | accepted %llu, rejected %llu, stale %llu",
+                 (unsigned long long)sh.shares.load(), (unsigned long long)sh.rejected.load(), (unsigned long long)sh.stale.load());
+        line += b;
         if (sh.solutions.load()) line += ", solutions " + std::to_string(sh.solutions.load());
         line += id ? " | job " + std::to_string(id) + " k=" + std::to_string(k) : " | no job";
         line += " | uptime " + fmt_uptime(std::chrono::duration_cast<std::chrono::seconds>(now - sh.started).count());
@@ -1742,8 +1750,10 @@ static std::string stats_json(Shared &sh, bool mmpos) {
     uint64_t up = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - sh.started).count();
     uint64_t acc = sh.shares.load() + sh.solutions.load(), rej = sh.rejected.load(), stale = sh.stale.load();
     double total = 0; std::string hs, bus, gpus, temp, fan, power; int active = 0;
+    double watts = 0; bool have_watts = false;
     for (auto &g : sh.gpus) {
         total += g.rate;
+        if (!g.dead && g.sens.power >= 0) { watts += g.sens.power; have_watts = true; }
         if (!g.dead && !g.paused) active++;
         char r[64]; snprintf(r, sizeof r, "%.0f", g.rate);
         if (!hs.empty()) { hs += ","; bus += ","; gpus += ","; temp += ","; fan += ","; power += ","; }
@@ -1762,7 +1772,8 @@ static std::string stats_json(Shared &sh, bool mmpos) {
                "],\"air\":[\"" + std::to_string(acc) + "\",\"0\",\"" + std::to_string(rej) +
                "\"],\"miner_name\":\"ProxiChorizo\",\"miner_version\":\"" PX_VERSION "\"}";
     char t[64]; snprintf(t, sizeof t, "%.0f", total);
-    return "{\"miner\":\"ProxiChorizo\",\"version\":\"" PX_VERSION "\",\"uptime\":" + std::to_string(up) + ",\"hashrate\":" + t +
+    char w[64]; if (have_watts) snprintf(w, sizeof w, "%.1f", watts); else snprintf(w, sizeof w, "null");
+    return "{\"miner\":\"ProxiChorizo\",\"version\":\"" PX_VERSION "\",\"uptime\":" + std::to_string(up) + ",\"hashrate\":" + t + ",\"power\":" + w +
            ",\"hashrate_units\":\"hs\",\"shares\":{\"accepted\":" + std::to_string(acc) + ",\"rejected\":" + std::to_string(rej) + ",\"stale\":" + std::to_string(stale) + "},\"solutions\":" +
            std::to_string(sh.solutions.load()) + ",\"job_server\":\"" + json_escape(sh.url.host) + ":" + std::to_string(sh.url.port) + "\",\"worker\":\"" +
            json_escape(sh.name) + "\",\"job_k\":" + std::to_string(sh.job.k) + ",\"job_id\":" + std::to_string(sh.job.id) +

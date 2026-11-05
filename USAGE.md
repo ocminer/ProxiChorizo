@@ -37,9 +37,9 @@ to your PROX address by the pool (PPLNS, 1 % fee) and paid out to it.
 4. The miner prints a start-up banner (version, licence, pool, worker, the GPUs with
    bus id and kernel) and then, every 30 seconds, one line per GPU and a total:
    ```
-   12:04:31 GPU #0: RTX PRO 6000 Blackwell Server Edition [05:00.0] 63.52 MH/s, 73C, 548 W, 2422 MHz, fan n/a
-   12:04:31 GPU #1: RTX PRO 6000 Blackwell Server Edition [06:00.0] 63.47 MH/s, 75C, 555 W, 2422 MHz, fan n/a
-   12:04:31 Total: 253.95 MH/s on 4/4 GPUs | accepted 61, rejected 0, stale 1 | job 1792 k=28 | uptime 00:10:30
+   12:04:31 GPU #0: RTX PRO 6000 Blackwell Server Edition [05:00.0] 63.52 MH/s, 73C, 548 W, core 2422 / mem 13801 MHz, fan n/a
+   12:04:31 GPU #1: RTX PRO 6000 Blackwell Server Edition [06:00.0] 63.47 MH/s, 75C, 555 W, core 2422 / mem 13801 MHz, fan n/a
+   12:04:31 Total: 253.95 MH/s on 4/4 GPUs, 2204 W (0.115 MH/W) | accepted 61, rejected 0, stale 1 | job 1792 k=28 | uptime 00:10:30
    12:04:33 GPU #2: share accepted (62/63)
    job 1793: slot 11235, k=28, ttl 9680 ms
    ```
