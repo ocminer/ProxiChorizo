@@ -316,6 +316,7 @@ namespace v_fe32x_mlad_c {
 #include "proxichorizo_device.cuh"
 }
 #ifdef PX_DEV_LADDER
+#ifdef PX_DEV_LADDER_ALL
 #define PX_FE32 1
 #define PX_COMBA 1
 #define PX_WIDECHAIN 1
@@ -333,6 +334,7 @@ namespace v_fe32x_mlad_c {
 namespace v_fe32x_mladx_c {
 #include "proxichorizo_device.cuh"
 }
+#endif
 #define PX_FE32 1
 #define PX_COMBA 1
 #define PX_WIDECHAIN 1
@@ -351,6 +353,26 @@ namespace v_fe32x_mladx_c {
 namespace v_fe32x_mladxn_c {
 #include "proxichorizo_device.cuh"
 }
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 1
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#undef PX_VARIANT_NAME
+#define PX_VARIANT_NAME "fe32x_mladxm_c"
+namespace v_fe32x_mladxm_c {
+#include "proxichorizo_device.cuh"
+}
+#ifdef PX_DEV_LADDER_ALL
 #define PX_FE32 1
 #define PX_COMBA 1
 #define PX_WIDECHAIN 1
@@ -389,6 +411,49 @@ namespace v_fe32x_mladxs2_c {
 namespace v_fe32x_mladxs4_c {
 #include "proxichorizo_device.cuh"
 }
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_SLICES 2
+#define PX_CORUN 1
+#define PX_PREP_BATCH 8
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#undef PX_VARIANT_NAME
+#define PX_VARIANT_NAME "fe32x_mladxc2_c"
+namespace v_fe32x_mladxc2_c {
+#include "proxichorizo_device.cuh"
+}
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_SLICES 4
+#define PX_CORUN 1
+#define PX_PREP_BATCH 8
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#undef PX_VARIANT_NAME
+#define PX_VARIANT_NAME "fe32x_mladxc4_c"
+namespace v_fe32x_mladxc4_c {
+#include "proxichorizo_device.cuh"
+}
+#endif
 #endif
 #undef PX_FE32
 #undef PX_COMBA
@@ -690,7 +755,11 @@ namespace v_fe32_w4_linear_split8_c {
 #endif // PX_LEAN
 #ifdef PX_LEAN
 #ifdef PX_DEV_LADDER
-static const VariantOps *VARIANTS[] = { &v_fe32x_wnaf_s32_c::ops, &v_fe32x_mladxn_c::ops, &v_fe32x_mladxs2_c::ops, &v_fe32x_mladxs4_c::ops };
+#ifdef PX_DEV_LADDER_ALL
+static const VariantOps *VARIANTS[] = { &v_fe32x_wnaf_s32_c::ops, &v_fe32x_mlad_c::ops, &v_fe32x_mladx_c::ops, &v_fe32x_mladxn_c::ops, &v_fe32x_mladxs2_c::ops, &v_fe32x_mladxs4_c::ops, &v_fe32x_mladxc2_c::ops, &v_fe32x_mladxc4_c::ops };
+#else
+static const VariantOps *VARIANTS[] = { &v_fe32x_wnaf_s32_c::ops, &v_fe32x_mladxn_c::ops, &v_fe32x_mladxm_c::ops };
+#endif
 #elif defined(PX_DEV_OPT)
 static const VariantOps *VARIANTS[] = { &v_fe32w_wnaf_s16_c::ops, &v_fe32x_wnaf_s32_c::ops, &v_fe32xm_wnaf_s32_c::ops, &v_fe32xt6_wnaf_s32_c::ops, &v_fe32xt4_wnaf_s32_c::ops, &v_fe32xmt_wnaf_s32_c::ops };
 #elif defined(PX_DEV_AMPERE)
@@ -1990,6 +2059,7 @@ static double run_bench(const VariantOps *ops, const uint8_t pk[32], int dev, in
     cudaDeviceProp prop; CUDA_CHECK(cudaGetDeviceProperties(&prop, dev));
     if (blocks <= 0) blocks = prop.multiProcessorCount * 8;
     JobDev jd; memset(&jd, 0, sizeof jd); jd.prefix_len = 37; jd.k = 20; memset(jd.beat, 0xff, 64);
+    if (const char *e = getenv("PX_BENCH_K")) jd.k = atoi(e);   // development: share difficulty of the bench job
     memcpy(jd.pk, pk, 32);
     for (int i = 0; i < 37; i++) jd.prefix[i] = (uint8_t)(i * 31 + 7);
     JobDev *d_job; Hit *d_hits; unsigned *d_n;
