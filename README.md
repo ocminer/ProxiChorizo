@@ -171,7 +171,11 @@ RTX 3070 ≈ 13.7 MH/s, RTX 4070 Ti SUPER ≈ 28.4 MH/s, CMP 170HX ≈ 15.7 MH/s
 (eight 60 s arms) of the 1.0.2 release build against the published 1.0.1 binary on the same card, power cap and clocks
 (CMP 170HX and RTX 4070 Ti SUPER: a single-architecture build of the same source whose kernels are instruction-identical
 to the release build). 1.0.3 runs the same kernels as 1.0.2 (identical device code; it changes only the console and the
-statistics), so these rates apply to 1.0.3 unchanged. Pool rates are a little lower (job changes, idle gaps).
+statistics), and 1.0.4 changes only how the host waits for the GPU, so these rates apply to 1.0.3 and 1.0.4 unchanged.
+Pool rates are a little lower (job changes, idle gaps).
+
+CPU use: from 1.0.4 on, each GPU's worker thread sleeps while its GPU works, about 3 % of one CPU core per GPU
+(RTX 5090: 3.0 %, same hashrate as with the busy wait). 1.0.3 and earlier kept one full CPU core busy per mining GPU.
 
 | GPU | Power cap | 1.0.1 | **1.0.2** | Gain over 1.0.1 | Power drawn (1.0.2) | MH/s per W (1.0.2) |
 |---|---:|---:|---:|---:|---:|---:|
