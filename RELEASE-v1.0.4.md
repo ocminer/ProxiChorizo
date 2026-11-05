@@ -6,8 +6,9 @@ CPU fix. Recommended for every NVIDIA rig, especially rigs with a small CPU or s
 
 - **One CPU core per GPU was busy the whole time.** Each GPU worker waited for its GPU with a busy wait, so a rig used
   one full CPU core per mining GPU (three GPUs: about 300 % CPU). The worker now sleeps while the GPU works and checks
-  only around the expected end of each launch: about 3 % of one core per GPU, with the same hashrate (matched runs on
-  an RTX 5090: 68.25 MH/s with the old wait, 68.22 MH/s with the new one).
+  only around the expected end of each launch: about 3 % of one core per GPU, with the same hashrate. Measured:
+  RTX 5090, 100 % -> 3.0 % of one core, 68.25 -> 68.22 MH/s; one process on 2x RTX 3070 + RTX 5080, 300 % -> 8.8 % in
+  total, 13.51 / 13.71 / 37.42 MH/s per GPU before and after.
 
 The GPU kernels, console, options and the stratum protocol are unchanged from 1.0.3.
 

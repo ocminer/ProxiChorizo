@@ -175,7 +175,8 @@ statistics), and 1.0.4 changes only how the host waits for the GPU, so these rat
 Pool rates are a little lower (job changes, idle gaps).
 
 CPU use: from 1.0.4 on, each GPU's worker thread sleeps while its GPU works, about 3 % of one CPU core per GPU
-(RTX 5090: 3.0 %, same hashrate as with the busy wait). 1.0.3 and earlier kept one full CPU core busy per mining GPU.
+(RTX 5090: 3.0 %; one process on 2x RTX 3070 + RTX 5080: 8.8 % in total; same hashrate as with the busy wait).
+1.0.3 and earlier kept one full CPU core busy per mining GPU (the same 3-GPU rig: 300 %).
 
 | GPU | Power cap | 1.0.1 | **1.0.2** | Gain over 1.0.1 | Power drawn (1.0.2) | MH/s per W (1.0.2) |
 |---|---:|---:|---:|---:|---:|---:|
