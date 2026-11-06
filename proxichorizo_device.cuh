@@ -448,7 +448,7 @@ __device__ __forceinline__ uint32_t fe_mul38small(uint32_t t) {
 #ifndef PX_FOLDSHIFT
 #define PX_FOLDSHIFT 0
 #endif
-template<int NB> __device__ void fe_mul_t(fe &h, const fe &f, const fe &g) {
+template<int NB, int FS = PX_FOLDSHIFT> __device__ void fe_mul_t(fe &h, const fe &f, const fe &g) {
     const uint32_t *a = f.v, *b = g.v;
     uint32_t E[16], Od[16];
     #pragma unroll
@@ -493,7 +493,7 @@ template<int NB> __device__ void fe_mul_t(fe &h, const fe &f, const fe &g) {
         : "=&r"(hi[0]), "=&r"(hi[1]), "=&r"(hi[2]), "=&r"(hi[3]), "=&r"(hi[4]), "=&r"(hi[5]), "=&r"(hi[6]), "=&r"(hi[7])
         : "r"(E[8]), "r"(E[9]), "r"(E[10]), "r"(E[11]), "r"(E[12]), "r"(E[13]), "r"(E[14]), "r"(E[15]),
           "r"(Od[7]), "r"(Od[8]), "r"(Od[9]), "r"(Od[10]), "r"(Od[11]), "r"(Od[12]), "r"(Od[13]), "r"(Od[14]));
-#if PX_FOLDSHIFT
+    if (FS) {
     // 2^256 = 38: h = lo + 38 * hi with 38 * hi = hi<<5 + hi<<2 + hi<<1 built from funnel shifts and
     // added on the integer pipe, so the fold costs no wide multiplies at all (the multiplier pipe is
     // the bottleneck on GA10x). lo = E[0..8] + Od[0..7]<<32 first, nine words.
@@ -519,7 +519,7 @@ template<int NB> __device__ void fe_mul_t(fe &h, const fe &f, const fe &g) {
 #undef PX_ADDSHIFTED
     for (int i = 0; i < 8; i++) h.v[i] = L[i];
     fe_addtop_t<NB>(h, fe_mul38small(L[8]), 0u);   // L[8] <= 40
-#else
+    } else {
     // fold row: 38 * hi into words 0..8
     asm("mad.lo.cc.u32 %0, %17, 38, %0;\n\tmadc.hi.cc.u32 %1, %17, 38, %1;\n\tmadc.lo.cc.u32 %2, %19, 38, %2;\n\tmadc.hi.cc.u32 %3, %19, 38, %3;\n\tmadc.lo.cc.u32 %4, %21, 38, %4;\n\tmadc.hi.cc.u32 %5, %21, 38, %5;\n\tmadc.lo.cc.u32 %6, %23, 38, %6;\n\tmadc.hi.cc.u32 %7, %23, 38, %7;\n\taddc.u32 %8, 0, 0;\n\tmad.lo.cc.u32 %9, %18, 38, %9;\n\tmadc.hi.cc.u32 %10, %18, 38, %10;\n\tmadc.lo.cc.u32 %11, %20, 38, %11;\n\tmadc.hi.cc.u32 %12, %20, 38, %12;\n\tmadc.lo.cc.u32 %13, %22, 38, %13;\n\tmadc.hi.cc.u32 %14, %22, 38, %14;\n\tmadc.lo.cc.u32 %15, %24, 38, %15;\n\tmadc.hi.u32 %16, %24, 38, 0;"
         : "+r"(E[0]), "+r"(E[1]), "+r"(E[2]), "+r"(E[3]), "+r"(E[4]), "+r"(E[5]), "+r"(E[6]), "+r"(E[7]), "+r"(E[8]), "+r"(Od[0]), "+r"(Od[1]), "+r"(Od[2]), "+r"(Od[3]), "+r"(Od[4]), "+r"(Od[5]), "+r"(Od[6]), "+r"(Od[7])
@@ -534,7 +534,7 @@ template<int NB> __device__ void fe_mul_t(fe &h, const fe &f, const fe &g) {
     o[0] = E[0];
     for (int i = 0; i < 8; i++) h.v[i] = o[i];
     fe_addtop_t<NB>(h, fe_mul38small(t8), 0u);
-#endif
+    }
 }
 __device__ __forceinline__ void fe_mul(fe &h, const fe &f, const fe &g) { fe_mul_t<0>(h, f, g); }
 template<int FS, int NB = 0> __device__ void fe_sq_impl(fe &h, const fe &f) {
@@ -1847,19 +1847,25 @@ __device__ __forceinline__ void mlad_step(fe &x2, fe &z2, fe &x3, fe &z3, const 
     fe_sub(E, AA, BB);
     fe_mul_small(C, E, PX_MONT_A24); fe_add(C, C, AA); fe_mul(z2, E, C);
 }
+#ifndef PX_LAD_FSS
+#define PX_LAD_FSS 0
+#endif
+#ifndef PX_LAD_FSM
+#define PX_LAD_FSM 0
+#endif
 #if PX_LADDER_NB
 // the same step on the branch-free arithmetic (no rare-carry branches; see fe_add_nb)
 __device__ __forceinline__ void mlad_step_nb(fe &x2, fe &z2, fe &x3, fe &z3, const fe &x1) {
     fe A, B, C, D, AA, BB, E, DA, CB;
     fe_add_nb(A, x2, z2); fe_sub_nb(B, x2, z2);
     fe_add_nb(C, x3, z3); fe_sub_nb(D, x3, z3);
-    fe_mul_t<1>(DA, D, A); fe_mul_t<1>(CB, C, B);
-    fe_sq_impl<0, 1>(AA, A); fe_sq_impl<0, 1>(BB, B);
-    fe_add_nb(x3, DA, CB); fe_sq_impl<0, 1>(x3, x3);
-    fe_sub_nb(z3, DA, CB); fe_sq_impl<0, 1>(z3, z3); fe_mul_t<1>(z3, z3, x1);
-    fe_mul_t<1>(x2, AA, BB);
+    fe_mul_t<1, PX_LAD_FSM>(DA, D, A); fe_mul_t<1, PX_LAD_FSM>(CB, C, B);
+    fe_sq_impl<PX_LAD_FSS, 1>(AA, A); fe_sq_impl<PX_LAD_FSS, 1>(BB, B);
+    fe_add_nb(x3, DA, CB); fe_sq_impl<PX_LAD_FSS, 1>(x3, x3);
+    fe_sub_nb(z3, DA, CB); fe_sq_impl<PX_LAD_FSS, 1>(z3, z3); fe_mul_t<1, PX_LAD_FSM>(z3, z3, x1);
+    fe_mul_t<1, PX_LAD_FSM>(x2, AA, BB);
     fe_sub_nb(E, AA, BB);
-    fe_mul_small_t<1>(C, E, PX_MONT_A24); fe_add_nb(C, C, AA); fe_mul_t<1>(z2, E, C);
+    fe_mul_small_t<1>(C, E, PX_MONT_A24); fe_add_nb(C, C, AA); fe_mul_t<1, PX_LAD_FSM>(z2, E, C);
 }
 #endif
 #if PX_LADDER_NB
@@ -2012,6 +2018,10 @@ __device__ bool fe_is_square_or_zero(const fe &w) {
     for (; r < PX_JAC_MAXR; r++) {
         uint32_t anz = a[0] | a[1] | a[2] | a[3] | a[4] | a[5] | a[6] | a[7];
         if (!anz) break;
+#if PX_JAC_B1
+        // b = 1: every later step keeps the sign ((2/1) = 1, no swap below 1, (-1/1) = 1), so the symbol is final
+        if (b[0] == 1u && (b[1] | b[2] | b[3] | b[4] | b[5] | b[6] | b[7]) == 0u) break;
+#endif
         // top word index of max(a, b) (at least 1), then the 64-bit approximations: low 32 bits exact,
         // high 32 bits = the 32 bits of a (b) just below the common bit length n
         uint32_t ah = a[7], al = a[6], bh = b[7], bl = b[6];
@@ -2065,6 +2075,49 @@ __device__ bool fe_is_square_or_zero(const fe &w) {
             uint32_t b32 = (uint32_t)nb;
             ls ^= b32 ^ (b32 >> 1);
         }
+#elif PX_JAC_MASK == 3
+        // packed form: the transition pairs travel as F = f + 2^32 g in one 64-bit word (only linear updates: select,
+        // subtract, double), so each update is one 64-bit operation instead of two; sign bits at bit 1 of ls as above
+        {
+        uint64_t F0 = 1u, F1 = (uint64_t)1u << 32;
+        #pragma unroll
+        for (int j = 0; j < PX_JAC_STEPS; j++) {
+            bool odd = ((uint32_t)xa & 1u) != 0u;
+            bool sw = odd && xa < xb;
+            if (sw) ls ^= (uint32_t)xa & (uint32_t)xb;          // both = 3 mod 4: reciprocity
+            uint64_t na = sw ? xb : xa, nb = sw ? xa : xb;
+            uint64_t nF0 = sw ? F1 : F0, nF1 = sw ? F0 : F1;
+            if (odd) { na -= nb; nF0 -= nF1; }
+            xa = na >> 1; xb = nb; F0 = nF0; F1 = nF1 << 1;
+            uint32_t b32 = (uint32_t)nb;
+            ls ^= b32 ^ (b32 >> 1);                              // (2/b) = -1 for b = 3, 5 mod 8
+        }
+        f0 = (int32_t)(uint32_t)F0; f1 = (int32_t)(uint32_t)F1;
+        g0 = (int32_t)((int64_t)(F0 - (uint64_t)(int64_t)f0) >> 32);
+        g1 = (int32_t)((int64_t)(F1 - (uint64_t)(int64_t)f1) >> 32);
+        }
+#elif PX_JAC_MASK == 4
+        // packed form as in 3, written as predicated PTX so that every update is one 64-bit select / subtract
+        {
+        uint64_t F0 = 1u, F1 = (uint64_t)1u << 32;
+        #pragma unroll
+        for (int j = 0; j < PX_JAC_STEPS; j++) {
+            asm("{\n\t.reg .pred po, ps;\n\t.reg .b32 al, bl, t, nbl;\n\t.reg .b64 na, nb, g0, g1;\n\t"
+                "cvt.u32.u64 al, %0;\n\tcvt.u32.u64 bl, %1;\n\t"
+                "and.b32 t, al, 1;\n\tsetp.ne.u32 po, t, 0;\n\t"
+                "setp.lt.and.u64 ps, %0, %1, po;\n\t"
+                "and.b32 t, al, bl;\n\t@ps xor.b32 %4, %4, t;\n\t"
+                "selp.b64 na, %1, %0, ps;\n\tselp.b64 nb, %0, %1, ps;\n\t"
+                "selp.b64 g0, %3, %2, ps;\n\tselp.b64 g1, %2, %3, ps;\n\t"
+                "@po sub.s64 na, na, nb;\n\t@po sub.s64 g0, g0, g1;\n\t"
+                "shr.b64 %0, na, 1;\n\tmov.b64 %1, nb;\n\tmov.b64 %2, g0;\n\tadd.s64 %3, g1, g1;\n\t"
+                "cvt.u32.u64 nbl, nb;\n\tshr.b32 t, nbl, 1;\n\txor.b32 t, t, nbl;\n\txor.b32 %4, %4, t;\n\t}"
+                : "+l"(xa), "+l"(xb), "+l"(F0), "+l"(F1), "+r"(ls));
+        }
+        f0 = (int32_t)(uint32_t)F0; f1 = (int32_t)(uint32_t)F1;
+        g0 = (int32_t)((int64_t)(F0 - (uint64_t)(int64_t)f0) >> 32);
+        g1 = (int32_t)((int64_t)(F1 - (uint64_t)(int64_t)f1) >> 32);
+        }
 #elif PX_JAC_MASK
         // mask form: swaps by XOR masks, sign bits accumulated unmasked in ls (only bit 0 is read)
         #pragma unroll
@@ -2105,7 +2158,7 @@ __device__ bool fe_is_square_or_zero(const fe &w) {
         (void)jac_lin(nb, f1, g1, a, b);
 #endif
                               // b stays positive (it is always an earlier a or b)
-#if PX_JAC_MASK == 2
+#if PX_JAC_MASK >= 2
         ls ^= nega ? nb[0] : 0u;                               // (-1/b) = -1 for b = 3 mod 4 (bit 1 of ls)
 #else
         ls ^= nega & (nb[0] >> 1);                             // (-1/b) = -1 for b = 3 mod 4 (bit 0 of ls)
@@ -2123,7 +2176,7 @@ __device__ bool fe_is_square_or_zero(const fe &w) {
     }
     uint32_t bo = b[1] | b[2] | b[3] | b[4] | b[5] | b[6] | b[7];
     if (b[0] != 1u || bo) return true;                        // gcd = p: w = 0, which is a valid encoding (x = 0)
-#if PX_JAC_MASK == 2
+#if PX_JAC_MASK >= 2
     return ((ls >> 1) & 1u) == 0u;
 #else
     return (ls & 1u) == 0u;
@@ -2198,9 +2251,45 @@ __global__ void __launch_bounds__(256, PX_LB_H2C) h2cx_kernel(const JobDev *job,
 #define PX_SMALL_ATTR __launch_bounds__(128, 4)
 #else
 #define PX_LADDER_ATTR __launch_bounds__(256, PX_LB_LADDER)
+#if PX_PFX_MEM
+#ifndef PX_LB_SMALL
+#define PX_LB_SMALL 3
+#endif
+#define PX_SMALL_ATTR __launch_bounds__(256, PX_LB_SMALL)
+#else
 #define PX_SMALL_ATTR __launch_bounds__(256, 1)
 #endif
+#endif
 // in place: pts[i].X = u = (1 + y) / (1 - y); u = 0 marks a point the ladder skips (y = 1: identity, y = -1: order 2)
+#if PX_PFX_MEM
+// PX_PFX_MEM: the batch inversion keeps its prefix products in the point record itself (X is free until u is written)
+// instead of a register array, so the kernel needs few registers and runs at a useful occupancy
+__global__ void PX_SMALL_ATTR prepx_kernel(const unsigned *n_ptr, HPoint *pts) {
+    unsigned n = *n_ptr, total = gridDim.x * blockDim.x;
+    for (unsigned base = blockIdx.x * blockDim.x + threadIdx.x; base < n; base += total * PX_PREP_BATCH) {
+        fe prod; fe_1(prod);
+        #pragma unroll 4
+        for (int k = 0; k < PX_PREP_BATCH; k++) {
+            unsigned i = base + (unsigned)k * total;
+            if (i < n) { fe one, d; fe_1(one); fe_copy(pts[i].X, prod); fe_sub(d, one, pts[i].Y); if (!fe_iszero(d)) fe_mul(prod, prod, d); }
+        }
+        fe inv; fe_invert(inv, prod);
+        #pragma unroll 4
+        for (int k = PX_PREP_BATCH - 1; k >= 0; k--) {
+            unsigned i = base + (unsigned)k * total;
+            if (i < n) {
+                fe y, one, d, di, u, pre; fe_copy(y, pts[i].Y); fe_1(one);
+                fe_sub(d, one, y);
+                if (fe_iszero(d)) { fe_0(pts[i].X); continue; }
+                fe_copy(pre, pts[i].X);
+                fe_mul(di, inv, pre); fe_mul(inv, inv, d);
+                fe_add(u, one, y); fe_mul(u, u, di);
+                fe_copy(pts[i].X, u);
+            }
+        }
+    }
+}
+#else
 __global__ void PX_SMALL_ATTR prepx_kernel(const unsigned *n_ptr, HPoint *pts) {
     unsigned n = *n_ptr, total = gridDim.x * blockDim.x;
     for (unsigned base = blockIdx.x * blockDim.x + threadIdx.x; base < n; base += total * PX_PREP_BATCH) {
@@ -2226,6 +2315,7 @@ __global__ void PX_SMALL_ATTR prepx_kernel(const unsigned *n_ptr, HPoint *pts) {
         }
     }
 }
+#endif
 // x-only: out.Y = X - Z, out.Z = X + Z of s*P, so y(s*P) = out.Y / out.Z
 __global__ void PX_LADDER_ATTR ladderx_kernel(const HPoint *pts, const unsigned *n_ptr, ProjectivePoint *out) {
     unsigned n = *n_ptr;
@@ -2290,6 +2380,28 @@ __device__ __forceinline__ void finishx_point(const JobDev *job, const fe &y, ui
         }
     }
 }
+#if PX_PFX_MEM
+__global__ void PX_SMALL_ATTR finishx_kernel(const JobDev *job, ProjectivePoint *pts, const unsigned *n_ptr, Hit *hits, unsigned *nhits) {
+    unsigned n = *n_ptr, total = gridDim.x * blockDim.x;
+    for (unsigned base = blockIdx.x * blockDim.x + threadIdx.x; base < n; base += total * PX_SPLIT_FINISH) {
+        fe prod; fe_1(prod);
+        #pragma unroll 4
+        for (int k = 0; k < PX_SPLIT_FINISH; k++) {
+            unsigned i = base + (unsigned)k * total;
+            if (i < n) { fe_copy(pts[i].X, prod); fe_mul(prod, prod, pts[i].Z); }
+        }
+        fe inv; fe_invert(inv, prod);
+        #pragma unroll 1
+        for (int k = PX_SPLIT_FINISH - 1; k >= 0; k--) {
+            unsigned i = base + (unsigned)k * total;
+            if (i < n) {
+                fe zi, pre; fe_copy(pre, pts[i].X); fe_mul(zi, inv, pre); fe_mul(inv, inv, pts[i].Z);
+                if (pts[i].valid) { fe y; fe_mul(y, pts[i].Y, zi); finishx_point(job, y, pts[i].nonce, hits, nhits); }
+            }
+        }
+    }
+}
+#else
 __global__ void PX_SMALL_ATTR finishx_kernel(const JobDev *job, const ProjectivePoint *pts, const unsigned *n_ptr, Hit *hits, unsigned *nhits) {
     unsigned n = *n_ptr, total = gridDim.x * blockDim.x;
     for (unsigned base = blockIdx.x * blockDim.x + threadIdx.x; base < n; base += total * PX_SPLIT_FINISH) {
@@ -2311,6 +2423,7 @@ __global__ void PX_SMALL_ATTR finishx_kernel(const JobDev *job, const Projective
         }
     }
 }
+#endif
 // keep only candidates whose beta is the exact output of their nonce; one block, any hit count up to MAX_HITS
 __global__ void __launch_bounds__(128, 1) resolve_kernel(const JobDev *job, Hit *hits, unsigned *nhits) {
     __shared__ uint8_t keep[MAX_HITS];
@@ -2592,7 +2705,7 @@ static void v_free(void *scratch) { v_free_one(scratch); }
 // PX_SLICES: the launch is split into slices on their own streams. Slice i hashes to the curve only after slice
 // i-1 has (event chain), so its short, poorly occupied kernels (hash-to-curve passes, prep) run underneath the
 // other slices' ladders instead of on an otherwise idle GPU; the finish stages overlap the same way.
-struct SliceSet { Scratch *sc[PX_SLICES]; size_t n[PX_SLICES]; cudaStream_t st[PX_SLICES]; cudaEvent_t h2c_done[PX_SLICES], prep_done[PX_SLICES], lad_done[PX_SLICES]; int sms; };
+struct SliceSet { Scratch *sc[PX_SLICES]; size_t n[PX_SLICES]; cudaStream_t st[PX_SLICES]; cudaEvent_t h2c_done[PX_SLICES], prep_done[PX_SLICES], lad_done[PX_SLICES]; int sms; cudaStream_t hs, ls; };
 static void *v_alloc_one(size_t n);
 static void v_free_one(void *scratch);
 static void *v_alloc_slices(size_t n) {
@@ -2608,11 +2721,15 @@ static void *v_alloc_slices(size_t n) {
         CUDA_CHECK(cudaEventCreateWithFlags(&ss->prep_done[i], cudaEventDisableTiming));
         CUDA_CHECK(cudaEventCreateWithFlags(&ss->lad_done[i], cudaEventDisableTiming));
     }
+    {   int lo = 0, hi = 0; CUDA_CHECK(cudaDeviceGetStreamPriorityRange(&lo, &hi));
+        CUDA_CHECK(cudaStreamCreateWithPriority(&ss->ls, cudaStreamDefault, hi));     // ladder: placed first when an SM frees up
+        CUDA_CHECK(cudaStreamCreateWithPriority(&ss->hs, cudaStreamDefault, lo)); }
     return ss;
 }
 static void v_free_slices(void *scratch) {
     SliceSet *ss = (SliceSet *)scratch; if (!ss) return;
     for (int i = 0; i < PX_SLICES; i++) { v_free_one(ss->sc[i]); cudaStreamDestroy(ss->st[i]); cudaEventDestroy(ss->h2c_done[i]); cudaEventDestroy(ss->prep_done[i]); cudaEventDestroy(ss->lad_done[i]); }
+    cudaStreamDestroy(ss->hs); cudaStreamDestroy(ss->ls);
     delete ss;
 }
 static void mine_x_slice(Scratch *sc, size_t N, cudaStream_t st, cudaEvent_t wait_ev, cudaEvent_t done_ev, int blocks, int threads,
@@ -2697,9 +2814,54 @@ static void mine_x_pipe(SliceSet *ss, int threads, const JobDev *job, uint64_t n
     }
 }
 #endif
+#if PX_CORUN == 3
+// PX_CORUN 3: one persistent ladder block per multiprocessor (<= 128 registers, 384 threads) on a high-priority stream;
+// everything else (hash to curve, prep, finish) runs as 128-thread blocks on a low-priority helper stream in the
+// register space the ladder leaves, one slice ahead (hash, prep) and one slice behind (finish) of the ladder.
+#ifndef PX_SMALL_TPB
+#define PX_SMALL_TPB 128
+#endif
+static void pipe3_front(SliceSet *ss, int i, const JobDev *job, uint64_t nb) {
+    Scratch *sc = ss->sc[i]; size_t N = ss->n[i]; cudaStream_t st = ss->hs; const int HT = PX_SMALL_TPB;
+    CUDA_CHECK(cudaMemsetAsync(sc->cnt, 0, (PX_MAX_PASSES + 1) * sizeof(unsigned), st));
+    int g1 = (int)((N + HT - 1) / HT); if (g1 < 1) g1 = 1;
+    sha_prep_kernel<<<1, 32, 0, st>>>(job, sc->mid);
+    h2cx_kernel<<<g1, HT, 0, st>>>(job, sc->mid, nb, nullptr, nullptr, sc->cnt + PX_MAX_PASSES + 1, sc->pts, sc->cnt, sc->nonce[0], sc->ctr[0], sc->cnt + 1);
+    for (int p = 1; p < PX_MAX_PASSES; p++) {
+        int in = (p - 1) & 1, out = p & 1;
+        h2cx_kernel<<<max(1, g1 >> p), HT, 0, st>>>(job, sc->mid, nb, sc->nonce[in], sc->ctr[in], sc->cnt + p, sc->pts, sc->cnt, sc->nonce[out], sc->ctr[out], sc->cnt + p + 1);
+    }
+    int gp = (int)((N + (size_t)HT * PX_PREP_BATCH - 1) / ((size_t)HT * PX_PREP_BATCH)); if (gp < 1) gp = 1;
+    prepx_kernel<<<gp, HT, 0, st>>>(sc->cnt, sc->pts);
+    CUDA_CHECK(cudaEventRecord(ss->prep_done[i], st));
+}
+static void mine_x_pipe3(SliceSet *ss, const JobDev *job, uint64_t nonce_base, Hit *hits, unsigned *nhits) {
+    const int HT = PX_SMALL_TPB;
+    uint64_t off[PX_SLICES]; uint64_t o = 0;
+    for (int i = 0; i < PX_SLICES; i++) { off[i] = o; o += ss->n[i]; }
+    pipe3_front(ss, 0, job, nonce_base + off[0]);
+    for (int i = 0; i < PX_SLICES; i++) {
+        Scratch *sc = ss->sc[i];
+        CUDA_CHECK(cudaStreamWaitEvent(ss->ls, ss->prep_done[i], 0));
+        ladderx_kernel<<<ss->sms * PX_LADDER_BPS, PX_LADDER_TPB, 0, ss->ls>>>(sc->pts, sc->cnt, sc->projective);
+        CUDA_CHECK(cudaEventRecord(ss->lad_done[i], ss->ls));
+        if (i + 1 < PX_SLICES) pipe3_front(ss, i + 1, job, nonce_base + off[i + 1]);
+        CUDA_CHECK(cudaStreamWaitEvent(ss->hs, ss->lad_done[i], 0));
+        size_t N = ss->n[i];
+        int gf = (int)((N + (size_t)HT * PX_SPLIT_FINISH - 1) / ((size_t)HT * PX_SPLIT_FINISH)); if (gf < 1) gf = 1;
+        finishx_kernel<<<gf, HT, 0, ss->hs>>>(job, sc->projective, sc->cnt, hits, nhits);
+    }
+}
+#endif
 static void v_mine(int blocks, int threads, const JobDev *job, uint64_t nonce_base, uint64_t stride, int iters, Hit *hits, unsigned *nhits, void *scratch) {
 #if PX_XONLY && PX_SLICES > 1
     {   SliceSet *ss = (SliceSet *)scratch;
+#if PX_CORUN == 3
+        mine_x_pipe3(ss, job, nonce_base, hits, nhits);
+        (void)blocks; (void)threads; (void)stride; (void)iters;
+        resolve_kernel<<<1, 128>>>(job, hits, nhits);
+        return;
+#endif
 #if PX_CORUN == 2
         mine_x_pipe(ss, threads, job, nonce_base, hits, nhits);
         (void)blocks; (void)stride; (void)iters;
@@ -2827,6 +2989,11 @@ static const VariantOps ops = { PX_VARIANT_NAME,
 #undef PX_JAC_TRIM
 #undef PX_SMALLMUL_WIDE
 #undef PX_JAC_MASK
+#undef PX_PFX_MEM
+#undef PX_JAC_B1
+#undef PX_LAD_FSS
+#undef PX_LAD_FSM
+#undef PX_LB_SMALL
 #undef PX_JAC_MAXR
 #undef PX_NOBRANCH
 #undef PX_PREP_BATCH
