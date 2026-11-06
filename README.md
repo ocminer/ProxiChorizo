@@ -219,6 +219,26 @@ builds of both versions. Each row compares the same card and power settings. See
 and a separate RTX 5080 returned 113 accepted shares, zero rejected and one stale.
 Those live checks qualify job changes; share counts are not a throughput comparison.
 
+**Job changes.** When the pool sends a new job, 1.0.6 stops the GPU batch that is still
+running for the old job instead of finishing it (`PX_NO_ABORT=1` restores the 1.0.5
+behaviour). `--bench` mines one fixed job, so the table above does not show this gain.
+Live pool A/B on our own rig (one process, 2x RTX 3070 + RTX 5080, 5 minutes per mode,
+33 job changes per card), GPU time lost per job change:
+
+| GPU | 1.0.5 | 1.0.6 | Useful work at the pool's job cadence |
+|---|---:|---:|---:|
+| RTX 3070 (sample 1) | 200.7 ms | 106.6 ms | about +1.0 % |
+| RTX 3070 (sample 2) | 197.8 ms | 96.6 ms | about +1.0 % |
+| RTX 5080 | 134.1 ms | 77.0 ms | about +0.6 % |
+| RTX PRO 6000 | 153 ms | 73 ms | about +0.75 % |
+
+Checking for new jobs during a launch costs about 1 to 1.5 % more of one CPU core per GPU
+(roughly 3 to 3.6 % instead of about 2 %).
+
+**Blackwell ladder order.** The reordered sm_120 ladder gives +0.38 % on an RTX PRO 6000
+(600 W cap, `--bench`, measured separately with a build that has the same ladder code)
+and about +0.2 % on the RTX 5090 (table above).
+
 ### AMD 1.0.6 benchmarks
 
 The portable 1.0.6 OpenCL build was measured against the published 1.0.5 Linux

@@ -24,6 +24,16 @@ also adjusted. Fixed-job rates on eight tested GPUs remain within 0.23% of 1.0.5
 see the README and packaged CSV for the measured rates. Live job-change checks
 returned 113 accepted shares, zero rejected and one stale across four GPUs.
 
+New-job abort: when the pool sends a new job, the running GPU batch for the old job
+is stopped (`PX_NO_ABORT=1` restores the 1.0.5 behaviour). In a live pool A/B on our
+own rig the GPU time lost per job change fell from about 200 ms to about 100 ms on the
+RTX 3070 and from 134 ms to 77 ms on the RTX 5080 (RTX PRO 6000: 153 ms to 73 ms).
+That is roughly +1.0 % useful work on the RTX 3070, +0.6 % on the RTX 5080 and +0.75 %
+on the RTX PRO 6000 at the pool's job cadence; `--bench` uses one fixed job and does not
+show it. The job check costs about 1 to 1.5 % more of one CPU core per GPU.
+The reordered sm_120 ladder adds +0.38 % on the RTX PRO 6000 and about +0.2 % on the
+RTX 5090 in `--bench`.
+
 ## Validation and packages
 
 The portable AMD build passed independent VRF, field arithmetic, complete-output
