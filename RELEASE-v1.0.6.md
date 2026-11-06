@@ -41,3 +41,11 @@ The XTX host's ROCm 7.14 event-thread CPU spin remains a runtime limitation.
 MI50 results use a 150 W cap; the earlier 225 W development trial reached the
 junction-temperature guard and was excluded. This qualification is not a long
 soak or a claim of support for every untested AMD model.
+
+## Benchmark documentation correction
+
+All eight NVIDIA benchmark rows used the full portable binaries of both versions.
+The README and CSV frozen into the v1.0.6 build incorrectly label the RTX 4070 Ti
+SUPER comparison as using architecture-specific builds. The current repository
+README and CSV correct that provenance label; the rates, gains and miner binaries
+are unchanged.

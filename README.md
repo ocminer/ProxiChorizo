@@ -213,9 +213,8 @@ should not be treated as a guaranteed speed increase.
 | CMP 170HX | 250 W | 17.244 | 17.236 | -0.05% |
 
 Four 60-second arms per version, alternating A/B/B/A/A/B/B/A, measured on
-2026-11-06. The two RTX 5090 comparisons discard a separate warm-up arm. The Ada
-comparison uses architecture-specific builds; the other rows use the full portable
-build. Each row compares the same card and power settings. See the
+2026-11-06. The two RTX 5090 comparisons discard a separate warm-up arm. All rows use the full portable
+builds of both versions. Each row compares the same card and power settings. See the
 [CSV](benchmarks/nvidia-1.0.6.csv). Live job-change checks on three GPUs in one process
 and a separate RTX 5080 returned 113 accepted shares, zero rejected and one stale.
 Those live checks qualify job changes; share counts are not a throughput comparison.
