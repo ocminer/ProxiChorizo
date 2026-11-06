@@ -1816,8 +1816,14 @@ __device__ __forceinline__ void fe_sub_nb(fe &h, const fe &f, const fe &g) {
 // h = f * k for a small constant k < 2^20: eight 32x32->64 products, one carry chain, the top word folded as 38
 template<int NB> __device__ __forceinline__ void fe_mul_small_t(fe &h, const fe &f, uint32_t k) {
     uint32_t lo[8], hi[8], top;
+#if PX_SMALLMUL_WIDE
+    // one 32x32->64 product per limb (IMAD.WIDE), then the same carry chain
+    #pragma unroll
+    for (int i = 0; i < 8; i++) { uint64_t t = (uint64_t)f.v[i] * k; lo[i] = (uint32_t)t; hi[i] = (uint32_t)(t >> 32); }
+#else
     #pragma unroll
     for (int i = 0; i < 8; i++) { lo[i] = f.v[i] * k; hi[i] = __umulhi(f.v[i], k); }
+#endif
     asm("add.cc.u32 %1, %9, %17;\n\t"
         "addc.cc.u32 %2, %10, %18;\n\t" "addc.cc.u32 %3, %11, %19;\n\t" "addc.cc.u32 %4, %12, %20;\n\t"
         "addc.cc.u32 %5, %13, %21;\n\t" "addc.cc.u32 %6, %14, %22;\n\t" "addc.cc.u32 %7, %15, %23;\n\t"
@@ -1960,13 +1966,14 @@ __global__ void __launch_bounds__(256, PX_LB_LADDER) ladder_kernel(const HPoint 
 #endif
 // r = (f*a + g*b) / 2^PX_JAC_STEPS for |f|, |g| <= 2^PX_JAC_STEPS (exact division); returns 1 if the result was
 // negative (r is then its absolute value)
-__device__ __forceinline__ uint32_t jac_lin(uint32_t r[8], int32_t f, int32_t g, const uint32_t a[8], const uint32_t b[8]) {
+__device__ __forceinline__ uint32_t jac_lin(uint32_t r[8], int32_t f, int32_t g, const uint32_t a[8], const uint32_t b[8], int L = 8) {
     // positive and negative parts accumulated separately as unsigned 9-word sums
     uint32_t fa = (uint32_t)(f < 0 ? -f : f), ga = (uint32_t)(g < 0 ? -g : g);
     uint32_t P[9], N[9];
     uint64_t cp = 0, cn = 0;
     #pragma unroll
     for (int i = 0; i < 8; i++) {
+        if (i >= L) { P[i] = (uint32_t)cp; N[i] = (uint32_t)cn; cp = cn = 0; continue; }   // warp-uniform: a, b < 2^(32 L)
         uint64_t x = (uint64_t)fa * a[i], y = (uint64_t)ga * b[i];
         uint64_t px = f < 0 ? 0 : x, nx = f < 0 ? x : 0, py = g < 0 ? 0 : y, ny = g < 0 ? y : 0;
         // each sum of two 64-bit products plus a carry < 2^34 stays below 2^64 (products < 2^61)
@@ -2017,6 +2024,24 @@ __device__ bool fe_is_square_or_zero(const fe &w) {
         uint32_t ta = __funnelshift_l(al, ah, s), tb = __funnelshift_l(bl, bh, s);
         // n <= 64 (a, b both in words 0..1): use the exact values
         bool small = ((a[2] | a[3] | a[4] | a[5] | a[6] | a[7] | b[2] | b[3] | b[4] | b[5] | b[6] | b[7]) == 0);
+#if PX_JAC_TRIM
+        if (small) {   // both below 2^64: finish on the exact values, no transition matrix (at most ~128 divsteps)
+            uint64_t ea = ((uint64_t)a[1] << 32) | a[0], eb = ((uint64_t)b[1] << 32) | b[0];
+            while (ea) {
+                uint32_t odd = (uint32_t)ea & 1u;
+                if (odd && ea < eb) { ls ^= (((uint32_t)ea & (uint32_t)eb) >> 1) & 1u; uint64_t t = ea; ea = eb; eb = t; }
+                if (odd) ea -= eb;
+                ea >>= 1;
+                ls ^= (((uint32_t)eb + 2u) >> 2) & 1u;
+            }
+            return eb != 1 || (ls & 1u) == 0u;
+        }
+        int Lt = 8;
+        {   int tl = 7;
+            #pragma unroll
+            for (int i = 7; i >= 1; i--) if ((a[i] | b[i]) == 0 && tl == i) tl = i - 1;
+            Lt = __reduce_max_sync(__activemask(), tl + 1); }
+#endif
         uint64_t xa = ((uint64_t)(small ? a[1] : ta) << 32) | a[0];
         uint64_t xb = ((uint64_t)(small ? b[1] : tb) << 32) | b[0];
         int32_t f0 = 1, g0 = 0, f1 = 0, g1 = 1;
@@ -2072,8 +2097,14 @@ __device__ bool fe_is_square_or_zero(const fe &w) {
         }
 #endif
         uint32_t na[8], nb[8];
+#if PX_JAC_TRIM
+        uint32_t nega = jac_lin(na, f0, g0, a, b, Lt);
+        (void)jac_lin(nb, f1, g1, a, b, Lt);
+#else
         uint32_t nega = jac_lin(na, f0, g0, a, b);
-        (void)jac_lin(nb, f1, g1, a, b);                       // b stays positive (it is always an earlier a or b)
+        (void)jac_lin(nb, f1, g1, a, b);
+#endif
+                              // b stays positive (it is always an earlier a or b)
 #if PX_JAC_MASK == 2
         ls ^= nega ? nb[0] : 0u;                               // (-1/b) = -1 for b = 3 mod 4 (bit 1 of ls)
 #else
@@ -2625,9 +2656,12 @@ static void mine_x_slice(Scratch *sc, size_t N, cudaStream_t st, cudaEvent_t wai
 // PX_CORUN 2: every slice hashes to the curve first, back to back at full width (those kernels do not fit beside the
 // ladder); then the ladders run one after another, one persistent 384-thread block per multiprocessor, and the prep of
 // slice i+1 and the finish of slice i-1 run in the register space the ladder leaves free (128-thread blocks).
+#ifndef PX_SMALL_TPB
+#define PX_SMALL_TPB 128
+#endif
 static void mine_x_pipe(SliceSet *ss, int threads, const JobDev *job, uint64_t nonce_base, Hit *hits, unsigned *nhits) {
     (void)threads;
-    const int HT = 128;
+    const int HT = PX_SMALL_TPB;
     uint64_t off = 0;
     for (int i = 0; i < PX_SLICES; i++) {
         Scratch *sc = ss->sc[i]; size_t N = ss->n[i]; cudaStream_t st = ss->st[i];
@@ -2778,6 +2812,7 @@ static const VariantOps ops = { PX_VARIANT_NAME,
 #undef PX_LADDER
 #undef PX_LADDER_CSWAP
 #undef PX_CORUN
+#undef PX_SMALL_TPB
 #undef PX_LADDER_MAXREG
 #undef PX_LADDER_TPB
 #undef PX_LADDER_BPS
@@ -2789,6 +2824,8 @@ static const VariantOps ops = { PX_VARIANT_NAME,
 #undef PX_XONLY
 #undef PX_H2C_K
 #undef PX_JAC_STEPS
+#undef PX_JAC_TRIM
+#undef PX_SMALLMUL_WIDE
 #undef PX_JAC_MASK
 #undef PX_JAC_MAXR
 #undef PX_NOBRANCH
