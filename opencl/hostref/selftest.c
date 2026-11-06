@@ -3,11 +3,21 @@
 // width-5 wNAF digits) and compares H, 8*Gamma and beta with every vector.
 #include "shim.h"
 #include "proxichorizo.cl"   // found via -I.. (the real kernel source, unmodified)
+#include "../merged_scalar.h"
+#include "../job_midstate.h"
 static int unhex(const char *h, int n, u8 *out) { for (int i = 0; i < n; i++) { unsigned v; if (sscanf(h + 2 * i, "%2x", &v) != 1) return 0; out[i] = (u8)v; } return 1; }
-static const char *field(const char *line, const char *key) { char k[64]; snprintf(k, sizeof k, "\"%s\":\"", key); const char *p = strstr(line, k); return p ? p + strlen(k) : NULL; }
+static const char *field(const char *line, const char *key) {
+    char k[64]; snprintf(k,sizeof k,"\"%s\"",key); const char *p=strstr(line,k);
+    if(!p)return NULL; p+=strlen(k);
+    while(*p==' ' || *p=='\t')p++;
+    if(*p++!=':')return NULL;
+    while(*p==' ' || *p=='\t')p++;
+    return *p=='"'?p+1:NULL;
+}
 static void prepare_job(JobDev *jd) {
     u8 m[72]; memset(m, 0, sizeof m); m[0] = 0x03; m[1] = 0x01; memcpy(m + 2, jd->pk, 32); memcpy(m + 34, jd->prefix, 37);
     for (int i = 0; i < 9; i++) { u64 w = 0; for (int j = 0; j < 8; j++) w = (w << 8) | (u64)(i * 8 + j < 71 ? m[i * 8 + j] : 0); jd->mw[i] = w; }
+    prepare_sha_mid(jd);
     for (int i = 0; i < 8; i++) { u64 w = 0; for (int j = 0; j < 8; j++) w = (w << 8) | jd->beat[8 * i + j]; jd->beat_w[i] = w; }
 }
 // same digit computation as set_scalar() in proxichorizo_cl.cpp
@@ -53,5 +63,5 @@ int main(int argc, char **argv) {
         if (ok != 1 || memcmp(oh, hb, 32) || memcmp(ocg, cgb, 32) || memcmp(ob, bb, 64)) { bad++; printf("vector %d FAILED: ok=%d H %s 8G %s beta %s\n", n, ok, memcmp(oh, hb, 32) ? "MISMATCH" : "ok", memcmp(ocg, cgb, 32) ? "MISMATCH" : "ok", memcmp(ob, bb, 64) ? "MISMATCH" : "ok"); }
     }
     printf("host selftest PX_FE=%d: %d vectors, %d failed\n", PX_FE, n, bad);
-    return bad != 0;
+    return bad != 0 || n == 0;
 }

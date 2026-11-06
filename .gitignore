@@ -63,3 +63,8 @@ dist/
 /opencl/isa/
 /opencl/hostref/fetest-*
 /opencl/hostref/selftest-*
+
+/independent-vectors.jsonl
+/opencl/point-edges
+/opencl/wait-events
+/opencl/hostref/ladder-edges

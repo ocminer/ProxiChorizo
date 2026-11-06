@@ -11,10 +11,12 @@ BINS = $(foreach f,$(FES),fetest-$(f) selftest-$(f))
 all: $(BINS)
 fetest-%: fetest.c shim.h ../proxichorizo.cl
 	$(CC) $(CFLAGS) $(DEFS) -DPX_FE=$* -I.. -o $@ fetest.c
-selftest-%: selftest.c shim.h ../proxichorizo.cl
+selftest-%: selftest.c shim.h ../proxichorizo.cl ../merged_scalar.h ../job_midstate.h
 	$(CC) $(CFLAGS) $(DEFS) -DPX_FE=$* -I.. -o $@ selftest.c
 check: all
 	@for f in $(FES); do ./fetest-$$f || exit 1; ./selftest-$$f ../../vectors.json || exit 1; done
+ladder-edges: ladder_edges.c shim.h ../proxichorizo.cl ../merged_scalar.h
+	$(CC) $(CFLAGS) $(DEFS) -DPX_FE=29 -DPX_EDWARDS_OPT=1 -DPX_LADDER=1 -DPX_XONLY=1 -DPX_JACOBI=1 -DPX_SHA_MID=1 -DPX_SPLIT_FINISH=16 -I.. -o $@ ladder_edges.c
 clean:
-	rm -f $(BINS)
+	rm -f $(BINS) ladder-edges
 .PHONY: all check clean

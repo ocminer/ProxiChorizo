@@ -1,0 +1,4 @@
+gpu,power_cap_w,baseline_version,baseline_mhs,development_mhs,gain_percent,development_power_w,development_cpu_percent_one_core,max_junction_c,arms,seconds_per_arm,development_binary_sha256
+Radeon RX 7900 XTX,303.0,v1.0.5 clean source build,12.225000,13.526806,10.648724,302.509,100.028,94.0,4,60,60656cc4c3bf4af04111c09ff67d3d69497c973cce3c6dd3795a61b9306fbfc6
+Radeon RX 7600 XT,165.0,v1.0.5 clean source build,4.053000,4.515959,11.422638,165.118,1.270,92.0,4,60,60656cc4c3bf4af04111c09ff67d3d69497c973cce3c6dd3795a61b9306fbfc6
+Instinct MI50,150.0,v1.0.5 clean source build,5.753500,6.880060,19.580429,148.603,1.004,76.0,4,60,60656cc4c3bf4af04111c09ff67d3d69497c973cce3c6dd3795a61b9306fbfc6

@@ -34,12 +34,15 @@ typedef uchar u8; typedef uint u32; typedef ulong u64;
 #ifndef PX_WG
 #define PX_WG 256
 #endif
+#ifndef PX_EDWARDS_OPT
+#define PX_EDWARDS_OPT 0
+#endif
 #define MAX_HITS 8192
 
 // mw[0..7] = the first 64 bytes of the hash-to-curve message (03 01 pk prefix...) as big-endian
 // words, mw[8] = bytes 64..70 (the prefix tail) in the top 56 bits; beat_w = beat as 8 big-endian
 // words. Both are filled by the host so the kernels never touch byte arrays.
-typedef struct { u8 pk[32]; u8 prefix[64]; int prefix_len; int k; u8 beat[64]; u64 mw[9]; u64 beat_w[8]; } JobDev;
+typedef struct { u8 pk[32]; u8 prefix[64]; int prefix_len; int k; u8 beat[64]; u64 mw[9]; u64 beat_w[8]; u64 h2c_mid[8]; } JobDev;
 typedef struct { u64 nonce; u8 beta[64]; } Hit;
 
 // ----------------------------------------------------------------------------
@@ -404,7 +407,11 @@ static inline void fe_from_le(fe *h, const u64 le[4]) {
 #endif
 
 // derived constants and the key, written once by init_kernel / the host
-typedef struct { fe sqrt_m1, d, d2; u8 scalar[32]; char wnaf[260]; int wnaf_len; int pad; } Consts;
+typedef struct { fe sqrt_m1, d, d2; u8 scalar[32]; char wnaf[260]; int wnaf_len; int pad;
+#if PX_LADDER
+    u8 ladder_scalar[32]; int ladder_top;
+#endif
+} Consts;
 typedef struct { fe sqrt_m1, d, d2; } Cfe;
 
 // (x^(2^250-1), x^11)
@@ -445,12 +452,20 @@ static bool fe_sqrt_ratio_i(fe *r, const fe *u, const fe *v, const Cfe *C) {
     fe_mul(r, &uv3, &t);
     fe_sq(&check, r); fe_mul(&check, &check, v);
     fe_neg(&nu, u);
+#if !PX_EDWARDS_OPT
     fe_mul(&nui, &nu, &C->sqrt_m1);
+#endif
     bool correct = fe_eq(&check, u);
     bool flipped = fe_eq(&check, &nu);
+#if !PX_EDWARDS_OPT
     bool flipped_i = fe_eq(&check, &nui);
+#endif
     fe_mul(&rp, r, &C->sqrt_m1);
+#if PX_EDWARDS_OPT
+    if (flipped) fe_copy(r, &rp);
+#else
     if (flipped || flipped_i) fe_copy(r, &rp);
+#endif
     if (fe_isnegative(r)) fe_neg(r, r);
     return correct || flipped;
 }
@@ -526,6 +541,19 @@ static void ge_dbl_noT(ge *r, const ge *p) {
 // one doubling for both cases of the scalar multiplication loop: T only when
 // an addition follows (wantT is uniform across the grid). One call site keeps a
 // single copy of the doubling in the instruction cache (a +10 % on NVIDIA).
+#if PX_EDWARDS_OPT
+static void ge_dbl_opt(ge *r, const ge *p, bool wantT) {
+    // A negated projective representative saves two field additions.
+    fe A, B, Cc, E, F, G, sum, t;
+    fe_sq(&A,&p->X); fe_sq(&B,&p->Y);
+    fe_sq(&Cc,&p->Z); fe_add(&Cc,&Cc,&Cc);
+    fe_add(&t,&p->X,&p->Y); fe_sq(&t,&t);
+    fe_add(&sum,&A,&B); fe_sub(&E,&t,&sum);
+    fe_sub(&G,&B,&A); fe_sub(&F,&Cc,&G);
+    fe_mul(&r->X,&E,&F); fe_mul(&r->Y,&G,&sum); fe_mul(&r->Z,&F,&G);
+    if(wantT) fe_mul(&r->T,&E,&sum);
+}
+#else
 static void ge_dbl_opt(ge *r, const ge *p, bool wantT) {
     fe A, B, Cc, D, E, F, G, H, t;
     fe_sq(&A, &p->X); fe_sq(&B, &p->Y);
@@ -536,6 +564,7 @@ static void ge_dbl_opt(ge *r, const ge *p, bool wantT) {
     fe_mul(&r->X, &E, &F); fe_mul(&r->Y, &G, &H); fe_mul(&r->Z, &F, &G);
     if (wantT) fe_mul(&r->T, &E, &H);
 }
+#endif
 static void ge_add(ge *r, const ge *p, const ge *q, const Cfe *C) {
     fe A, B, Cc, D, E, F, G, H, t1, t2;
     fe_sub(&t1, &p->Y, &p->X); fe_sub(&t2, &q->Y, &q->X); fe_mul(&A, &t1, &t2);
@@ -551,7 +580,7 @@ typedef struct { fe YpX, YmX, T2d, Z2; } geCached;
 static inline void ge_cache(geCached *c, const ge *p, const Cfe *C) {
     fe_add(&c->YpX, &p->Y, &p->X); fe_sub(&c->YmX, &p->Y, &p->X); fe_mul(&c->T2d, &p->T, &C->d2); fe_add(&c->Z2, &p->Z, &p->Z);
 }
-static void ge_add_cached(ge *r, const ge *p, const geCached *q, bool neg) {
+static void ge_add_cached_impl(ge *r, const ge *p, const geCached *q, bool neg, bool wantT) {
     fe A, B, Cc, D, E, F, G, H, t1, t2;
     fe_sub(&t1, &p->Y, &p->X); fe_add(&t2, &p->Y, &p->X);
     fe_mul(&A, &t1, neg ? &q->YpX : &q->YmX);
@@ -559,8 +588,10 @@ static void ge_add_cached(ge *r, const ge *p, const geCached *q, bool neg) {
     fe_mul(&Cc, &p->T, &q->T2d); if (neg) fe_neg(&Cc, &Cc);
     fe_mul(&D, &p->Z, &q->Z2);
     fe_sub(&E, &B, &A); fe_sub(&F, &D, &Cc); fe_add(&G, &D, &Cc); fe_add(&H, &B, &A);
-    fe_mul(&r->X, &E, &F); fe_mul(&r->Y, &G, &H); fe_mul(&r->T, &E, &H); fe_mul(&r->Z, &F, &G);
+    fe_mul(&r->X, &E, &F); fe_mul(&r->Y, &G, &H); if(wantT) fe_mul(&r->T, &E, &H); fe_mul(&r->Z, &F, &G);
 }
+
+static inline void ge_add_cached(ge *r,const ge *p,const geCached *q,bool neg) { ge_add_cached_impl(r,p,q,neg,true); }
 
 #if PX_WINDOW == 5
 // width-5 wNAF over the constant scalar (digits uniform across the grid: no divergence)
@@ -570,15 +601,22 @@ static void ge_scalarmult_const(ge *r, const ge *p, const Cfe *C, __global const
     ge_dbl(&P2, p);
     ge_copy(&acc, p);
     ge_cache(&T[0], &acc, C);
+#if PX_EDWARDS_OPT
+    geCached C2; ge_cache(&C2,&P2,C);
+    __attribute__((opencl_unroll_hint(1)))
+    for(int i=1;i<8;i++) { ge_add_cached(&acc,&acc,&C2,false); ge_cache(&T[i],&acc,C); }
+#else
     __attribute__((opencl_unroll_hint(1)))
     for (int i = 1; i < 8; i++) { ge_add(&acc, &acc, &P2, C); ge_cache(&T[i], &acc, C); }
+#endif
     ge_identity(r);
     int len = K->wnaf_len;
     // one doubling site and one addition site: the hot loop at half its size
     for (int i = len - 1; i >= 0; i--) {
         int d = K->wnaf[i];
         ge_dbl_opt(r, r, d != 0);
-        if (d) ge_add_cached(r, r, &T[(d < 0 ? -d : d) >> 1], d < 0);
+        // The next doubling reads XYZ only; T is unnecessary after a loop addition.
+        if (d) ge_add_cached_impl(r, r, &T[(d < 0 ? -d : d) >> 1], d < 0, !PX_EDWARDS_OPT);
     }
 }
 #elif PX_WINDOW == 0
@@ -652,6 +690,38 @@ static void sha512_block(const u64 Win[16], u64 out[8]) {
     out[0] = a + 0x6a09e667f3bcc908UL; out[1] = b + 0xbb67ae8584caa73bUL; out[2] = c + 0x3c6ef372fe94f82bUL; out[3] = d + 0xa54ff53a5f1d36f1UL;
     out[4] = e + 0x510e527fade682d1UL; out[5] = f + 0x9b05688c2b3e6c1fUL; out[6] = g + 0x1f83d9abfb41bd6bUL; out[7] = h + 0x5be0cd19137e2179UL;
 }
+#if PX_SHA_MID
+static void sha512_block_mid(const u64 Win[16], u64 out[8], __global const JobDev *job) {
+    u64 W[16];
+    for (int i = 0; i < 16; i++) W[i] = Win[i];
+    u64 a=job->h2c_mid[0],b=job->h2c_mid[1],c=job->h2c_mid[2],d=job->h2c_mid[3];
+    u64 e=job->h2c_mid[4],f=job->h2c_mid[5],g=job->h2c_mid[6],h=job->h2c_mid[7];
+    #pragma unroll
+    for (int i = 8; i < 80; i++) {
+        u64 wi;
+        if (i < 16) wi = W[i];
+        else {
+            u64 w15 = W[(i - 15) & 15], w2 = W[(i - 2) & 15];
+            u64 s0 = rotr64(w15, 1) ^ rotr64(w15, 8) ^ (w15 >> 7);
+            u64 s1 = rotr64(w2, 19) ^ rotr64(w2, 61) ^ (w2 >> 6);
+            wi = W[i & 15] + s0 + W[(i - 7) & 15] + s1;
+            W[i & 15] = wi;
+        }
+        u64 S1 = rotr64(e, 14) ^ rotr64(e, 18) ^ rotr64(e, 41);
+        u64 ch = (e & f) ^ (~e & g);
+        u64 t1 = h + S1 + ch + K512[i] + wi;
+        u64 S0 = rotr64(a, 28) ^ rotr64(a, 34) ^ rotr64(a, 39);
+        u64 mj = (a & b) ^ (a & c) ^ (b & c);
+        u64 t2 = S0 + mj;
+        h = g; g = f; f = e; e = d + t1; d = c; c = b; b = a; a = t1 + t2;
+    }
+    out[0] = a + 0x6a09e667f3bcc908UL; out[1] = b + 0xbb67ae8584caa73bUL; out[2] = c + 0x3c6ef372fe94f82bUL; out[3] = d + 0xa54ff53a5f1d36f1UL;
+    out[4] = e + 0x510e527fade682d1UL; out[5] = f + 0x9b05688c2b3e6c1fUL; out[6] = g + 0x1f83d9abfb41bd6bUL; out[7] = h + 0x5be0cd19137e2179UL;
+}
+#define H2C_SHA(W,B,J) sha512_block_mid(W,B,J)
+#else
+#define H2C_SHA(W,B,J) sha512_block(W,B)
+#endif
 // hash-to-curve message: 03 01 pk(32) prefix(37) nonce(8) ctr 00 = 81 bytes. The host gives the
 // first 64 bytes as mw[0..7] and bytes 64..70 in the top of mw[8]; W[15] = 81*8.
 static inline void h2c_words(u64 W[16], __global const JobDev *job, u64 nonce, u8 ctr) {
@@ -698,7 +768,7 @@ static bool vrf_beta_w(__global const JobDev *job, u64 nonce, u64 B[8], u64 *dbg
     for (int ctr = 0; ctr < 256 && !found; ctr++) {
         u64 W[16], dg[8], le[4];
         h2c_words(W, job, nonce, (u8)ctr);
-        sha512_block(W, dg);
+        H2C_SHA(W, dg, job);
         digest_to_le(le, dg);
         if (!ge_from_le(&H, le, C)) continue;
         ge_mul8(&H, &H);
@@ -735,6 +805,73 @@ void mine_kernel(__global const JobDev *job, u64 nonce_base, u64 stride, int ite
     }
 }
 
+#if PX_JACOBI
+// Packed 30-step binary Jacobi reduction. Transition coefficients fit signed
+// 31 bits; full-width updates use exact unsigned carry/borrow chains.
+static u32 jac_lin(u32 out[8],int f,int g,const u32 a[8],const u32 b[8]) {
+    u32 P[9],N[9],D[9];u64 cp=0,cn=0;
+    u32 fa=(u32)(f<0?-f:f),ga=(u32)(g<0?-g:g);
+    for(int i=0;i<8;i++) {
+        u64 x=(u64)fa*a[i],y=(u64)ga*b[i];
+        u64 p=(f<0?0:x)+(g<0?0:y)+cp,n=(f<0?x:0)+(g<0?y:0)+cn;
+        P[i]=(u32)p;N[i]=(u32)n;cp=p>>32;cn=n>>32;
+    }
+    P[8]=(u32)cp;N[8]=(u32)cn;
+    u64 borrow=0;
+    for(int i=0;i<9;i++){u64 t=(u64)P[i]-N[i]-borrow;D[i]=(u32)t;borrow=t>>63;}
+    u32 neg=(u32)borrow,mask=0u-neg;u64 carry=neg;
+    for(int i=0;i<9;i++){u64 t=(u64)(D[i]^mask)+carry;D[i]=(u32)t;carry=t>>32;}
+    for(int i=0;i<8;i++)out[i]=(D[i]>>30)|(D[i+1]<<2);
+    return neg;
+}
+static bool fe_is_square_or_zero(const fe *w) {
+    u64 words[4];fe_canon_le(words,w);u32 a[8],b[8];
+    for(int i=0;i<4;i++){a[2*i]=(u32)words[i];a[2*i+1]=(u32)(words[i]>>32);}
+    b[0]=0xffffffedU;for(int i=1;i<7;i++)b[i]=~0u;b[7]=0x7fffffffU;
+    u32 sign=0;int round=0;
+    for(;round<24;round++) {
+        if(!(a[0]|a[1]|a[2]|a[3]|a[4]|a[5]|a[6]|a[7]))break;
+        if(b[0]==1 && !(b[1]|b[2]|b[3]|b[4]|b[5]|b[6]|b[7]))break;
+        u32 ah=a[7],al=a[6],bh=b[7],bl=b[6];
+        for(int i=6;i>=1;i--){bool z=(ah|bh)==0;ah=z?a[i]:ah;al=z?a[i-1]:al;bh=z?b[i]:bh;bl=z?b[i-1]:bl;}
+        int shift=clz(ah|bh)&31;
+        u32 ta=(ah<<shift)|(shift?al>>(32-shift):0),tb=(bh<<shift)|(shift?bl>>(32-shift):0);
+        bool small=!(a[2]|a[3]|a[4]|a[5]|a[6]|a[7]|b[2]|b[3]|b[4]|b[5]|b[6]|b[7]);
+        u64 xa=((u64)(small?a[1]:ta)<<32)|a[0],xb=((u64)(small?b[1]:tb)<<32)|b[0];
+        u64 F0=1,F1=1UL<<32;
+        #pragma unroll
+        for(int j=0;j<30;j++) {
+            bool odd=((u32)xa&1)!=0,swap=odd&&xa<xb;
+            if(swap)sign^=(u32)xa&(u32)xb;
+            u64 na=swap?xb:xa,nb=swap?xa:xb,nF0=swap?F1:F0,nF1=swap?F0:F1;
+            if(odd){na-=nb;nF0-=nF1;}
+            xa=na>>1;xb=nb;F0=nF0;F1=nF1<<1;
+            sign^=(u32)nb^((u32)nb>>1);
+        }
+        int f0=(int)(u32)F0,f1=(int)(u32)F1;
+        int g0=(int)((long)(F0-(u64)(long)f0)>>32),g1=(int)((long)(F1-(u64)(long)f1)>>32);
+        u32 na[8],nb[8];u32 negative=jac_lin(na,f0,g0,a,b);jac_lin(nb,f1,g1,a,b);
+        if(negative)sign^=nb[0];
+        for(int i=0;i<8;i++){a[i]=na[i];b[i]=nb[i];}
+    }
+    if(round==24) {
+        // Exact Euler fallback: no retry or candidate is discarded on a bound.
+        fe t19,t3,t,one,m1,w2,w4,w6;fe_pow22501(&t19,&t3,w);
+        fe_sq(&w2,w);fe_sq(&w4,&w2);fe_mul(&w6,&w4,&w2);
+        fe_pow2k(&t,&t19,4);fe_mul(&t,&t,&w6);fe_1(&one);fe_neg(&m1,&one);
+        return !fe_eq(&t,&m1);
+    }
+    if(b[0]!=1 || (b[1]|b[2]|b[3]|b[4]|b[5]|b[6]|b[7]))return true;
+    return (sign&2u)==0;
+}
+static bool h2c_square(ge *H,const u64 le[4],const Cfe *C) {
+    fe yy,u,v,w,one;fe_from_le(&H->Y,le);fe_1(&one);
+    fe_sq(&yy,&H->Y);fe_sub(&u,&yy,&one);fe_mul(&v,&yy,&C->d);fe_add(&v,&v,&one);fe_mul(&w,&u,&v);
+    fe_0(&H->X);H->X.v[0]=(u32)(le[3]>>63); // retain the original x sign
+    return fe_is_square_or_zero(&w);
+}
+#endif
+
 // compacted pipeline: one decompression per item per pass, failures queued for the next pass;
 // then the scalar multiplications over the found points with no divergence
 typedef struct { fe X, Y; u64 nonce; } HPoint;
@@ -754,10 +891,15 @@ void h2c_kernel(__global const JobDev *job, u64 nonce_base, __global const u64 *
         u8 ctr = first_pass ? (u8)0 : in_ctr[i];
         u64 W[16], dg[8], le[4];
         h2c_words(W, job, nonce, ctr);
-        sha512_block(W, dg);
+        H2C_SHA(W, dg, job);
         digest_to_le(le, dg);
         ge H;
-        if (ge_from_le(&H, le, &C)) {
+#if PX_JACOBI
+        bool valid=h2c_square(&H,le,&C);
+#else
+        bool valid=ge_from_le(&H,le,&C);
+#endif
+        if (valid) {
             uint o = atomic_inc(n_pts);
             pts[o].X = H.X; pts[o].Y = H.Y; pts[o].nonce = nonce;
         } else if (ctr < 255) {
@@ -775,11 +917,6 @@ static inline bool mult_point(ge *G, __global const HPoint *pt, const Cfe *C, __
     ge_mul8(G, G);
     return true;
 }
-#ifdef PX_WAVES
-#define PX_OCC __attribute__((amdgpu_waves_per_eu(PX_WAVES, PX_WAVES)))
-#else
-#define PX_OCC
-#endif
 #ifndef PX_INV_BATCH
 #define PX_INV_BATCH 2
 #endif
@@ -792,7 +929,7 @@ static inline void finish_point_zi(__global const JobDev *job, const ge *G, cons
         if (idx < MAX_HITS) store_hit(&hits[idx], nonce, B);
     }
 }
-__kernel __attribute__((reqd_work_group_size(PX_WG, 1, 1))) PX_OCC
+__kernel __attribute__((reqd_work_group_size(PX_WG, 1, 1)))
 void mult_kernel(__global const JobDev *job, __global const HPoint *pts, __global const uint *cnt, __global Hit *hits, __global uint *nhits, __global const Consts *K) {
     uint n = cnt[0];
     uint gid = get_global_id(0), total = get_global_size(0);
@@ -828,7 +965,91 @@ void mult_kernel(__global const JobDev *job, __global const HPoint *pts, __globa
 
 #ifdef PX_SPLIT_FINISH
 typedef struct {fe X,Y,Z;u64 nonce;uint valid;} ProjectivePoint;
-__kernel __attribute__((reqd_work_group_size(PX_WG,1,1))) PX_OCC
+// Exact Montgomery x-only ladder, with complete VRF recomputation for hits.
+// The job scalar is 64*x modulo 8L, so the original cofactor operations and
+// every torsion component are preserved without a per-thread Edwards table.
+#if PX_LADDER
+#ifndef PX_PREP_BATCH
+#define PX_PREP_BATCH 16
+#endif
+static inline void fe_mul_small(fe *h,const fe *f,u32 k) {
+    // fe29 limbs are bounded by 2^30; k <= 973324, so every sum fits uint64.
+    u64 carry=0;
+    for(int i=0;i<9;i++) { u64 t=(u64)f->v[i]*k+carry; h->v[i]=(u32)t&M29; carry=t>>29; }
+    u64 t=(u64)h->v[0]+carry*1216u; h->v[0]=(u32)t&M29; h->v[1]+=(u32)(t>>29);
+}
+static inline void ladder_add(fe *h,const fe *f,const fe *g) {
+    // fe29 products carry their final fold into limb 1. Only that limb may
+    // exceed 29 bits, so normalize the exceptional lazy sum before a product.
+    fe_add(h,f,g);
+    if(h->v[1]>=(1u<<30))fe_reduce(h);
+}
+static inline void ladder_step(fe *x2,fe *z2,fe *x3,fe *z3,const fe *x1) {
+    fe A,B,C,D,AA,BB,E,DA,CB;
+    ladder_add(&A,x2,z2);fe_sub(&B,x2,z2);
+    ladder_add(&C,x3,z3);fe_sub(&D,x3,z3);
+    fe_mul(&DA,&D,&A);fe_mul(&CB,&C,&B);
+    fe_sq(&AA,&A);fe_sq(&BB,&B);
+    ladder_add(x3,&DA,&CB);fe_sq(x3,x3);
+    fe_sub(z3,&DA,&CB);fe_sq(z3,z3);fe_mul(z3,z3,x1);
+    fe_mul(x2,&AA,&BB);fe_sub(&E,&AA,&BB);
+    // Fold the multiply-add in one carry chain. A lazy sum of the two
+    // separately reduced values can exceed the fe29 multiplication bound
+    // on torsion inputs, even though both represent valid field elements.
+    u64 carry=0;
+    for(int i=0;i<9;i++) { u64 t=(u64)E.v[i]*121665u+AA.v[i]+carry;C.v[i]=(u32)t&M29;carry=t>>29; }
+    u64 tail=(u64)C.v[0]+carry*1216u;C.v[0]=(u32)tail&M29;C.v[1]+=(u32)(tail>>29);
+    fe_mul(z2,&E,&C);
+}
+__kernel __attribute__((reqd_work_group_size(PX_WG,1,1)))
+void prep_kernel(__global const uint *cnt,__global HPoint *pts,__global const Consts *K) {
+    uint n=cnt[0],total=get_global_size(0);
+    for(uint base=get_global_id(0);base<n;base+=total*PX_PREP_BATCH) {
+        fe prefix[PX_PREP_BATCH],prod;fe_1(&prod);
+        for(int k=0;k<PX_PREP_BATCH;k++) {
+            uint i=base+(uint)k*total;prefix[k]=prod;
+            if(i<n) { fe one,d,y=pts[i].Y;fe_1(&one);
+                fe_sub(&d,&one,&y);
+                if(!fe_iszero(&d))fe_mul(&prod,&prod,&d);
+            }
+        }
+        fe inv;fe_invert(&inv,&prod);
+        for(int k=PX_PREP_BATCH-1;k>=0;k--) {
+            uint i=base+(uint)k*total;
+            if(i<n) {
+                fe y=pts[i].Y,one,d,di,p1,u,v;
+                fe_1(&one);fe_sub(&d,&one,&y);
+                if(fe_iszero(&d)){fe_0(&u);pts[i].X=u;pts[i].Y=u;continue;}
+                fe_mul(&di,&inv,&prefix[k]);fe_mul(&inv,&inv,&d);
+                fe_add(&p1,&one,&y);fe_mul(&v,&p1,&di);
+                u=v;fe_1(&v);
+                pts[i].X=u;pts[i].Y=v;
+            }
+        }
+    }
+}
+__kernel __attribute__((reqd_work_group_size(PX_WG,1,1)))
+void ladder_kernel(__global const HPoint *pts,__global const uint *cnt,__global ProjectivePoint *out,__global const Consts *K) {
+    uint n=cnt[0];
+    for(uint i=get_global_id(0);i<n;i+=get_global_size(0)) {
+        fe xP=pts[i].X,one;fe_1(&one);
+        out[i].nonce=pts[i].nonce;out[i].valid=0;out[i].Z=one;
+        if(fe_iszero(&xP))continue;
+        fe x2,z2,x3,z3;fe_1(&x2);fe_0(&z2);x3=xP;fe_1(&z3);
+        for(int b=K->ladder_top;b>=0;b--) {
+            if((K->ladder_scalar[b>>3]>>(b&7))&1)ladder_step(&x3,&z3,&x2,&z2,&xP);
+            else ladder_step(&x2,&z2,&x3,&z3,&xP);
+        }
+        if(fe_iszero(&z2))continue; // cofactor-cleared identity
+        // Edwards y=(u-1)/(u+1); its missing x sign is resolved only for
+        // potential shares. A separate buffer keeps filtering race-free.
+        fe sum,diff;ladder_add(&sum,&x2,&z2);fe_sub(&diff,&x2,&z2);
+        if(!fe_iszero(&sum)) { fe zero;fe_0(&zero);out[i].X=zero;out[i].Y=diff;out[i].Z=sum;out[i].valid=1; }
+    }
+}
+#endif
+
+__kernel __attribute__((reqd_work_group_size(PX_WG,1,1)))
 void scalar_kernel(__global const HPoint *pts,__global const uint *cnt,__global ProjectivePoint *out,__global const Consts *K) {
     uint n=cnt[0],total=get_global_size(0);Cfe C;load_cfe(&C,K);
     for(uint i=get_global_id(0);i<n;i+=total) {
@@ -854,13 +1075,38 @@ void finish_batch_kernel(__global const JobDev *job,__global const ProjectivePoi
             uint i=base+(uint)k*total;
             if(i<n) {
                 fe zi,z=pts[i].Z;fe_mul(&zi,&inv,&prefix[k]);fe_mul(&inv,&inv,&z);
-                if(pts[i].valid) {ge G;G.X=pts[i].X;G.Y=pts[i].Y;finish_point_zi(job,&G,&zi,pts[i].nonce,job->k,hits,nhits);}
+                if(pts[i].valid) {
+#if PX_XONLY
+                    fe y=pts[i].Y;fe_mul(&y,&y,&zi);u64 cg[4],W[16],B[8];fe_canon_le(cg,&y);
+                    p2h_words(W,cg);sha512_block(W,B);
+                    bool candidate=trailing_zero_bits_w(B)>=job->k && below_w(B,job->beat_w);
+                    cg[3]^=1UL<<63;p2h_words(W,cg);sha512_block(W,B);
+                    candidate|=trailing_zero_bits_w(B)>=job->k && below_w(B,job->beat_w);
+                    // At most one candidate per input point; capacity equals N.
+                    if(candidate)((__global u64*)hits)[atomic_inc(nhits)]=pts[i].nonce;
+#else
+                    ge G;G.X=pts[i].X;G.Y=pts[i].Y;finish_point_zi(job,&G,&zi,pts[i].nonce,job->k,hits,nhits);
+#endif
+                }
             }
         }
     }
 }
 #endif
 
+#if PX_XONLY
+__kernel __attribute__((reqd_work_group_size(256,1,1)))
+void resolve_kernel(__global const JobDev *job,__global const u64 *candidates,__global const uint *count,
+                    __global Hit *hits,__global uint *nhits,__global const Consts *K) {
+    Cfe C;load_cfe(&C,K);
+    for(uint i=get_global_id(0);i<count[0];i+=get_global_size(0)) {
+        u64 nonce=candidates[i],B[8];
+        if(vrf_beta_w(job,nonce,B,0,0,&C,K) && trailing_zero_bits_w(B)>=job->k && below_w(B,job->beat_w)) {
+            uint at=atomic_inc(nhits);if(at<MAX_HITS)store_hit(&hits[at],nonce,B);
+        }
+    }
+}
+#endif
 // self-test: beta for a complete alpha plus intermediates
 __kernel void test_kernel(__global const JobDev *job, u64 nonce, __global u8 *out_beta, __global u8 *out_h, __global u8 *out_cg, __global int *ok, __global const Consts *K) {
     Cfe C; load_cfe(&C, K);
@@ -888,6 +1134,16 @@ __kernel void fe_test_kernel(uint seed, int n, __global int *fail, __global u8 *
 #endif
         fe_sq(&s1, &x); fe_mul(&s2, &x, &x);
         int code = 0;
+#if PX_JACOBI
+        // Differential gate against the independent exponentiation/sqrt path.
+        // Include zero, small values and both sides of the canonical boundary.
+        { Cfe C; load_cfe(&C,K); fe q=x,root,one; fe_1(&one);
+          if(it<32) { fe_0(&q);q.v[0]=(u32)(it/2);if(it&1)fe_neg(&q,&q); }
+          bool got=fe_is_square_or_zero(&q),want=fe_sqrt_ratio_i(&root,&q,&one,&C);
+          if(got!=want)code=14;
+          if(!fe_is_square_or_zero(&s1))code=15;
+        }
+#endif
         if (!fe_eq(&s1, &s2)) code = 1;
         fe_add(&t, &x, &y);
         { fe a2, b2; fe_sq(&a2, &t); fe_mul(&b2, &t, &t); if (!code && !fe_eq(&a2, &b2)) { code = 13; fe_copy(&t, &a2); fe_copy(&u, &b2); } }

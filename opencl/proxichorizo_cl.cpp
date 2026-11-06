@@ -25,17 +25,21 @@
 #include <map>
 #include <cmath>
 #include <cerrno>
+#include <ctime>
+#include <condition_variable>
 
 #include "host_common.inc"
 #include "kernel_blob.h"
 
 // must match proxichorizo.cl
-struct JobDev { uint8_t pk[32]; uint8_t prefix[64]; int prefix_len; int k; uint8_t beat[64]; uint64_t mw[9]; uint64_t beat_w[8]; };
+struct JobDev { uint8_t pk[32]; uint8_t prefix[64]; int prefix_len; int k; uint8_t beat[64]; uint64_t mw[9]; uint64_t beat_w[8]; uint64_t h2c_mid[8]; };
+#include "job_midstate.h"
 // the kernels hash on 64-bit words: precompute the fixed part of the hash-to-curve message
 // (03 01 pk prefix = 71 bytes -> words 0..7 and the top 56 bits of word 8) and the beat as words
 static void prepare_job(JobDev &jd) {
     uint8_t m[72]; memset(m, 0, sizeof m); m[0] = 0x03; m[1] = 0x01; memcpy(m + 2, jd.pk, 32); memcpy(m + 34, jd.prefix, 37);
     for (int i = 0; i < 9; i++) { uint64_t w = 0; for (int j = 0; j < 8; j++) w = (w << 8) | (uint64_t)(i * 8 + j < 71 ? m[i * 8 + j] : 0); jd.mw[i] = w; }
+    prepare_sha_mid(&jd);
     for (int i = 0; i < 8; i++) { uint64_t w = 0; for (int j = 0; j < 8; j++) w = (w << 8) | jd.beat[8 * i + j]; jd.beat_w[i] = w; }
 }
 struct Hit { uint64_t nonce; uint8_t beta[64]; };
@@ -50,6 +54,55 @@ struct ClDev {
     std::string name, board, platname; cl_uint cus; int bus = 0; size_t maxwg = 256;
 };
 static std::vector<ClDev> g_devs;
+static thread_local std::map<cl_command_queue, std::vector<cl_event>> mining_events;
+static cl_int enqueue_mining_kernel(cl_command_queue q, cl_kernel kernel, size_t global, size_t local) {
+    cl_event event = nullptr;
+    cl_int rc = clEnqueueNDRangeKernel(q, kernel, 1, nullptr, &global, &local, 0, nullptr, &event);
+    if (rc == CL_SUCCESS) mining_events[q].push_back(event);
+    return rc;
+}
+// Wait for a flushed end marker without spinning a CPU core. The callback
+// also reports negative execution status; failed work never becomes a share.
+struct ClCompletion {
+    std::mutex mu;
+    std::condition_variable cv;
+    bool done = false;
+    cl_int status = CL_QUEUED;
+};
+static void CL_CALLBACK mining_complete(cl_event, cl_int status, void *opaque) {
+    ClCompletion *c = static_cast<ClCompletion *>(opaque);
+    std::lock_guard<std::mutex> lock(c->mu);
+    c->status = status;
+    c->done = true;
+    // Notify while holding the lock: the waiter cannot destroy this state
+    // until the callback has finished accessing it.
+    c->cv.notify_one();
+}
+static cl_int mining_wait(cl_command_queue q) {
+    cl_event event = nullptr;
+    cl_int rc = clEnqueueMarkerWithWaitList(q, 0, nullptr, &event);
+    if (rc == CL_SUCCESS) rc = clFlush(q);
+    if (rc == CL_SUCCESS) {
+        ClCompletion completion;
+        rc = clSetEventCallback(event, CL_COMPLETE, mining_complete, &completion);
+        if (rc == CL_SUCCESS) {
+            std::unique_lock<std::mutex> lock(completion.mu);
+            completion.cv.wait(lock, [&] { return completion.done; });
+            rc = completion.status;
+        }
+    }
+    // A marker completing does not imply that earlier commands succeeded.
+    // Inspect the retained dispatch events as well, then release every handle.
+    for (cl_event dispatch : mining_events[q]) {
+        cl_int status = CL_QUEUED;
+        cl_int query = clGetEventInfo(dispatch, CL_EVENT_COMMAND_EXECUTION_STATUS, sizeof status, &status, nullptr);
+        if (rc == CL_SUCCESS) rc = query != CL_SUCCESS ? query : status < 0 ? status : status != CL_COMPLETE ? CL_INVALID_OPERATION : CL_SUCCESS;
+        clReleaseEvent(dispatch);
+    }
+    mining_events[q].clear();
+    if (event) clReleaseEvent(event);
+    return rc;
+}
 static void enumerate_devices() {
     cl_uint np = 0; clGetPlatformIDs(0, nullptr, &np);
     std::vector<cl_platform_id> plats(np); if (np) clGetPlatformIDs(np, plats.data(), nullptr);
@@ -74,8 +127,9 @@ static void enumerate_devices() {
 static std::string dev_label(const ClDev &d) { return d.board.empty() ? d.name : d.board + " (" + d.name + ")"; }
 
 // ---- variants: one kernel source, several build configurations --------------------
-struct Variant { const char *name; int fe, window, compact, wg; int split = 0; };
+struct Variant { const char *name; int fe, window, compact, wg; int split = 0; int fast = 0; };
 static const Variant VARIANTS[] = {
+    { "fe29_mlsp_c", 29, 5, 1, 256, 16, 1 },
     { "fe29_wnaf_c", 29, 5, 1, 256 },
     { "fe29_wnaf_split8_c", 29, 5, 1, 256, 8 },
     { "fe29_w4_c",   29, 4, 1, 256 },
@@ -98,9 +152,9 @@ struct Platform {
     const char *board_match = nullptr;
 };
 static const Platform PLATFORMS[] = {
-    { "gfx1100", "fe29_wnaf_split8_c", 1, true, "RX 7900 XTX: measured model profile", 128, 48, "7900 XTX" },
-    { "gfx1102", "fe29_wnaf_split8_c", 1, true, "RX 7600 XT: measured model profile", 128, 16, "7600 XT" },
-    { "gfx906",  "fe29_wnaf_split8_c", 1, true, "MI50: measured 60-CU profile", 128, 60, "MI50" },
+    { "gfx1100", "fe29_mlsp_c", 1, true, "RX 7900 XTX: measured model profile", 128, 48, "7900 XTX" },
+    { "gfx1102", "fe29_mlsp_c", 1, true, "RX 7600 XT: measured model profile", 128, 16, "7600 XT" },
+    { "gfx906",  "fe29_mlsp_c", 1, true, "MI50: measured 60-CU profile", 128, 60, "MI50" },
     { "gfx11", "fe29_wnaf_c", 8, true,  "RDNA3: 9x29 limbs straight into v_mad_u64_u32, wNAF, compacted pipeline (10.5 MH/s on an RX 7900 XTX)" },
     { "gfx12", "fe29_wnaf_c", 8, false, "RDNA4: not measured here, tuned on first start" },
     { "gfx10", "fe29_wnaf_c", 8, false, "RDNA2/1: not measured here, tuned on first start" },
@@ -124,7 +178,7 @@ static std::string g_extra_build;  // --build-opts
 struct Prog {
     const Variant *v = nullptr; ClDev *dev = nullptr;
     cl_program p = nullptr; cl_kernel k_mine = nullptr, k_h2c = nullptr, k_mult = nullptr, k_test = nullptr, k_fetest = nullptr, k_init = nullptr;
-    cl_kernel k_scalar = nullptr, k_finish = nullptr;
+    cl_kernel k_scalar = nullptr, k_finish = nullptr, k_prep = nullptr, k_resolve = nullptr;
     cl_mem consts = nullptr;  // Consts struct: 3 fe + scalar[32] + wnaf[260] + int len + pad
     size_t fe_size = 32, consts_size = 0;
 };
@@ -138,6 +192,7 @@ static Prog *get_prog(ClDev &dev, const Variant *v) {
     const char *src = g_kernel_src.c_str(); size_t len = g_kernel_src.size(); cl_int err;
     pr->p = clCreateProgramWithSource(dev.ctx, 1, &src, &len, &err); CL_CHECK(err);
     std::string opts = "-DPX_FE=" + std::to_string(v->fe) + " -DPX_WINDOW=" + std::to_string(v->window) + " -DPX_COMPACT=" + std::to_string(v->compact) + " -DPX_WG=" + std::to_string(v->wg) + " " + g_extra_build;
+    if (v->fast) opts += " -DPX_XONLY=1 -DPX_JACOBI=1 -DPX_SHA_MID=1 -DPX_LADDER=1 -DPX_EDWARDS_OPT=1";
     if (v->split) opts += " -DPX_SPLIT_FINISH=" + std::to_string(v->split);
     auto t0 = std::chrono::steady_clock::now();
     err = clBuildProgram(pr->p, 1, &dev.id, opts.c_str(), nullptr, nullptr);
@@ -154,11 +209,14 @@ static Prog *get_prog(ClDev &dev, const Variant *v) {
     pr->k_fetest = clCreateKernel(pr->p, "fe_test_kernel", &err); CL_CHECK(err);
     pr->k_init = clCreateKernel(pr->p, "init_kernel", &err); CL_CHECK(err);
     if (v->split) {
-        pr->k_scalar = clCreateKernel(pr->p, "scalar_kernel", &err); CL_CHECK(err);
+        pr->k_scalar = clCreateKernel(pr->p, v->fast ? "ladder_kernel" : "scalar_kernel", &err); CL_CHECK(err);
         pr->k_finish = clCreateKernel(pr->p, "finish_batch_kernel", &err); CL_CHECK(err);
     }
+    if(v->fast) { pr->k_prep=clCreateKernel(pr->p,"prep_kernel",&err); CL_CHECK(err); }
+    if(v->fast) { pr->k_resolve=clCreateKernel(pr->p,"resolve_kernel",&err); CL_CHECK(err); }
     pr->fe_size = v->fe == 32 ? 32 : v->fe == 51 ? 40 : 36;
     pr->consts_size = 3 * pr->fe_size + 32 + 260 + 8;
+    if(v->fast) pr->consts_size += 36;
     pr->consts = clCreateBuffer(dev.ctx, CL_MEM_READ_WRITE, pr->consts_size, nullptr, &err); CL_CHECK(err);
     logln("[" + std::string(v->name) + "] built for " + dev.name + " in " + std::to_string((int)(bs * 1000)) + " ms");
     g_progs[key] = pr;
@@ -175,6 +233,8 @@ static bool prog_validated(Prog *pr) {
     if (!ok) fprintf(stderr, "[%s] does not reproduce the test vectors on %s with this driver: variant disabled\n", pr->v->name, pr->dev->name.c_str());
     g_validated[pr] = ok; return ok;
 }
+
+#include "merged_scalar.h"
 
 // width-5 wNAF of the little-endian scalar (same as the CUDA v_set_scalar) into the Consts buffer
 static void set_scalar(Prog *pr, const uint8_t *scalar) {
@@ -193,6 +253,13 @@ static void set_scalar(Prog *pr, const uint8_t *scalar) {
         digits[i] = (int8_t)d;
         if (d) len = i + 1;
         shr1();
+    }
+    if(pr->v->fast) {
+        uint8_t merged[32];v_merged_scalar(scalar,merged);
+        int top=0;for(int b=255;b>=0;b--)if((merged[b>>3]>>(b&7))&1){top=b;break;}
+        size_t off=3*pr->fe_size+300;
+        CL_CHECK(clEnqueueWriteBuffer(pr->dev->q,pr->consts,CL_TRUE,off,32,merged,0,nullptr,nullptr));
+        CL_CHECK(clEnqueueWriteBuffer(pr->dev->q,pr->consts,CL_TRUE,off+32,4,&top,0,nullptr,nullptr));
     }
     size_t off = 3 * pr->fe_size;
     CL_CHECK(clEnqueueWriteBuffer(pr->dev->q, pr->consts, CL_TRUE, off, 32, scalar, 0, nullptr, nullptr));
@@ -216,11 +283,15 @@ static int prog_init(Prog *pr, const uint8_t *scalar, uint8_t pk_out[32]) {
 }
 
 // per-launch scratch of the compacted pipeline
-struct Scratch { cl_mem projective = nullptr; cl_mem pts = nullptr, nonce[2] = {nullptr, nullptr}, ctr[2] = {nullptr, nullptr}, cnt = nullptr; size_t n = 0; };
+struct Scratch { cl_mem candidates = nullptr, ncandidates = nullptr; cl_mem projective = nullptr; cl_mem pts = nullptr, nonce[2] = {nullptr, nullptr}, ctr[2] = {nullptr, nullptr}, cnt = nullptr; size_t n = 0; };
 static Scratch *scratch_alloc(Prog *pr, size_t n) {
     if (!pr->v->compact) return nullptr;
     cl_int err; ClDev &d = *pr->dev; Scratch *sc = new Scratch(); sc->n = n;
     size_t hpoint = 2 * pr->fe_size + 8;
+    if(pr->v->fast) {
+        sc->candidates=clCreateBuffer(d.ctx,CL_MEM_READ_WRITE,n*sizeof(uint64_t),nullptr,&err);CL_CHECK(err);
+        sc->ncandidates=clCreateBuffer(d.ctx,CL_MEM_READ_WRITE,sizeof(cl_uint),nullptr,&err);CL_CHECK(err);
+    }
     if (pr->v->split) {
         // Three field elements, an 8-byte aligned nonce, valid flag and tail padding.
         size_t bytes = ((3 * pr->fe_size + 7) / 8) * 8 + 16;
@@ -234,6 +305,8 @@ static Scratch *scratch_alloc(Prog *pr, size_t n) {
 }
 static void scratch_free(Scratch *sc) {
     if (!sc) return;
+    if(sc->candidates)clReleaseMemObject(sc->candidates);
+    if(sc->ncandidates)clReleaseMemObject(sc->ncandidates);
     if (sc->projective) clReleaseMemObject(sc->projective);
     clReleaseMemObject(sc->pts); for (int b = 0; b < 2; b++) { clReleaseMemObject(sc->nonce[b]); clReleaseMemObject(sc->ctr[b]); } clReleaseMemObject(sc->cnt); delete sc;
 }
@@ -255,28 +328,48 @@ static void prog_mine(Prog *pr, cl_mem d_job, uint64_t nonce_base, uint64_t stri
             clSetKernelArg(pr->k_h2c, 6, sizeof out_idx, &out_idx); clSetKernelArg(pr->k_h2c, 7, sizeof first, &first);
             clSetKernelArg(pr->k_h2c, 8, sizeof sc->pts, &sc->pts); clSetKernelArg(pr->k_h2c, 9, sizeof out_nonce, &out_nonce);
             clSetKernelArg(pr->k_h2c, 10, sizeof out_ctr, &out_ctr); clSetKernelArg(pr->k_h2c, 11, sizeof pr->consts, &pr->consts);
-            CL_CHECK(clEnqueueNDRangeKernel(d.q, pr->k_h2c, 1, nullptr, &gsz, &lsz, 0, nullptr, nullptr));
+            CL_CHECK(enqueue_mining_kernel(d.q, pr->k_h2c, gsz, lsz));
         }
         if (pr->v->split) {
             size_t gsz = stride, lsz = pr->v->wg;
+            if(pr->v->fast) {
+                size_t prep_gsz=((stride+16*lsz-1)/(16*lsz))*lsz;
+                CL_CHECK(clSetKernelArg(pr->k_prep,0,sizeof sc->cnt,&sc->cnt));
+                CL_CHECK(clSetKernelArg(pr->k_prep,1,sizeof sc->pts,&sc->pts));
+                CL_CHECK(clSetKernelArg(pr->k_prep,2,sizeof pr->consts,&pr->consts));
+                CL_CHECK(enqueue_mining_kernel(d.q, pr->k_prep, prep_gsz, lsz));
+            }
             CL_CHECK(clSetKernelArg(pr->k_scalar, 0, sizeof sc->pts, &sc->pts));
             CL_CHECK(clSetKernelArg(pr->k_scalar, 1, sizeof sc->cnt, &sc->cnt));
             CL_CHECK(clSetKernelArg(pr->k_scalar, 2, sizeof sc->projective, &sc->projective));
             CL_CHECK(clSetKernelArg(pr->k_scalar, 3, sizeof pr->consts, &pr->consts));
-            CL_CHECK(clEnqueueNDRangeKernel(d.q, pr->k_scalar, 1, nullptr, &gsz, &lsz, 0, nullptr, nullptr));
+            CL_CHECK(enqueue_mining_kernel(d.q, pr->k_scalar, gsz, lsz));
             gsz = ((stride + pr->v->split * lsz - 1) / (pr->v->split * lsz)) * lsz;
             CL_CHECK(clSetKernelArg(pr->k_finish, 0, sizeof d_job, &d_job));
             CL_CHECK(clSetKernelArg(pr->k_finish, 1, sizeof sc->projective, &sc->projective));
             CL_CHECK(clSetKernelArg(pr->k_finish, 2, sizeof sc->cnt, &sc->cnt));
-            CL_CHECK(clSetKernelArg(pr->k_finish, 3, sizeof d_hits, &d_hits));
-            CL_CHECK(clSetKernelArg(pr->k_finish, 4, sizeof d_n, &d_n));
-            CL_CHECK(clEnqueueNDRangeKernel(d.q, pr->k_finish, 1, nullptr, &gsz, &lsz, 0, nullptr, nullptr));
+            cl_mem finish_hits=pr->v->fast?sc->candidates:d_hits,finish_n=pr->v->fast?sc->ncandidates:d_n;
+            if(pr->v->fast)CL_CHECK(clEnqueueFillBuffer(d.q,finish_n,&zero,4,0,4,0,nullptr,nullptr));
+            CL_CHECK(clSetKernelArg(pr->k_finish, 3, sizeof finish_hits, &finish_hits));
+            CL_CHECK(clSetKernelArg(pr->k_finish, 4, sizeof finish_n, &finish_n));
+            CL_CHECK(enqueue_mining_kernel(d.q, pr->k_finish, gsz, lsz));
+            if(pr->v->fast) {
+                cl_kernel k=pr->k_resolve;
+                CL_CHECK(clSetKernelArg(k,0,sizeof d_job,&d_job));
+                CL_CHECK(clSetKernelArg(k,1,sizeof sc->candidates,&sc->candidates));
+                CL_CHECK(clSetKernelArg(k,2,sizeof sc->ncandidates,&sc->ncandidates));
+                CL_CHECK(clSetKernelArg(k,3,sizeof d_hits,&d_hits));
+                CL_CHECK(clSetKernelArg(k,4,sizeof d_n,&d_n));
+                CL_CHECK(clSetKernelArg(k,5,sizeof pr->consts,&pr->consts));
+                size_t resolve_groups=std::min<size_t>(64,(sc->n+255)/256),resolve_size=resolve_groups*256,resolve_local=256;
+                CL_CHECK(enqueue_mining_kernel(d.q, k, resolve_size, resolve_local));
+            }
         } else {
             size_t gsz = stride, lsz = pr->v->wg;
             clSetKernelArg(pr->k_mult, 0, sizeof d_job, &d_job); clSetKernelArg(pr->k_mult, 1, sizeof sc->pts, &sc->pts);
             clSetKernelArg(pr->k_mult, 2, sizeof sc->cnt, &sc->cnt); clSetKernelArg(pr->k_mult, 3, sizeof d_hits, &d_hits);
             clSetKernelArg(pr->k_mult, 4, sizeof d_n, &d_n); clSetKernelArg(pr->k_mult, 5, sizeof pr->consts, &pr->consts);
-            CL_CHECK(clEnqueueNDRangeKernel(d.q, pr->k_mult, 1, nullptr, &gsz, &lsz, 0, nullptr, nullptr));
+            CL_CHECK(enqueue_mining_kernel(d.q, pr->k_mult, gsz, lsz));
         }
     } else {
         size_t gsz = stride, lsz = pr->v->wg;
@@ -284,7 +377,7 @@ static void prog_mine(Prog *pr, cl_mem d_job, uint64_t nonce_base, uint64_t stri
         clSetKernelArg(pr->k_mine, 2, sizeof stride, &stride); clSetKernelArg(pr->k_mine, 3, sizeof iters, &iters);
         clSetKernelArg(pr->k_mine, 4, sizeof d_hits, &d_hits); clSetKernelArg(pr->k_mine, 5, sizeof d_n, &d_n);
         clSetKernelArg(pr->k_mine, 6, sizeof pr->consts, &pr->consts);
-        CL_CHECK(clEnqueueNDRangeKernel(d.q, pr->k_mine, 1, nullptr, &gsz, &lsz, 0, nullptr, nullptr));
+        CL_CHECK(enqueue_mining_kernel(d.q, pr->k_mine, gsz, lsz));
     }
 }
 static int prog_test(Prog *pr, cl_mem d_job, uint64_t nonce, uint8_t beta[64], uint8_t h[32], uint8_t cg[32]) {
@@ -348,7 +441,7 @@ static void gpu_worker(Shared &sh, GpuCfg cfg) {
         CL_CHECK(clEnqueueWriteBuffer(d.q, d_job, CL_FALSE, 0, sizeof jd, &jd, 0, nullptr, nullptr));
         cl_uint zero = 0; CL_CHECK(clEnqueueFillBuffer(d.q, d_n, &zero, 4, 0, 4, 0, nullptr, nullptr));
         prog_mine(pr, d_job, nonce, stride, cfg.iters, d_hits, d_n, sc);
-        CL_CHECK(clFinish(d.q));
+        CL_CHECK(mining_wait(d.q));
         double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - k0).count();
         uint64_t done = stride * cfg.iters;
         nonce += done;
@@ -384,6 +477,7 @@ static bool pipeline_vector_ok(Prog *pr, JobDev jd, uint64_t nonce,
     Scratch *sc = scratch_alloc(pr, 1);
     cl_uint n = 0; CL_CHECK(clEnqueueWriteBuffer(d.q, nhits, CL_TRUE, 0, sizeof n, &n, 0, nullptr, nullptr));
     prog_mine(pr, job, nonce, pr->v->wg, 1, hits, nhits, sc);
+    CL_CHECK(mining_wait(d.q));
     CL_CHECK(clEnqueueReadBuffer(d.q, nhits, CL_TRUE, 0, sizeof n, &n, 0, nullptr, nullptr));
     bool ok = n == (counter < PX_MAX_PASSES ? 1u : 0u);
     if (ok && n) {
@@ -436,7 +530,7 @@ static int run_selftest(Prog *pr, const std::string &path, bool quiet = false) {
         }
     }
     if (!quiet || bad) fprintf(stderr, "[%s] selftest on %s: %d vectors, %d failed\n", pr->v->name, pr->dev->name.c_str(), n, bad);
-    return bad ? 1 : 0;
+    return bad || n == 0 ? 1 : 0;
 }
 static double run_bench(Prog *pr, const uint8_t pk[32], int groups, int iters, double seconds, bool verbose) {
     ClDev &d = *pr->dev; cl_int err;
@@ -449,17 +543,19 @@ static double run_bench(Prog *pr, const uint8_t pk[32], int groups, int iters, d
     cl_mem d_n = clCreateBuffer(d.ctx, CL_MEM_READ_WRITE, 4, nullptr, &err); CL_CHECK(err);
     uint64_t stride = (uint64_t)groups * pr->v->wg, total = 0, nonce = 0x123456789ULL; cl_uint zero = 0;
     Scratch *sc = scratch_alloc(pr, stride * (size_t)iters);
-    CL_CHECK(clEnqueueFillBuffer(d.q, d_n, &zero, 4, 0, 4, 0, nullptr, nullptr)); prog_mine(pr, d_job, nonce, stride, iters, d_hits, d_n, sc); CL_CHECK(clFinish(d.q));
+    CL_CHECK(clEnqueueFillBuffer(d.q, d_n, &zero, 4, 0, 4, 0, nullptr, nullptr)); prog_mine(pr, d_job, nonce, stride, iters, d_hits, d_n, sc); CL_CHECK(mining_wait(d.q));
     auto t0 = std::chrono::steady_clock::now();
+    std::clock_t cpu0 = std::clock();
     while (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < seconds) {
         CL_CHECK(clEnqueueFillBuffer(d.q, d_n, &zero, 4, 0, 4, 0, nullptr, nullptr));
         prog_mine(pr, d_job, nonce, stride, iters, d_hits, d_n, sc);
-        CL_CHECK(clFinish(d.q));
+        CL_CHECK(mining_wait(d.q));
         nonce += stride * iters; total += stride * iters;
     }
     double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     double mhs = total / s / 1e6;
-    if (verbose) fprintf(stderr, "GPU %s [%s %dx%d iters %d]: %.3f MH/s\n", dev_label(d).c_str(), pr->v->name, groups, pr->v->wg, iters, mhs);
+    if(verbose) fprintf(stderr,"BENCH_CPU %.3f percent of one core, %.6f seconds\n",100.0*(std::clock()-cpu0)/CLOCKS_PER_SEC/s,s);
+    if (verbose) fprintf(stderr, "GPU %s [%s %dx%d iters %d]: %.6f MH/s\n", dev_label(d).c_str(), pr->v->name, groups, pr->v->wg, iters, mhs);
     scratch_free(sc); clReleaseMemObject(d_job); clReleaseMemObject(d_hits); clReleaseMemObject(d_n);
     return mhs;
 }
@@ -475,9 +571,8 @@ static GpuCfg autotune(int dev, const uint8_t scalar[32], const uint8_t pk[32], 
         if (quick && strcmp(VARIANTS[v].name, "fe29_wnaf_c") != 0 && strcmp(VARIANTS[v].name, "fe32_wnaf_c") != 0) continue;
         Prog *pr = get_prog(d, &VARIANTS[v]);
         uint8_t pk2[32];
-        if (prog_init(pr, scalar, pk2) != 1 || memcmp(pk2, pk, 32) != 0) { fprintf(stderr, "  %-12s: init failed, skipped\n", VARIANTS[v].name); continue; }
         if (!prog_validated(pr)) { fprintf(stderr, "  %-12s: fails the test vectors here, skipped\n", VARIANTS[v].name); continue; }
-        prog_init(pr, scalar, pk2);
+        if (prog_init(pr, scalar, pk2) != 1 || memcmp(pk2, pk, 32) != 0) { fprintf(stderr, "  %-12s: init failed, skipped\n", VARIANTS[v].name); continue; }
         for (int ii = 0; ii < niters; ii++) {
             int it = iters_list[ii];
             double r = run_bench(pr, pk, fixedGroups, it, seconds, false);
@@ -532,7 +627,7 @@ static int run_verify(const uint8_t scalar[32], const uint8_t pk[32], int dev) {
         Scratch *sc = scratch_alloc(pr, stride * (size_t)iters);
         for (int l = 0; l < launches; l++) {
             CL_CHECK(clEnqueueFillBuffer(d.q, d_n, &zero, 4, 0, 4, 0, nullptr, nullptr));
-            prog_mine(pr, d_job, nonce, stride, iters, d_hits, d_n, sc); CL_CHECK(clFinish(d.q));
+            prog_mine(pr, d_job, nonce, stride, iters, d_hits, d_n, sc); CL_CHECK(mining_wait(d.q));
             cl_uint n = 0; CL_CHECK(clEnqueueReadBuffer(d.q, d_n, CL_TRUE, 0, 4, &n, 0, nullptr, nullptr)); if (n > MAX_HITS) n = MAX_HITS;
             std::vector<Hit> hits(n); if (n) CL_CHECK(clEnqueueReadBuffer(d.q, d_hits, CL_TRUE, 0, sizeof(Hit) * n, hits.data(), 0, nullptr, nullptr));
             for (auto &h : hits) found[v].push_back({h.nonce, hexs(h.beta, 64)});
@@ -681,7 +776,7 @@ int main(int argc, char **argv) {
                 if (!worst) fprintf(stderr, "[%s] fetest: 32000 random values ok\n", VARIANTS[v].name); else rc = 1;
             }
         }
-        if (verifyPipeline) rc |= run_pipeline_edges(scalar, pk, devs[0]);
+        if (verifyPipeline) rc |= run_pipeline_edges(scalar, pk, devs[0], forced);
         if (verify) rc |= run_verify(scalar, pk, devs[0]);
         return rc;
     }

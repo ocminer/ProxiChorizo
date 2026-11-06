@@ -652,3 +652,73 @@ Matched `--bench` A/B/B/A, eight 60 s arms, the 1.0.5 release build vs the publi
 
 Launch size for this kernel (RTX 5090 at 575 W): 128 blocks/SM 76.5, 256 77.7, 512 77.7 MH/s; CMP 170HX 128 16.93,
 256 17.00; RTX 4070 Ti SUPER 128 31.04, 256 31.31. 256 is the default (shorter launches than 512 for the same rate).
+
+
+## AMD development (2026-11-06, unreleased)
+
+This OpenCL change is based on v1.0.5 (`48ec2a8`); it has not been released. NVIDIA
+source, launch profiles and previously published measurements are unchanged.
+The new `fe29_mlsp_c` default applies only to the measured RX 7900 XTX (gfx1100,
+48 OpenCL CUs), RX 7600 XT (gfx1102, 16 CUs) and MI50 (gfx906, 60 CUs) model matches.
+All use the previous geometry: 128 groups per CU, 256 threads, one nonce per thread.
+Adjacent model matches retain their earlier defaults or first-start tuning.
+
+The port keeps AMD's 9×29-bit field arithmetic and brings over the NVIDIA algorithm
+changes: a packed Jacobi prefilter with an exact Euler fallback, eight precomputed
+SHA-512 rounds per job, cofactor multiplication folded into `64*x mod 8L`, and a
+table-free Montgomery ladder. Reducing modulo the full group order preserves torsion.
+Preparation and final encoding batch inversions over 16 points. Ladder additions
+normalize the exceptional loose limb before multiplication; the multiply-add carry
+chain preserves the host reference's limb bounds.
+
+The ladder screens both possible point signs. A separate resolve kernel recomputes
+the full original VRF for every potential hit and checks the target again. Its nonce
+buffer holds one entry per input, independent of the final hit buffer, so easy targets
+do not introduce a new fixed candidate limit or an in-place compaction race. The
+existing 12-pass hash-to-curve bound is unchanged; this is not an unbounded-search claim.
+
+Both builds below came from clean source with the same compiler. Final development
+binary SHA-256: `60656cc4c3bf4af04111c09ff67d3d69497c973cce3c6dd3795a61b9306fbfc6`.
+A/B/B/A, four 60-second arms per card, same key, power cap, clocks and default launch
+geometry; mean rates and process CPU exclude initialization. Power is the driver's
+reported steady reading. These short comparisons are not long-duration stability tests.
+
+| GPU | Cap | v1.0.5 MH/s | Development MH/s | Gain | Development power | Development CPU, one core |
+|---|---:|---:|---:|---:|---:|---:|
+| RX 7900 XTX | 303 W | 12.225 | 13.527 | +10.6% | 302.5 W | 100.03% |
+| RX 7600 XT | 165 W | 4.053 | 4.516 | +11.4% | 165.1 W | 1.27% |
+| MI50 | 150 W | 5.754 | 6.880 | +19.6% | 148.6 W | 1.00% |
+
+Per-arm ranges: XTX 12.153–12.297 → 13.491–13.563 MH/s; RX 7600 XT
+4.053–4.053 → 4.515–4.517; MI50 5.746–5.761 → 6.879–6.881. The maximum sampled
+junction temperatures across those arms were 94, 92 and 76 °C respectively.
+The MI50's 225 W trial tripped the unchanged 90 °C junction guard and is excluded.
+The recorded gain compares both builds at 150 W. No fan, clock or driver changes
+were used. All original power settings were restored after each test.
+
+Correctness gates passed on each of the three physical GPUs:
+
+- 512 independent VRF vectors covering 256 keys, including the mining pipeline;
+- 32,000 randomized field/Jacobi cases;
+- 140 dense and filtered pipeline shapes, comparing all 89,279 nonce/beta outputs;
+- 46,280 point-output comparisons from 560 independent fixtures across ten scalars,
+  all eight torsion cases, subgroup-adjacent scalars and partial batches.
+
+TLS pool checks with this exact development binary completed on all three cards:
+RX 7900 XTX 29 accepted / 0 rejected / 1 stale, RX 7600 XT 22 / 0 / 0 and MI50
+27 / 0 / 0. Each check included 150 seconds after a nonzero hashrate appeared.
+
+The CPU FE29/32/51 references, 560 ladder fixtures with limb assertions, 10,011 scalar
+reductions against a bigint oracle and nine model-selection checks also passed.
+OpenCL completion callback tests covered immediate and delayed completion and
+negative execution status on both installed runtimes. The worker sleeps on a
+condition variable and retains every dispatched kernel event: a completed queue
+marker alone does not prove earlier kernels succeeded. Autotuning restores and
+checks the requested scalar after validation before it measures a variant.
+
+On the RX 7900 XTX host, profiling still attributes 93% of sampled cycles to ROCr's
+`AsyncEventsLoop`; the application thread sleeps. This matches the class of Linux
+runtime spin reported in [ROCm issue 12674](https://github.com/ROCm/rocm-systems/issues/12674),
+but no runtime replacement was tested here. The tested environment settings did not
+resolve it. MI50 and RX 7600 XT use ROCm 6.4 and the XTX uses ROCm 7.14. Windows and
+other physical AMD models remain unqualified for this new profile.

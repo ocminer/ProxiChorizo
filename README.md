@@ -145,7 +145,7 @@ Measured (1.0.5, `--bench`, platform defaults): RTX 5090 ≈ 78.6 MH/s at 600 W 
 
 ## Build
 
-**AMD / other OpenCL GPUs:** `cd opencl && make && ./proxichorizo-cl --selftest && ./proxichorizo-cl --proxi ... --token ... --key-file ...` — needs an OpenCL ICD and headers (ROCm or `ocl-icd-opencl-dev opencl-headers`); the kernels are compiled by the driver at start-up (about a minute) and checked against the embedded test vectors before mining. Measured automatic profiles: RX 7900 XTX ≈ 11.27 MH/s, MI50 ≈ 4.75–4.84, RX 7600 XT ≈ 4.00; see [matched measurements and power caps](PLATFORMS.md#amd-measured-profiles-2026-10-24). Remove old `--groups`/`--iters` overrides to use the automatic profiles. Same options as the CUDA miner (`--groups` instead of `--blocks`). See the AMD section of PLATFORMS.md for rates.
+**AMD / other OpenCL GPUs:** `cd opencl && make && ./proxichorizo-cl --selftest && ./proxichorizo-cl --proxi ... --token ... --key-file ...` — needs an OpenCL ICD and headers (ROCm or `ocl-icd-opencl-dev opencl-headers`); the kernels are compiled by the driver at start-up (about a minute) and checked against the embedded test vectors before mining. The published 1.0.5 uses the [earlier measured AMD profiles](PLATFORMS.md#amd-measured-profiles-2026-10-24). The current unreleased source adds faster profiles for RX 7900 XTX, RX 7600 XT and MI50; see the [development measurements](#amd-development-results-unreleased) below. Remove old `--groups`/`--iters` overrides to use the automatic profiles. Same options as the CUDA miner (`--groups` instead of `--blocks`). See the AMD section of PLATFORMS.md for rates.
 
 ```bash
 make                 # all supported generations (Turing .. Blackwell), slow
@@ -175,7 +175,7 @@ changes, idle gaps).
 1.0.5 has a faster default kernel (faster hash-to-curve and point multiplication) on Blackwell, Ada, Ampere GA10x and
 the CMP 170HX, with launches of 256 blocks per multiprocessor. The cards draw the same or less power for more hashes.
 
-CPU use: from 1.0.4 on, each GPU's worker thread sleeps while its GPU works, about 3 % of one CPU core per GPU
+CUDA CPU use: from 1.0.4 on, each GPU's worker thread sleeps while its GPU works, about 3 % of one CPU core per GPU
 (RTX 5090: 3.0 %; one process on 2x RTX 3070 + RTX 5080: 8.8 % in total; same hashrate as with the busy wait).
 1.0.3 and earlier kept one full CPU core busy per mining GPU (the same 3-GPU rig: 300 %).
 
@@ -193,7 +193,40 @@ CPU use: from 1.0.4 on, each GPU's worker thread sleeps while its GPU works, abo
 Earlier release-over-release gains on the same cards: 1.0.2 over 1.0.1 +3.0 to +5.5 % (1.0.3 and 1.0.4 run the 1.0.2
 kernels unchanged).
 
-Measured with an earlier release and not re-measured for 1.0.5 (these cards keep their earlier kernels or were not available):
+### AMD development results (unreleased)
+
+Measured on 2026-11-06 with the current OpenCL source against a clean build of the
+published v1.0.5 source. These changes are not in the downloadable v1.0.5 release.
+Each comparison is A/B/B/A with four 60-second arms, the same card, power cap,
+clocks and default launch geometry. Rates are the mean of each build's two arms.
+
+| GPU | Power cap | v1.0.5 source | Development source | Gain |
+|---|---:|---:|---:|---:|
+| Radeon RX 7900 XTX | 303 W | 12.225 MH/s | **13.527 MH/s** | **+10.6%** |
+| Radeon RX 7600 XT | 165 W | 4.053 MH/s | **4.516 MH/s** | **+11.4%** |
+| Instinct MI50 | 150 W | 5.754 MH/s | **6.880 MH/s** | **+19.6%** |
+
+The new `fe29_mlsp_c` profile ports the faster hash-to-curve and point multiplication
+from the NVIDIA work to AMD's 29-bit field representation. Every potential share is
+recomputed through the full VRF on the GPU before submission. Other model profiles
+and startup validation remain in place. See [implementation, correctness checks and
+limits](PLATFORMS.md#amd-development-2026-11-06-unreleased) and the
+[measurement CSV](benchmarks/amd-20261106.csv).
+
+All three cards passed independent correctness tests and short TLS pool checks:
+78 shares accepted, zero rejected, one stale.
+
+Steady CPU use was 1.00% of one core on MI50 and 1.27% on RX 7600 XT. The RX 7900 XTX
+host's ROCm 7.14 runtime still consumed approximately one core in its event thread;
+the application wait sleeps, but that runtime issue remains. The MI50 comparison
+uses 150 W because a 225 W trial reached the junction-temperature guard and was
+excluded. These are Linux OpenCL measurements; other models and Windows were not
+qualified in this round.
+
+### Historical measurements
+
+The following measurements come from earlier releases. They are retained separately
+from the development comparison above:
 
 | GPU | Power cap | Rate | Measured with |
 |---|---:|---:|---|

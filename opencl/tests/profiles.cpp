@@ -20,7 +20,7 @@ int main() {
     for (const auto &c : cases) {
         ClDev d; d.name = c.gfx; d.board = c.board; d.cus = c.cus;
         const Platform &p = platformFor(d);
-        assert(std::string(p.variant) == (c.optimized ? "fe29_wnaf_split8_c" : "fe29_wnaf_c"));
+        assert(std::string(p.variant) == (c.optimized ? "fe29_mlsp_c" : "fe29_wnaf_c"));
         assert(p.iters == (c.optimized ? 1 : 8));
         assert(p.groups_per_cu == (c.optimized ? 128 : 8));
     }
