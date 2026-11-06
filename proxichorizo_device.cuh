@@ -1825,7 +1825,7 @@ template<int NB> __device__ __forceinline__ void fe_mul_small_t(fe &h, const fe 
         : "=&r"(h.v[0]), "=&r"(h.v[1]), "=&r"(h.v[2]), "=&r"(h.v[3]), "=&r"(h.v[4]), "=&r"(h.v[5]), "=&r"(h.v[6]), "=&r"(h.v[7]), "=&r"(top)
         : "r"(lo[1]), "r"(lo[2]), "r"(lo[3]), "r"(lo[4]), "r"(lo[5]), "r"(lo[6]), "r"(lo[7]), "r"(hi[7]),
           "r"(hi[0]), "r"(hi[1]), "r"(hi[2]), "r"(hi[3]), "r"(hi[4]), "r"(hi[5]), "r"(hi[6]), "r"(lo[0]));
-    fe_addtop_t<NB>(h, fe_mul38small(top), 0);   // top < 2^20: top*38 < 2^26
+    fe_addtop_t<NB>(h, top * 38u, 0);   // top < 2^20: top*38 < 2^26
 }
 __device__ __forceinline__ void fe_mul_small(fe &h, const fe &f, uint32_t k) { fe_mul_small_t<0>(h, f, k); }
 // one ladder step: (x2:z2) <- 2*(x2:z2), (x3:z3) <- (x2:z2) + (x3:z3), whose difference has affine u = x1
