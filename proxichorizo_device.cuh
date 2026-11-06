@@ -1532,7 +1532,7 @@ __global__ void sha_prep_kernel(const JobDev *job, uint64_t *mid) {
     for (int i = 0; i < 9; i++) mid[8 + i] = W[i];
 }
 // the hash-to-curve SHA-512 from round 8 on; identical arithmetic to sha512_single for the 81-byte message
-__device__ void sha512_h2c_mid(const uint64_t *mid, uint64_t nonce, uint8_t ctr, uint8_t out[64]) {
+__device__ __forceinline__ void sha512_h2c_mid_st(const uint64_t *mid, uint64_t nonce, uint8_t ctr, uint64_t st_out[8]) {
     uint64_t W[16];
     #pragma unroll
     for (int i = 0; i < 8; i++) W[i] = mid[8 + i];
@@ -1563,6 +1563,10 @@ __device__ void sha512_h2c_mid(const uint64_t *mid, uint64_t nonce, uint8_t ctr,
     }
     uint64_t st[8] = { a + 0x6a09e667f3bcc908ULL, b + 0xbb67ae8584caa73bULL, c + 0x3c6ef372fe94f82bULL, d + 0xa54ff53a5f1d36f1ULL,
                        e + 0x510e527fade682d1ULL, f + 0x9b05688c2b3e6c1fULL, g + 0x1f83d9abfb41bd6bULL, h + 0x5be0cd19137e2179ULL };
+    for (int i = 0; i < 8; i++) st_out[i] = st[i];
+}
+__device__ void sha512_h2c_mid(const uint64_t *mid, uint64_t nonce, uint8_t ctr, uint8_t out[64]) {
+    uint64_t st[8]; sha512_h2c_mid_st(mid, nonce, ctr, st);
     for (int i = 0; i < 8; i++) for (int j = 0; j < 8; j++) out[i * 8 + j] = st[i] >> (56 - 8 * j);
 }
 #endif
@@ -1837,6 +1841,7 @@ __device__ __forceinline__ void mlad_step(fe &x2, fe &z2, fe &x3, fe &z3, const 
     fe_sub(E, AA, BB);
     fe_mul_small(C, E, PX_MONT_A24); fe_add(C, C, AA); fe_mul(z2, E, C);
 }
+#if PX_LADDER_NB
 // the same step on the branch-free arithmetic (no rare-carry branches; see fe_add_nb)
 __device__ __forceinline__ void mlad_step_nb(fe &x2, fe &z2, fe &x3, fe &z3, const fe &x1) {
     fe A, B, C, D, AA, BB, E, DA, CB;
@@ -1850,6 +1855,7 @@ __device__ __forceinline__ void mlad_step_nb(fe &x2, fe &z2, fe &x3, fe &z3, con
     fe_sub_nb(E, AA, BB);
     fe_mul_small_t<1>(C, E, PX_MONT_A24); fe_add_nb(C, C, AA); fe_mul_t<1>(z2, E, C);
 }
+#endif
 #if PX_LADDER_NB
 #define PX_XSTEP mlad_step_nb
 #else
@@ -2014,7 +2020,27 @@ __device__ bool fe_is_square_or_zero(const fe &w) {
         uint64_t xa = ((uint64_t)(small ? a[1] : ta) << 32) | a[0];
         uint64_t xb = ((uint64_t)(small ? b[1] : tb) << 32) | b[0];
         int32_t f0 = 1, g0 = 0, f1 = 0, g1 = 1;
-#if PX_JAC_MASK
+#if PX_JAC_MASK == 2
+        // select form, sign bits kept at bit 1 of ls: (2/b) = -1 iff bit1(b) ^ bit2(b), reciprocity iff bit1(a) & bit1(b)
+        #pragma unroll
+        for (int j = 0; j < PX_JAC_STEPS; j++) {
+            uint64_t d = xa - xb;
+            bool lt = xa < xb, odd = (uint32_t)xa & 1u, sw = odd && lt;
+            uint32_t swm = sw ? 0xFFFFFFFFu : 0u;
+            ls ^= (uint32_t)xa & (uint32_t)xb & swm;
+            uint64_t nb = sw ? xa : xb;
+            uint64_t ad = lt ? (0 - d) : d;
+            uint64_t na = odd ? ad : xa;
+            int32_t df = f0 - f1, dg = g0 - g1;
+            int32_t af = lt ? -df : df, ag = lt ? -dg : dg;
+            int32_t nf1 = sw ? f0 : f1, ng1 = sw ? g0 : g1;
+            f0 = odd ? af : f0; g0 = odd ? ag : g0;
+            f1 = nf1 << 1; g1 = ng1 << 1;
+            xa = na >> 1; xb = nb;
+            uint32_t b32 = (uint32_t)nb;
+            ls ^= b32 ^ (b32 >> 1);
+        }
+#elif PX_JAC_MASK
         // mask form: swaps by XOR masks, sign bits accumulated unmasked in ls (only bit 0 is read)
         #pragma unroll
         for (int j = 0; j < PX_JAC_STEPS; j++) {
@@ -2048,7 +2074,11 @@ __device__ bool fe_is_square_or_zero(const fe &w) {
         uint32_t na[8], nb[8];
         uint32_t nega = jac_lin(na, f0, g0, a, b);
         (void)jac_lin(nb, f1, g1, a, b);                       // b stays positive (it is always an earlier a or b)
+#if PX_JAC_MASK == 2
+        ls ^= nega ? nb[0] : 0u;                               // (-1/b) = -1 for b = 3 mod 4 (bit 1 of ls)
+#else
         ls ^= nega & (nb[0] >> 1);                             // (-1/b) = -1 for b = 3 mod 4 (bit 0 of ls)
+#endif
         #pragma unroll
         for (int i = 0; i < 8; i++) { a[i] = na[i]; b[i] = nb[i]; }
     }
@@ -2062,18 +2092,27 @@ __device__ bool fe_is_square_or_zero(const fe &w) {
     }
     uint32_t bo = b[1] | b[2] | b[3] | b[4] | b[5] | b[6] | b[7];
     if (b[0] != 1u || bo) return true;                        // gcd = p: w = 0, which is a valid encoding (x = 0)
+#if PX_JAC_MASK == 2
+    return ((ls >> 1) & 1u) == 0u;
+#else
     return (ls & 1u) == 0u;
+#endif
 }
 // one attempt: true and y stored when the hash is a valid encoding
 __device__ __forceinline__ bool h2c_try_y(const JobDev *job, const uint64_t *mid, uint64_t nonce, uint8_t ctr, fe &Y) {
-    uint8_t dg[64];
 #if PX_H2C_MID
-    if (job->prefix_len == PX_MID_PREFIX) sha512_h2c_mid(mid, nonce, ctr, dg);
-    else
+    if (job->prefix_len == PX_MID_PREFIX) {
+        // y straight from the state words (digest bytes 0..31 little-endian = byte-swapped big-endian words): no byte array
+        uint64_t st[8]; sha512_h2c_mid_st(mid, nonce, ctr, st);
+        #pragma unroll
+        for (int i = 0; i < 4; i++) { Y.v[2 * i] = __byte_perm((uint32_t)(st[i] >> 32), 0, 0x0123); Y.v[2 * i + 1] = __byte_perm((uint32_t)st[i], 0, 0x0123); }
+        Y.v[7] &= 0x7FFFFFFFu;
+    } else
 #else
     (void)mid;
 #endif
     {
+        uint8_t dg[64];
         uint8_t msg[128];
         int n = 0;
         msg[n++] = 0x03; msg[n++] = 0x01;
@@ -2082,9 +2121,10 @@ __device__ __forceinline__ bool h2c_try_y(const JobDev *job, const uint64_t *mid
         for (int k = 0; k < 8; k++) msg[n++] = (uint8_t)(nonce >> (56 - 8 * k));
         msg[n++] = ctr; msg[n++] = 0;
         sha512_single(msg, n, dg);
+        fe_frombytes(Y, dg);
     }
     fe YY, one, u, v;
-    fe_frombytes(Y, dg); fe_1(one);
+    fe_1(one);
     fe_sq(YY, Y); fe_sub(u, YY, one);
     fe_mul(v, YY, d_EDWARDS_D); fe_add(v, v, one);
     fe_mul(u, u, v);
@@ -2093,25 +2133,37 @@ __device__ __forceinline__ bool h2c_try_y(const JobDev *job, const uint64_t *mid
 __global__ void __launch_bounds__(256, PX_LB_H2C) h2cx_kernel(const JobDev *job, const uint64_t *mid, uint64_t nonce_base, const uint64_t *in_nonce, const uint8_t *in_ctr, const unsigned *n_in_ptr,
                                                    HPoint *pts, unsigned *n_pts, uint64_t *out_nonce, uint8_t *out_ctr, unsigned *n_out) {
     unsigned n_in = *n_in_ptr;
-    unsigned gid = blockIdx.x * blockDim.x + threadIdx.x, total = gridDim.x * blockDim.x;
-    for (unsigned i = gid; i < n_in; i += total) {
-        uint64_t nonce = in_nonce ? in_nonce[i] : nonce_base + i;
-        uint8_t ctr = in_nonce ? in_ctr[i] : 0;
-        fe Y;
-        if (h2c_try_y(job, mid, nonce, ctr, Y)) {
-            unsigned o = atomicAdd(n_pts, 1u);
-            fe_copy(pts[o].Y, Y); pts[o].nonce = nonce;
-        } else if (ctr < 255) {
-            unsigned o = atomicAdd(n_out, 1u);
-            out_nonce[o] = nonce; out_ctr[o] = ctr + 1;
+    unsigned total = gridDim.x * blockDim.x, lane = threadIdx.x & 31u;
+    // warp-uniform loop; one atomic per warp and queue (ballot + prefix count) instead of one per point
+    for (unsigned base = blockIdx.x * blockDim.x + (threadIdx.x & ~31u); base < n_in; base += total) {
+        unsigned i = base + lane;
+        bool act = i < n_in, ok = false;
+        uint64_t nonce = 0; uint8_t ctr = 0; fe Y;
+        if (act) {
+            nonce = in_nonce ? in_nonce[i] : nonce_base + i;
+            ctr = in_nonce ? in_ctr[i] : 0;
+            ok = h2c_try_y(job, mid, nonce, ctr, Y);
         }
+        bool rt = act && !ok && ctr < 255;
+        unsigned mo = __ballot_sync(0xffffffffu, ok), mr = __ballot_sync(0xffffffffu, rt);
+        unsigned bo = 0, br = 0;
+        if (lane == 0) { if (mo) bo = atomicAdd(n_pts, __popc(mo)); if (mr) br = atomicAdd(n_out, __popc(mr)); }
+        bo = __shfl_sync(0xffffffffu, bo, 0); br = __shfl_sync(0xffffffffu, br, 0);
+        unsigned lt = (1u << lane) - 1u;
+        if (ok) { unsigned o = bo + __popc(mo & lt); fe_copy(pts[o].Y, Y); pts[o].nonce = nonce; }
+        if (rt) { unsigned o = br + __popc(mr & lt); out_nonce[o] = nonce; out_ctr[o] = ctr + 1; }
     }
 }
 #if PX_CORUN
 // one persistent 384-thread block per multiprocessor at <= 128 registers (49152 of 65536): the rest of the register
 // file stays free for one 128-thread block of the hash-to-curve / prep / finish kernels of the next slice, which then
 // issue on the integer pipe beside the ladder's multiplies
-#define PX_LADDER_ATTR __maxnreg__(128)
+#ifndef PX_LADDER_MAXREG
+#define PX_LADDER_MAXREG 128
+#define PX_LADDER_TPB 384
+#define PX_LADDER_BPS 1
+#endif
+#define PX_LADDER_ATTR __maxnreg__(PX_LADDER_MAXREG)
 #define PX_SMALL_ATTR __launch_bounds__(128, 4)
 #else
 #define PX_LADDER_ATTR __launch_bounds__(256, PX_LB_LADDER)
@@ -2152,10 +2204,32 @@ __global__ void PX_LADDER_ATTR ladderx_kernel(const HPoint *pts, const unsigned 
         if (fe_iszero(xP)) { out[i].valid = 0; fe_1(out[i].Z); continue; }
         fe x2, z2, x3, z3;
         fe_1(x2); fe_0(z2); fe_copy(x3, xP); fe_1(z3);
+#if PX_LADDER_CSWAP
+        // one code path: conditional swap by a (warp-uniform) mask before each step, RFC 7748 order
+        uint32_t swp = 0;
+        for (int b = c_xladder_top; b >= 0; b--) {
+            uint32_t kt = (c_xscalar[b >> 3] >> (b & 7)) & 1u;
+            uint32_t m = 0u - (swp ^ kt);
+            #pragma unroll
+            for (int l = 0; l < 8; l++) {
+                uint32_t t = (x2.v[l] ^ x3.v[l]) & m; x2.v[l] ^= t; x3.v[l] ^= t;
+                uint32_t u = (z2.v[l] ^ z3.v[l]) & m; z2.v[l] ^= u; z3.v[l] ^= u;
+            }
+            swp = kt;
+            PX_XSTEP(x2, z2, x3, z3, xP);
+        }
+        {   uint32_t m = 0u - swp;
+            #pragma unroll
+            for (int l = 0; l < 8; l++) {
+                uint32_t t = (x2.v[l] ^ x3.v[l]) & m; x2.v[l] ^= t; x3.v[l] ^= t;
+                uint32_t u = (z2.v[l] ^ z3.v[l]) & m; z2.v[l] ^= u; z3.v[l] ^= u;
+            } }
+#else
         for (int b = c_xladder_top; b >= 0; b--) {
             if ((c_xscalar[b >> 3] >> (b & 7)) & 1) PX_XSTEP(x3, z3, x2, z2, xP);
             else PX_XSTEP(x2, z2, x3, z3, xP);
         }
+#endif
         #pragma unroll 1
         for (int d = 0; d < 3; d++) {           // x-only doubling: (X+Z)^2 (X-Z)^2 : E ((X+Z)^2 + a24 E), E = 4XZ
             fe A, B, AA, BB, E, C;
@@ -2487,7 +2561,7 @@ static void v_free(void *scratch) { v_free_one(scratch); }
 // PX_SLICES: the launch is split into slices on their own streams. Slice i hashes to the curve only after slice
 // i-1 has (event chain), so its short, poorly occupied kernels (hash-to-curve passes, prep) run underneath the
 // other slices' ladders instead of on an otherwise idle GPU; the finish stages overlap the same way.
-struct SliceSet { Scratch *sc[PX_SLICES]; size_t n[PX_SLICES]; cudaStream_t st[PX_SLICES]; cudaEvent_t h2c_done[PX_SLICES]; int sms; };
+struct SliceSet { Scratch *sc[PX_SLICES]; size_t n[PX_SLICES]; cudaStream_t st[PX_SLICES]; cudaEvent_t h2c_done[PX_SLICES], prep_done[PX_SLICES], lad_done[PX_SLICES]; int sms; };
 static void *v_alloc_one(size_t n);
 static void v_free_one(void *scratch);
 static void *v_alloc_slices(size_t n) {
@@ -2500,12 +2574,14 @@ static void *v_alloc_slices(size_t n) {
         if (!ss->n[i]) { unsigned z = 0; CUDA_CHECK(cudaMemcpy(ss->sc[i]->cnt + PX_MAX_PASSES + 1, &z, sizeof z, cudaMemcpyHostToDevice)); }
         CUDA_CHECK(cudaStreamCreate(&ss->st[i]));
         CUDA_CHECK(cudaEventCreateWithFlags(&ss->h2c_done[i], cudaEventDisableTiming));
+        CUDA_CHECK(cudaEventCreateWithFlags(&ss->prep_done[i], cudaEventDisableTiming));
+        CUDA_CHECK(cudaEventCreateWithFlags(&ss->lad_done[i], cudaEventDisableTiming));
     }
     return ss;
 }
 static void v_free_slices(void *scratch) {
     SliceSet *ss = (SliceSet *)scratch; if (!ss) return;
-    for (int i = 0; i < PX_SLICES; i++) { v_free_one(ss->sc[i]); cudaStreamDestroy(ss->st[i]); cudaEventDestroy(ss->h2c_done[i]); }
+    for (int i = 0; i < PX_SLICES; i++) { v_free_one(ss->sc[i]); cudaStreamDestroy(ss->st[i]); cudaEventDestroy(ss->h2c_done[i]); cudaEventDestroy(ss->prep_done[i]); cudaEventDestroy(ss->lad_done[i]); }
     delete ss;
 }
 static void mine_x_slice(Scratch *sc, size_t N, cudaStream_t st, cudaEvent_t wait_ev, cudaEvent_t done_ev, int blocks, int threads,
@@ -2545,9 +2621,57 @@ static void mine_x_slice(Scratch *sc, size_t N, cudaStream_t st, cudaEvent_t wai
 #endif
 }
 #endif
+#if PX_CORUN == 2
+// PX_CORUN 2: every slice hashes to the curve first, back to back at full width (those kernels do not fit beside the
+// ladder); then the ladders run one after another, one persistent 384-thread block per multiprocessor, and the prep of
+// slice i+1 and the finish of slice i-1 run in the register space the ladder leaves free (128-thread blocks).
+static void mine_x_pipe(SliceSet *ss, int threads, const JobDev *job, uint64_t nonce_base, Hit *hits, unsigned *nhits) {
+    (void)threads;
+    const int HT = 128;
+    uint64_t off = 0;
+    for (int i = 0; i < PX_SLICES; i++) {
+        Scratch *sc = ss->sc[i]; size_t N = ss->n[i]; cudaStream_t st = ss->st[i];
+        if (i) CUDA_CHECK(cudaStreamWaitEvent(st, ss->h2c_done[i - 1], 0));
+        CUDA_CHECK(cudaMemsetAsync(sc->cnt, 0, (PX_MAX_PASSES + 1) * sizeof(unsigned), st));
+        int g1 = (int)((N + HT - 1) / HT); if (g1 < 1) g1 = 1;
+#if PX_H2C_MID
+        const uint64_t *mid = sc->mid;
+        sha_prep_kernel<<<1, 32, 0, st>>>(job, sc->mid);
+#else
+        const uint64_t *mid = nullptr;
+#endif
+        h2cx_kernel<<<g1, HT, 0, st>>>(job, mid, nonce_base + off, nullptr, nullptr, sc->cnt + PX_MAX_PASSES + 1, sc->pts, sc->cnt, sc->nonce[0], sc->ctr[0], sc->cnt + 1);
+        for (int p = 1; p < PX_MAX_PASSES; p++) {
+            int in = (p - 1) & 1, out = p & 1;
+            h2cx_kernel<<<max(1, g1 >> p), HT, 0, st>>>(job, mid, nonce_base + off, sc->nonce[in], sc->ctr[in], sc->cnt + p, sc->pts, sc->cnt, sc->nonce[out], sc->ctr[out], sc->cnt + p + 1);
+        }
+        CUDA_CHECK(cudaEventRecord(ss->h2c_done[i], st));
+        off += N;
+    }
+    for (int i = 0; i < PX_SLICES; i++) {
+        Scratch *sc = ss->sc[i]; size_t N = ss->n[i]; cudaStream_t st = ss->st[i];
+        CUDA_CHECK(cudaStreamWaitEvent(st, ss->h2c_done[PX_SLICES - 1], 0));
+        if (i) CUDA_CHECK(cudaStreamWaitEvent(st, ss->prep_done[i - 1], 0));     // prep i beside ladder i-1
+        int gp = (int)((N + (size_t)HT * PX_PREP_BATCH - 1) / ((size_t)HT * PX_PREP_BATCH)); if (gp < 1) gp = 1;
+        prepx_kernel<<<gp, HT, 0, st>>>(sc->cnt, sc->pts);
+        CUDA_CHECK(cudaEventRecord(ss->prep_done[i], st));
+        if (i) CUDA_CHECK(cudaStreamWaitEvent(st, ss->lad_done[i - 1], 0));
+        ladderx_kernel<<<ss->sms * PX_LADDER_BPS, PX_LADDER_TPB, 0, st>>>(sc->pts, sc->cnt, sc->projective);
+        CUDA_CHECK(cudaEventRecord(ss->lad_done[i], st));
+        int gf = (int)((N + (size_t)HT * PX_SPLIT_FINISH - 1) / ((size_t)HT * PX_SPLIT_FINISH)); if (gf < 1) gf = 1;
+        finishx_kernel<<<gf, HT, 0, st>>>(job, sc->projective, sc->cnt, hits, nhits);   // beside ladder i+1
+    }
+}
+#endif
 static void v_mine(int blocks, int threads, const JobDev *job, uint64_t nonce_base, uint64_t stride, int iters, Hit *hits, unsigned *nhits, void *scratch) {
 #if PX_XONLY && PX_SLICES > 1
     {   SliceSet *ss = (SliceSet *)scratch;
+#if PX_CORUN == 2
+        mine_x_pipe(ss, threads, job, nonce_base, hits, nhits);
+        (void)blocks; (void)stride; (void)iters;
+        resolve_kernel<<<1, 128>>>(job, hits, nhits);
+        return;
+#endif
         int sb = (blocks + PX_SLICES - 1) / PX_SLICES;
         uint64_t off = 0;
         for (int i = 0; i < PX_SLICES; i++) {
@@ -2652,7 +2776,11 @@ static const VariantOps ops = { PX_VARIANT_NAME,
 #undef PX_FOLDSHIFT
 #undef PX_LB_SCALAR
 #undef PX_LADDER
+#undef PX_LADDER_CSWAP
 #undef PX_CORUN
+#undef PX_LADDER_MAXREG
+#undef PX_LADDER_TPB
+#undef PX_LADDER_BPS
 #undef PX_LADDER_ATTR
 #undef PX_SMALL_ATTR
 #undef PX_SLICES
