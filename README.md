@@ -193,6 +193,33 @@ CUDA CPU use: from 1.0.4 on, each GPU's worker thread sleeps while its GPU works
 Earlier release-over-release gains on the same cards: 1.0.2 over 1.0.1 +3.0 to +5.5 % (1.0.3 and 1.0.4 run the 1.0.2
 kernels unchanged).
 
+### NVIDIA 1.0.6 checks
+
+The 1.0.6 CUDA worker can stop the remainder of an obsolete x-only launch when a
+new pool job arrives. It retains sleeping waits. The Blackwell ladder also uses
+a revised instruction order. In fixed-job benchmarks, throughput was essentially
+unchanged on the eight tested cards (within 0.23% of 1.0.5); these small differences
+should not be treated as a guaranteed speed increase.
+
+| GPU | Power cap | 1.0.5 MH/s | 1.0.6 MH/s | Change |
+|---|---:|---:|---:|---:|
+| RTX 5090 | 600 W | 79.117 | 79.270 | +0.19% |
+| RTX 5090 | 420 W | 66.468 | 66.617 | +0.23% |
+| RTX 5080 (sample 1) | 360 W | 40.770 | 40.792 | +0.06% |
+| RTX 5080 (sample 2) | 360 W | 39.912 | 39.947 | +0.09% |
+| RTX 4070 Ti SUPER | 285 W | 31.531 | 31.511 | -0.06% |
+| RTX 3070 (sample 1) | 240 W | 15.004 | 14.979 | -0.17% |
+| RTX 3070 (sample 2) | 240 W | 15.204 | 15.180 | -0.16% |
+| CMP 170HX | 250 W | 17.244 | 17.236 | -0.05% |
+
+Four 60-second arms per version, alternating A/B/B/A/A/B/B/A, measured on
+2026-11-06. The two RTX 5090 comparisons discard a separate warm-up arm. The Ada
+comparison uses architecture-specific builds; the other rows use the full portable
+build. Each row compares the same card and power settings. See the
+[CSV](benchmarks/nvidia-1.0.6.csv). Live job-change checks on three GPUs in one process
+and a separate RTX 5080 returned 113 accepted shares, zero rejected and one stale.
+Those live checks qualify job changes; share counts are not a throughput comparison.
+
 ### AMD 1.0.6 benchmarks
 
 The portable 1.0.6 OpenCL build was measured against the published 1.0.5 Linux

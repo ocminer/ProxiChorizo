@@ -1,0 +1,9 @@
+gpu,cap_w,baseline_version,release_version,baseline_mhs,release_mhs,change_percent,arms_per_version,seconds_per_arm,release_average_power_w,build
+RTX 5090,600,1.0.5,1.0.6,79.117,79.27,0.193,4,60,600.0,portable Linux
+RTX 5090,420,1.0.5,1.0.6,66.468,66.617,0.225,4,60,420.0,portable Linux
+RTX 5080 (sample 1),360,1.0.5,1.0.6,40.77,40.792,0.055,4,60,329.8,portable Linux
+RTX 5080 (sample 2),360,1.0.5,1.0.6,39.912,39.947,0.088,4,60,296.8,portable Linux
+RTX 4070 Ti SUPER,285,1.0.5,1.0.6,31.531,31.511,-0.064,4,60,284.1,architecture-specific sm89
+RTX 3070 (sample 1),240,1.0.5,1.0.6,15.004,14.979,-0.168,4,60,235.1,portable Linux
+RTX 3070 (sample 2),240,1.0.5,1.0.6,15.204,15.18,-0.16,4,60,232.6,portable Linux
+CMP 170HX,250,1.0.5,1.0.6,17.244,17.236,-0.046,4,60,183.6,portable Linux
