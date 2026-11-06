@@ -35,7 +35,7 @@ Linux x86-64 (also HiveOS, MMPOS, SMOS) or Windows 10/11 x64, and a PROX address
    ```
    proxichorizo.exe -o stratum+tcp://proxi.suprnova.cc:3355 -u rig1 -p YOUR_TOKEN --key-file proxima.key
    ```
-   AMD GPUs: the same with `./proxichorizo-cl`.
+   AMD GPUs on Linux: the same with `./proxichorizo-cl`. The native Windows archive contains the NVIDIA CUDA miner.
 
 ### Pool addresses
 
@@ -145,7 +145,7 @@ Measured (1.0.5, `--bench`, platform defaults): RTX 5090 ≈ 78.6 MH/s at 600 W 
 
 ## Build
 
-**AMD / other OpenCL GPUs:** `cd opencl && make && ./proxichorizo-cl --selftest && ./proxichorizo-cl --proxi ... --token ... --key-file ...` — needs an OpenCL ICD and headers (ROCm or `ocl-icd-opencl-dev opencl-headers`); the kernels are compiled by the driver at start-up (about a minute) and checked against the embedded test vectors before mining. The published 1.0.5 uses the [earlier measured AMD profiles](PLATFORMS.md#amd-measured-profiles-2026-10-24). The current unreleased source adds faster profiles for RX 7900 XTX, RX 7600 XT and MI50; see the [development measurements](#amd-development-results-unreleased) below. Remove old `--groups`/`--iters` overrides to use the automatic profiles. Same options as the CUDA miner (`--groups` instead of `--blocks`). See the AMD section of PLATFORMS.md for rates.
+**AMD / other OpenCL GPUs:** `cd opencl && make && ./proxichorizo-cl --selftest && ./proxichorizo-cl --proxi ... --token ... --key-file ...` — needs an OpenCL ICD and headers (ROCm or `ocl-icd-opencl-dev opencl-headers`); the kernels are compiled by the driver at start-up (about a minute) and checked against the embedded test vectors before mining. Version 1.0.6 adds faster measured profiles for RX 7900 XTX, RX 7600 XT and MI50; see the [AMD benchmarks](#amd-106-benchmarks) below. Remove old `--groups`/`--iters` overrides to use the automatic profiles. Same options as the CUDA miner (`--groups` instead of `--blocks`). See the AMD section of PLATFORMS.md for rates.
 
 ```bash
 make                 # all supported generations (Turing .. Blackwell), slow
@@ -193,35 +193,31 @@ CUDA CPU use: from 1.0.4 on, each GPU's worker thread sleeps while its GPU works
 Earlier release-over-release gains on the same cards: 1.0.2 over 1.0.1 +3.0 to +5.5 % (1.0.3 and 1.0.4 run the 1.0.2
 kernels unchanged).
 
-### AMD development results (unreleased)
+### AMD 1.0.6 benchmarks
 
-Measured on 2026-11-06 with the current OpenCL source against a clean build of the
-published v1.0.5 source. These changes are not in the downloadable v1.0.5 release.
-Each comparison is A/B/B/A with four 60-second arms, the same card, power cap,
-clocks and default launch geometry. Rates are the mean of each build's two arms.
+The portable 1.0.6 OpenCL build was measured against the published 1.0.5 Linux
+binary on 2026-11-06. A/B/B/A, four 60-second arms on each card, same power cap,
+clocks, key and default launch geometry. Each rate is the mean of two arms.
 
-| GPU | Power cap | v1.0.5 source | Development source | Gain |
+| GPU | Power cap | Published 1.0.5 | Portable 1.0.6 build | Gain |
 |---|---:|---:|---:|---:|
-| Radeon RX 7900 XTX | 303 W | 12.225 MH/s | **13.527 MH/s** | **+10.6%** |
-| Radeon RX 7600 XT | 165 W | 4.053 MH/s | **4.516 MH/s** | **+11.4%** |
-| Instinct MI50 | 150 W | 5.754 MH/s | **6.880 MH/s** | **+19.6%** |
+| Radeon RX 7900 XTX | 303 W | 12.281 MH/s | **13.628 MH/s** | **+11.0%** |
+| Radeon RX 7600 XT | 165 W | 4.052 MH/s | **4.519 MH/s** | **+11.5%** |
+| Instinct MI50 | 150 W | 5.753 MH/s | **6.880 MH/s** | **+19.6%** |
 
-The new `fe29_mlsp_c` profile ports the faster hash-to-curve and point multiplication
-from the NVIDIA work to AMD's 29-bit field representation. Every potential share is
-recomputed through the full VRF on the GPU before submission. Other model profiles
-and startup validation remain in place. See [implementation, correctness checks and
-limits](PLATFORMS.md#amd-development-2026-11-06-unreleased) and the
-[measurement CSV](benchmarks/amd-20261106.csv).
+The measured RX 7900 XTX, RX 7600 XT and MI50 profiles use the new fe29_mlsp_c
+kernel. Other model profiles retain their earlier defaults or first-start tuning.
+Every potential share is recomputed through the complete VRF on the GPU before
+submission. See the [portable release measurements](PLATFORMS.md#amd-106-portable-release-qualification)
+and [CSV](benchmarks/amd-1.0.6.csv). The earlier development comparison is retained
+separately in PLATFORMS.md.
 
-All three cards passed independent correctness tests and short TLS pool checks:
-78 shares accepted, zero rejected, one stale.
-
-Steady CPU use was 1.00% of one core on MI50 and 1.27% on RX 7600 XT. The RX 7900 XTX
-host's ROCm 7.14 runtime still consumed approximately one core in its event thread;
-the application wait sleeps, but that runtime issue remains. The MI50 comparison
-uses 150 W because a 225 W trial reached the junction-temperature guard and was
-excluded. These are Linux OpenCL measurements; other models and Windows were not
-qualified in this round.
+The worker sleeps on OpenCL completion callbacks. MI50 and RX 7600 XT steady CPU
+use is around 1% of one core. The tested XTX host's ROCm 7.14 event thread still
+consumes approximately one core; that runtime issue remains. The MI50 comparison
+uses 150 W because an earlier 225 W development trial reached the junction guard
+and was excluded. These are Linux OpenCL results; the Windows package is NVIDIA
+CUDA, and the new AMD profiles have not been qualified on Windows or other models.
 
 ### Historical measurements
 

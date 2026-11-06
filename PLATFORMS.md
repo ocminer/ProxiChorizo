@@ -654,9 +654,9 @@ Launch size for this kernel (RTX 5090 at 575 W): 128 blocks/SM 76.5, 256 77.7, 5
 256 17.00; RTX 4070 Ti SUPER 128 31.04, 256 31.31. 256 is the default (shorter launches than 512 for the same rate).
 
 
-## AMD development (2026-11-06, unreleased)
+## AMD development study (2026-11-06, before 1.0.6)
 
-This OpenCL change is based on v1.0.5 (`48ec2a8`); it has not been released. NVIDIA
+This study is based on v1.0.5 and selected the OpenCL kernel for 1.0.6. The measurements in this section belong to that development build. NVIDIA
 source, launch profiles and previously published measurements are unchanged.
 The new `fe29_mlsp_c` default applies only to the measured RX 7900 XTX (gfx1100,
 48 OpenCL CUs), RX 7600 XT (gfx1102, 16 CUs) and MI50 (gfx906, 60 CUs) model matches.
@@ -722,3 +722,24 @@ runtime spin reported in [ROCm issue 12674](https://github.com/ROCm/rocm-systems
 but no runtime replacement was tested here. The tested environment settings did not
 resolve it. MI50 and RX 7600 XT use ROCm 6.4 and the XTX uses ROCm 7.14. Windows and
 other physical AMD models remain unqualified for this new profile.
+
+
+## AMD 1.0.6 portable release qualification
+
+| GPU | Power cap | Published 1.0.5 | Portable 1.0.6 build | Gain |
+|---|---:|---:|---:|---:|
+| Radeon RX 7900 XTX | 303 W | 12.281 MH/s | **13.628 MH/s** | **+11.0%** |
+| Radeon RX 7600 XT | 165 W | 4.052 MH/s | **4.519 MH/s** | **+11.5%** |
+| Instinct MI50 | 150 W | 5.753 MH/s | **6.880 MH/s** | **+19.6%** |
+
+The portable Ubuntu 20.04 build uses the same qualified AMD kernel as the study above; the generated common host differs only by the version string. This comparison uses the published 1.0.5 binary, not the earlier development baseline. Final OpenCL SHA-256: 7a5292c43ea4a9ae7c509e2158339de07aa3c09b6b7624740261e6a5846b9ffc.
+
+Each physical GPU passed 512 independent VRF vectors, 32,000 field/Jacobi tests, 140 complete-output cases (89,279 outputs) and 46,280 point comparisons from 560 fixtures. CPU FE29/32/51 references, the 560 limb-assertion fixtures and nine profile checks passed with the portable toolchain. Startup and TCP/TLS checks passed on Ubuntu 20.04, 22.04 and 24.04. The Linux packages require an installed OpenCL runtime; no GPU driver is bundled. The final portable live checks returned 78 accepted shares, zero rejected and zero stale across the three cards. Completion-callback success and failed-dependency tests passed on both installed ROCm runtimes. This is a short qualification, not a long-duration soak.
+
+Radeon RX 7900 XTX: 100.04% of one CPU core, 302.7 W average reported power, 93 °C maximum sampled junction temperature across the benchmark arms.
+
+Radeon RX 7600 XT: 1.28% of one CPU core, 163.6 W average reported power, 93 °C maximum sampled junction temperature across the benchmark arms.
+
+Instinct MI50: 0.99% of one CPU core, 147.9 W average reported power, 76 °C maximum sampled junction temperature across the benchmark arms.
+
+The XTX ROCm runtime CPU-spin limitation and MI50 thermal limit described above still apply. NVIDIA measurements belong to their separately recorded qualification.

@@ -1,0 +1,4 @@
+gpu,cap_w,baseline,release,baseline_mhs,release_mhs,gain_percent,release_power_w,release_cpu_percent_one_core,junction_max_c,arms,seconds_per_arm,opencl_binary_sha256
+Radeon RX 7900 XTX,303.0,published v1.0.5 Linux binary,portable 1.0.6 build,12.281000,13.628310,10.970682,302.707,100.037,93.0,4,60,7a5292c43ea4a9ae7c509e2158339de07aa3c09b6b7624740261e6a5846b9ffc
+Radeon RX 7600 XT,165.0,published v1.0.5 Linux binary,portable 1.0.6 build,4.052000,4.519028,11.525864,163.635,1.282,93.0,4,60,7a5292c43ea4a9ae7c509e2158339de07aa3c09b6b7624740261e6a5846b9ffc
+Instinct MI50,150.0,published v1.0.5 Linux binary,portable 1.0.6 build,5.753000,6.880319,19.595324,147.868,0.987,76.0,4,60,7a5292c43ea4a9ae7c509e2158339de07aa3c09b6b7624740261e6a5846b9ffc
