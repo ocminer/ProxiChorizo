@@ -372,6 +372,67 @@ namespace v_fe32x_mladxn_c {
 namespace v_fe32x_mladxm_c {
 #include "proxichorizo_device.cuh"
 }
+#ifdef PX_DEV_TUNE
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 1
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_LB_H2C 1
+#undef PX_VARIANT_NAME
+#define PX_VARIANT_NAME "fe32x_mt_h1_c"
+namespace v_fe32x_mt_h1_c {
+#include "proxichorizo_device.cuh"
+}
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 1
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_LB_H2C 2
+#define PX_LB_LADDER 3
+#undef PX_VARIANT_NAME
+#define PX_VARIANT_NAME "fe32x_mt_l3_c"
+namespace v_fe32x_mt_l3_c {
+#include "proxichorizo_device.cuh"
+}
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 1
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_LB_H2C 2
+#define PX_PREP_BATCH 8
+#undef PX_VARIANT_NAME
+#define PX_VARIANT_NAME "fe32x_mt_p8_c"
+namespace v_fe32x_mt_p8_c {
+#include "proxichorizo_device.cuh"
+}
+#endif
 #ifdef PX_DEV_LADDER_ALL
 #define PX_FE32 1
 #define PX_COMBA 1
@@ -757,6 +818,8 @@ namespace v_fe32_w4_linear_split8_c {
 #ifdef PX_DEV_LADDER
 #ifdef PX_DEV_LADDER_ALL
 static const VariantOps *VARIANTS[] = { &v_fe32x_wnaf_s32_c::ops, &v_fe32x_mlad_c::ops, &v_fe32x_mladx_c::ops, &v_fe32x_mladxn_c::ops, &v_fe32x_mladxs2_c::ops, &v_fe32x_mladxs4_c::ops, &v_fe32x_mladxc2_c::ops, &v_fe32x_mladxc4_c::ops };
+#elif defined(PX_DEV_TUNE)
+static const VariantOps *VARIANTS[] = { &v_fe32x_wnaf_s32_c::ops, &v_fe32x_mladxm_c::ops, &v_fe32x_mt_h1_c::ops, &v_fe32x_mt_l3_c::ops, &v_fe32x_mt_p8_c::ops };
 #else
 static const VariantOps *VARIANTS[] = { &v_fe32x_wnaf_s32_c::ops, &v_fe32x_mladxn_c::ops, &v_fe32x_mladxm_c::ops };
 #endif
