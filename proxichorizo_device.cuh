@@ -448,6 +448,9 @@ __device__ __forceinline__ uint32_t fe_mul38small(uint32_t t) {
 #ifndef PX_FOLDSHIFT
 #define PX_FOLDSHIFT 0
 #endif
+#if PX_ZFREE && !PX_ROW0C
+#error PX_ZFREE needs PX_ROW0C
+#endif
 template<int NB, int FS = PX_FOLDSHIFT> __device__ void fe_mul_t(fe &h, const fe &f, const fe &g) {
     const uint32_t *a = f.v, *b = g.v;
     uint32_t E[16], Od[16];
@@ -468,33 +471,75 @@ template<int NB, int FS = PX_FOLDSHIFT> __device__ void fe_mul_t(fe &h, const fe
         : "r"(a[0]), "r"(b[0]), "r"(b[1]), "r"(b[2]), "r"(b[3]), "r"(b[4]), "r"(b[5]), "r"(b[6]), "r"(b[7]));
 #endif
     // row 1
+#if PX_ZFREE
+    asm("mad.lo.cc.u32 %0, %17, %19, %0;\n\tmadc.hi.cc.u32 %1, %17, %19, %1;\n\tmadc.lo.cc.u32 %2, %17, %21, %2;\n\tmadc.hi.cc.u32 %3, %17, %21, %3;\n\tmadc.lo.cc.u32 %4, %17, %23, %4;\n\tmadc.hi.cc.u32 %5, %17, %23, %5;\n\tmadc.lo.cc.u32 %6, %17, %25, 0;\n\tmadc.hi.u32 %7, %17, %25, 0;\n\tmad.lo.cc.u32 %8, %17, %18, %8;\n\tmadc.hi.cc.u32 %9, %17, %18, %9;\n\tmadc.lo.cc.u32 %10, %17, %20, %10;\n\tmadc.hi.cc.u32 %11, %17, %20, %11;\n\tmadc.lo.cc.u32 %12, %17, %22, %12;\n\tmadc.hi.cc.u32 %13, %17, %22, %13;\n\tmadc.lo.cc.u32 %14, %17, %24, %14;\n\tmadc.hi.cc.u32 %15, %17, %24, %15;\n\taddc.u32 %16, 0, 0;"
+        : "+r"(E[2]), "+r"(E[3]), "+r"(E[4]), "+r"(E[5]), "+r"(E[6]), "+r"(E[7]), "=&r"(E[8]), "=&r"(E[9]), "+r"(Od[0]), "+r"(Od[1]), "+r"(Od[2]), "+r"(Od[3]), "+r"(Od[4]), "+r"(Od[5]), "+r"(Od[6]), "+r"(Od[7]), "=&r"(Od[8])
+        : "r"(a[1]), "r"(b[0]), "r"(b[1]), "r"(b[2]), "r"(b[3]), "r"(b[4]), "r"(b[5]), "r"(b[6]), "r"(b[7]));
+#else
     asm("mad.lo.cc.u32 %0, %17, %19, %0;\n\tmadc.hi.cc.u32 %1, %17, %19, %1;\n\tmadc.lo.cc.u32 %2, %17, %21, %2;\n\tmadc.hi.cc.u32 %3, %17, %21, %3;\n\tmadc.lo.cc.u32 %4, %17, %23, %4;\n\tmadc.hi.cc.u32 %5, %17, %23, %5;\n\tmadc.lo.cc.u32 %6, %17, %25, %6;\n\tmadc.hi.u32 %7, %17, %25, %7;\n\tmad.lo.cc.u32 %8, %17, %18, %8;\n\tmadc.hi.cc.u32 %9, %17, %18, %9;\n\tmadc.lo.cc.u32 %10, %17, %20, %10;\n\tmadc.hi.cc.u32 %11, %17, %20, %11;\n\tmadc.lo.cc.u32 %12, %17, %22, %12;\n\tmadc.hi.cc.u32 %13, %17, %22, %13;\n\tmadc.lo.cc.u32 %14, %17, %24, %14;\n\tmadc.hi.cc.u32 %15, %17, %24, %15;\n\taddc.u32 %16, %16, 0;"
         : "+r"(E[2]), "+r"(E[3]), "+r"(E[4]), "+r"(E[5]), "+r"(E[6]), "+r"(E[7]), "+r"(E[8]), "+r"(E[9]), "+r"(Od[0]), "+r"(Od[1]), "+r"(Od[2]), "+r"(Od[3]), "+r"(Od[4]), "+r"(Od[5]), "+r"(Od[6]), "+r"(Od[7]), "+r"(Od[8])
         : "r"(a[1]), "r"(b[0]), "r"(b[1]), "r"(b[2]), "r"(b[3]), "r"(b[4]), "r"(b[5]), "r"(b[6]), "r"(b[7]));
+#endif
     // row 2
+#if PX_ZFREE
+    asm("mad.lo.cc.u32 %0, %17, %18, %0;\n\tmadc.hi.cc.u32 %1, %17, %18, %1;\n\tmadc.lo.cc.u32 %2, %17, %20, %2;\n\tmadc.hi.cc.u32 %3, %17, %20, %3;\n\tmadc.lo.cc.u32 %4, %17, %22, %4;\n\tmadc.hi.cc.u32 %5, %17, %22, %5;\n\tmadc.lo.cc.u32 %6, %17, %24, %6;\n\tmadc.hi.cc.u32 %7, %17, %24, %7;\n\taddc.u32 %8, 0, 0;\n\tmad.lo.cc.u32 %9, %17, %19, %9;\n\tmadc.hi.cc.u32 %10, %17, %19, %10;\n\tmadc.lo.cc.u32 %11, %17, %21, %11;\n\tmadc.hi.cc.u32 %12, %17, %21, %12;\n\tmadc.lo.cc.u32 %13, %17, %23, %13;\n\tmadc.hi.cc.u32 %14, %17, %23, %14;\n\tmadc.lo.cc.u32 %15, %17, %25, %15;\n\tmadc.hi.u32 %16, %17, %25, 0;"
+        : "+r"(E[2]), "+r"(E[3]), "+r"(E[4]), "+r"(E[5]), "+r"(E[6]), "+r"(E[7]), "+r"(E[8]), "+r"(E[9]), "=&r"(E[10]), "+r"(Od[2]), "+r"(Od[3]), "+r"(Od[4]), "+r"(Od[5]), "+r"(Od[6]), "+r"(Od[7]), "+r"(Od[8]), "=&r"(Od[9])
+        : "r"(a[2]), "r"(b[0]), "r"(b[1]), "r"(b[2]), "r"(b[3]), "r"(b[4]), "r"(b[5]), "r"(b[6]), "r"(b[7]));
+#else
     asm("mad.lo.cc.u32 %0, %17, %18, %0;\n\tmadc.hi.cc.u32 %1, %17, %18, %1;\n\tmadc.lo.cc.u32 %2, %17, %20, %2;\n\tmadc.hi.cc.u32 %3, %17, %20, %3;\n\tmadc.lo.cc.u32 %4, %17, %22, %4;\n\tmadc.hi.cc.u32 %5, %17, %22, %5;\n\tmadc.lo.cc.u32 %6, %17, %24, %6;\n\tmadc.hi.cc.u32 %7, %17, %24, %7;\n\taddc.u32 %8, %8, 0;\n\tmad.lo.cc.u32 %9, %17, %19, %9;\n\tmadc.hi.cc.u32 %10, %17, %19, %10;\n\tmadc.lo.cc.u32 %11, %17, %21, %11;\n\tmadc.hi.cc.u32 %12, %17, %21, %12;\n\tmadc.lo.cc.u32 %13, %17, %23, %13;\n\tmadc.hi.cc.u32 %14, %17, %23, %14;\n\tmadc.lo.cc.u32 %15, %17, %25, %15;\n\tmadc.hi.u32 %16, %17, %25, %16;"
         : "+r"(E[2]), "+r"(E[3]), "+r"(E[4]), "+r"(E[5]), "+r"(E[6]), "+r"(E[7]), "+r"(E[8]), "+r"(E[9]), "+r"(E[10]), "+r"(Od[2]), "+r"(Od[3]), "+r"(Od[4]), "+r"(Od[5]), "+r"(Od[6]), "+r"(Od[7]), "+r"(Od[8]), "+r"(Od[9])
         : "r"(a[2]), "r"(b[0]), "r"(b[1]), "r"(b[2]), "r"(b[3]), "r"(b[4]), "r"(b[5]), "r"(b[6]), "r"(b[7]));
+#endif
     // row 3
+#if PX_ZFREE
+    asm("mad.lo.cc.u32 %0, %17, %19, %0;\n\tmadc.hi.cc.u32 %1, %17, %19, %1;\n\tmadc.lo.cc.u32 %2, %17, %21, %2;\n\tmadc.hi.cc.u32 %3, %17, %21, %3;\n\tmadc.lo.cc.u32 %4, %17, %23, %4;\n\tmadc.hi.cc.u32 %5, %17, %23, %5;\n\tmadc.lo.cc.u32 %6, %17, %25, %6;\n\tmadc.hi.u32 %7, %17, %25, 0;\n\tmad.lo.cc.u32 %8, %17, %18, %8;\n\tmadc.hi.cc.u32 %9, %17, %18, %9;\n\tmadc.lo.cc.u32 %10, %17, %20, %10;\n\tmadc.hi.cc.u32 %11, %17, %20, %11;\n\tmadc.lo.cc.u32 %12, %17, %22, %12;\n\tmadc.hi.cc.u32 %13, %17, %22, %13;\n\tmadc.lo.cc.u32 %14, %17, %24, %14;\n\tmadc.hi.cc.u32 %15, %17, %24, %15;\n\taddc.u32 %16, 0, 0;"
+        : "+r"(E[4]), "+r"(E[5]), "+r"(E[6]), "+r"(E[7]), "+r"(E[8]), "+r"(E[9]), "+r"(E[10]), "=&r"(E[11]), "+r"(Od[2]), "+r"(Od[3]), "+r"(Od[4]), "+r"(Od[5]), "+r"(Od[6]), "+r"(Od[7]), "+r"(Od[8]), "+r"(Od[9]), "=&r"(Od[10])
+        : "r"(a[3]), "r"(b[0]), "r"(b[1]), "r"(b[2]), "r"(b[3]), "r"(b[4]), "r"(b[5]), "r"(b[6]), "r"(b[7]));
+#else
     asm("mad.lo.cc.u32 %0, %17, %19, %0;\n\tmadc.hi.cc.u32 %1, %17, %19, %1;\n\tmadc.lo.cc.u32 %2, %17, %21, %2;\n\tmadc.hi.cc.u32 %3, %17, %21, %3;\n\tmadc.lo.cc.u32 %4, %17, %23, %4;\n\tmadc.hi.cc.u32 %5, %17, %23, %5;\n\tmadc.lo.cc.u32 %6, %17, %25, %6;\n\tmadc.hi.u32 %7, %17, %25, %7;\n\tmad.lo.cc.u32 %8, %17, %18, %8;\n\tmadc.hi.cc.u32 %9, %17, %18, %9;\n\tmadc.lo.cc.u32 %10, %17, %20, %10;\n\tmadc.hi.cc.u32 %11, %17, %20, %11;\n\tmadc.lo.cc.u32 %12, %17, %22, %12;\n\tmadc.hi.cc.u32 %13, %17, %22, %13;\n\tmadc.lo.cc.u32 %14, %17, %24, %14;\n\tmadc.hi.cc.u32 %15, %17, %24, %15;\n\taddc.u32 %16, %16, 0;"
         : "+r"(E[4]), "+r"(E[5]), "+r"(E[6]), "+r"(E[7]), "+r"(E[8]), "+r"(E[9]), "+r"(E[10]), "+r"(E[11]), "+r"(Od[2]), "+r"(Od[3]), "+r"(Od[4]), "+r"(Od[5]), "+r"(Od[6]), "+r"(Od[7]), "+r"(Od[8]), "+r"(Od[9]), "+r"(Od[10])
         : "r"(a[3]), "r"(b[0]), "r"(b[1]), "r"(b[2]), "r"(b[3]), "r"(b[4]), "r"(b[5]), "r"(b[6]), "r"(b[7]));
+#endif
     // row 4
+#if PX_ZFREE
+    asm("mad.lo.cc.u32 %0, %17, %18, %0;\n\tmadc.hi.cc.u32 %1, %17, %18, %1;\n\tmadc.lo.cc.u32 %2, %17, %20, %2;\n\tmadc.hi.cc.u32 %3, %17, %20, %3;\n\tmadc.lo.cc.u32 %4, %17, %22, %4;\n\tmadc.hi.cc.u32 %5, %17, %22, %5;\n\tmadc.lo.cc.u32 %6, %17, %24, %6;\n\tmadc.hi.cc.u32 %7, %17, %24, %7;\n\taddc.u32 %8, 0, 0;\n\tmad.lo.cc.u32 %9, %17, %19, %9;\n\tmadc.hi.cc.u32 %10, %17, %19, %10;\n\tmadc.lo.cc.u32 %11, %17, %21, %11;\n\tmadc.hi.cc.u32 %12, %17, %21, %12;\n\tmadc.lo.cc.u32 %13, %17, %23, %13;\n\tmadc.hi.cc.u32 %14, %17, %23, %14;\n\tmadc.lo.cc.u32 %15, %17, %25, %15;\n\tmadc.hi.u32 %16, %17, %25, 0;"
+        : "+r"(E[4]), "+r"(E[5]), "+r"(E[6]), "+r"(E[7]), "+r"(E[8]), "+r"(E[9]), "+r"(E[10]), "+r"(E[11]), "=&r"(E[12]), "+r"(Od[4]), "+r"(Od[5]), "+r"(Od[6]), "+r"(Od[7]), "+r"(Od[8]), "+r"(Od[9]), "+r"(Od[10]), "=&r"(Od[11])
+        : "r"(a[4]), "r"(b[0]), "r"(b[1]), "r"(b[2]), "r"(b[3]), "r"(b[4]), "r"(b[5]), "r"(b[6]), "r"(b[7]));
+#else
     asm("mad.lo.cc.u32 %0, %17, %18, %0;\n\tmadc.hi.cc.u32 %1, %17, %18, %1;\n\tmadc.lo.cc.u32 %2, %17, %20, %2;\n\tmadc.hi.cc.u32 %3, %17, %20, %3;\n\tmadc.lo.cc.u32 %4, %17, %22, %4;\n\tmadc.hi.cc.u32 %5, %17, %22, %5;\n\tmadc.lo.cc.u32 %6, %17, %24, %6;\n\tmadc.hi.cc.u32 %7, %17, %24, %7;\n\taddc.u32 %8, %8, 0;\n\tmad.lo.cc.u32 %9, %17, %19, %9;\n\tmadc.hi.cc.u32 %10, %17, %19, %10;\n\tmadc.lo.cc.u32 %11, %17, %21, %11;\n\tmadc.hi.cc.u32 %12, %17, %21, %12;\n\tmadc.lo.cc.u32 %13, %17, %23, %13;\n\tmadc.hi.cc.u32 %14, %17, %23, %14;\n\tmadc.lo.cc.u32 %15, %17, %25, %15;\n\tmadc.hi.u32 %16, %17, %25, %16;"
         : "+r"(E[4]), "+r"(E[5]), "+r"(E[6]), "+r"(E[7]), "+r"(E[8]), "+r"(E[9]), "+r"(E[10]), "+r"(E[11]), "+r"(E[12]), "+r"(Od[4]), "+r"(Od[5]), "+r"(Od[6]), "+r"(Od[7]), "+r"(Od[8]), "+r"(Od[9]), "+r"(Od[10]), "+r"(Od[11])
         : "r"(a[4]), "r"(b[0]), "r"(b[1]), "r"(b[2]), "r"(b[3]), "r"(b[4]), "r"(b[5]), "r"(b[6]), "r"(b[7]));
+#endif
     // row 5
+#if PX_ZFREE
+    asm("mad.lo.cc.u32 %0, %17, %19, %0;\n\tmadc.hi.cc.u32 %1, %17, %19, %1;\n\tmadc.lo.cc.u32 %2, %17, %21, %2;\n\tmadc.hi.cc.u32 %3, %17, %21, %3;\n\tmadc.lo.cc.u32 %4, %17, %23, %4;\n\tmadc.hi.cc.u32 %5, %17, %23, %5;\n\tmadc.lo.cc.u32 %6, %17, %25, %6;\n\tmadc.hi.u32 %7, %17, %25, 0;\n\tmad.lo.cc.u32 %8, %17, %18, %8;\n\tmadc.hi.cc.u32 %9, %17, %18, %9;\n\tmadc.lo.cc.u32 %10, %17, %20, %10;\n\tmadc.hi.cc.u32 %11, %17, %20, %11;\n\tmadc.lo.cc.u32 %12, %17, %22, %12;\n\tmadc.hi.cc.u32 %13, %17, %22, %13;\n\tmadc.lo.cc.u32 %14, %17, %24, %14;\n\tmadc.hi.cc.u32 %15, %17, %24, %15;\n\taddc.u32 %16, 0, 0;"
+        : "+r"(E[6]), "+r"(E[7]), "+r"(E[8]), "+r"(E[9]), "+r"(E[10]), "+r"(E[11]), "+r"(E[12]), "=&r"(E[13]), "+r"(Od[4]), "+r"(Od[5]), "+r"(Od[6]), "+r"(Od[7]), "+r"(Od[8]), "+r"(Od[9]), "+r"(Od[10]), "+r"(Od[11]), "=&r"(Od[12])
+        : "r"(a[5]), "r"(b[0]), "r"(b[1]), "r"(b[2]), "r"(b[3]), "r"(b[4]), "r"(b[5]), "r"(b[6]), "r"(b[7]));
+#else
     asm("mad.lo.cc.u32 %0, %17, %19, %0;\n\tmadc.hi.cc.u32 %1, %17, %19, %1;\n\tmadc.lo.cc.u32 %2, %17, %21, %2;\n\tmadc.hi.cc.u32 %3, %17, %21, %3;\n\tmadc.lo.cc.u32 %4, %17, %23, %4;\n\tmadc.hi.cc.u32 %5, %17, %23, %5;\n\tmadc.lo.cc.u32 %6, %17, %25, %6;\n\tmadc.hi.u32 %7, %17, %25, %7;\n\tmad.lo.cc.u32 %8, %17, %18, %8;\n\tmadc.hi.cc.u32 %9, %17, %18, %9;\n\tmadc.lo.cc.u32 %10, %17, %20, %10;\n\tmadc.hi.cc.u32 %11, %17, %20, %11;\n\tmadc.lo.cc.u32 %12, %17, %22, %12;\n\tmadc.hi.cc.u32 %13, %17, %22, %13;\n\tmadc.lo.cc.u32 %14, %17, %24, %14;\n\tmadc.hi.cc.u32 %15, %17, %24, %15;\n\taddc.u32 %16, %16, 0;"
         : "+r"(E[6]), "+r"(E[7]), "+r"(E[8]), "+r"(E[9]), "+r"(E[10]), "+r"(E[11]), "+r"(E[12]), "+r"(E[13]), "+r"(Od[4]), "+r"(Od[5]), "+r"(Od[6]), "+r"(Od[7]), "+r"(Od[8]), "+r"(Od[9]), "+r"(Od[10]), "+r"(Od[11]), "+r"(Od[12])
         : "r"(a[5]), "r"(b[0]), "r"(b[1]), "r"(b[2]), "r"(b[3]), "r"(b[4]), "r"(b[5]), "r"(b[6]), "r"(b[7]));
+#endif
     // row 6
+#if PX_ZFREE
+    asm("mad.lo.cc.u32 %0, %17, %18, %0;\n\tmadc.hi.cc.u32 %1, %17, %18, %1;\n\tmadc.lo.cc.u32 %2, %17, %20, %2;\n\tmadc.hi.cc.u32 %3, %17, %20, %3;\n\tmadc.lo.cc.u32 %4, %17, %22, %4;\n\tmadc.hi.cc.u32 %5, %17, %22, %5;\n\tmadc.lo.cc.u32 %6, %17, %24, %6;\n\tmadc.hi.cc.u32 %7, %17, %24, %7;\n\taddc.u32 %8, 0, 0;\n\tmad.lo.cc.u32 %9, %17, %19, %9;\n\tmadc.hi.cc.u32 %10, %17, %19, %10;\n\tmadc.lo.cc.u32 %11, %17, %21, %11;\n\tmadc.hi.cc.u32 %12, %17, %21, %12;\n\tmadc.lo.cc.u32 %13, %17, %23, %13;\n\tmadc.hi.cc.u32 %14, %17, %23, %14;\n\tmadc.lo.cc.u32 %15, %17, %25, %15;\n\tmadc.hi.u32 %16, %17, %25, 0;"
+        : "+r"(E[6]), "+r"(E[7]), "+r"(E[8]), "+r"(E[9]), "+r"(E[10]), "+r"(E[11]), "+r"(E[12]), "+r"(E[13]), "=&r"(E[14]), "+r"(Od[6]), "+r"(Od[7]), "+r"(Od[8]), "+r"(Od[9]), "+r"(Od[10]), "+r"(Od[11]), "+r"(Od[12]), "=&r"(Od[13])
+        : "r"(a[6]), "r"(b[0]), "r"(b[1]), "r"(b[2]), "r"(b[3]), "r"(b[4]), "r"(b[5]), "r"(b[6]), "r"(b[7]));
+#else
     asm("mad.lo.cc.u32 %0, %17, %18, %0;\n\tmadc.hi.cc.u32 %1, %17, %18, %1;\n\tmadc.lo.cc.u32 %2, %17, %20, %2;\n\tmadc.hi.cc.u32 %3, %17, %20, %3;\n\tmadc.lo.cc.u32 %4, %17, %22, %4;\n\tmadc.hi.cc.u32 %5, %17, %22, %5;\n\tmadc.lo.cc.u32 %6, %17, %24, %6;\n\tmadc.hi.cc.u32 %7, %17, %24, %7;\n\taddc.u32 %8, %8, 0;\n\tmad.lo.cc.u32 %9, %17, %19, %9;\n\tmadc.hi.cc.u32 %10, %17, %19, %10;\n\tmadc.lo.cc.u32 %11, %17, %21, %11;\n\tmadc.hi.cc.u32 %12, %17, %21, %12;\n\tmadc.lo.cc.u32 %13, %17, %23, %13;\n\tmadc.hi.cc.u32 %14, %17, %23, %14;\n\tmadc.lo.cc.u32 %15, %17, %25, %15;\n\tmadc.hi.u32 %16, %17, %25, %16;"
         : "+r"(E[6]), "+r"(E[7]), "+r"(E[8]), "+r"(E[9]), "+r"(E[10]), "+r"(E[11]), "+r"(E[12]), "+r"(E[13]), "+r"(E[14]), "+r"(Od[6]), "+r"(Od[7]), "+r"(Od[8]), "+r"(Od[9]), "+r"(Od[10]), "+r"(Od[11]), "+r"(Od[12]), "+r"(Od[13])
         : "r"(a[6]), "r"(b[0]), "r"(b[1]), "r"(b[2]), "r"(b[3]), "r"(b[4]), "r"(b[5]), "r"(b[6]), "r"(b[7]));
+#endif
     // row 7
+#if PX_ZFREE
+    asm("mad.lo.cc.u32 %0, %17, %19, %0;\n\tmadc.hi.cc.u32 %1, %17, %19, %1;\n\tmadc.lo.cc.u32 %2, %17, %21, %2;\n\tmadc.hi.cc.u32 %3, %17, %21, %3;\n\tmadc.lo.cc.u32 %4, %17, %23, %4;\n\tmadc.hi.cc.u32 %5, %17, %23, %5;\n\tmadc.lo.cc.u32 %6, %17, %25, %6;\n\tmadc.hi.u32 %7, %17, %25, 0;\n\tmad.lo.cc.u32 %8, %17, %18, %8;\n\tmadc.hi.cc.u32 %9, %17, %18, %9;\n\tmadc.lo.cc.u32 %10, %17, %20, %10;\n\tmadc.hi.cc.u32 %11, %17, %20, %11;\n\tmadc.lo.cc.u32 %12, %17, %22, %12;\n\tmadc.hi.cc.u32 %13, %17, %22, %13;\n\tmadc.lo.cc.u32 %14, %17, %24, %14;\n\tmadc.hi.cc.u32 %15, %17, %24, %15;\n\taddc.u32 %16, 0, 0;"
+        : "+r"(E[8]), "+r"(E[9]), "+r"(E[10]), "+r"(E[11]), "+r"(E[12]), "+r"(E[13]), "+r"(E[14]), "=&r"(E[15]), "+r"(Od[6]), "+r"(Od[7]), "+r"(Od[8]), "+r"(Od[9]), "+r"(Od[10]), "+r"(Od[11]), "+r"(Od[12]), "+r"(Od[13]), "=&r"(Od[14])
+        : "r"(a[7]), "r"(b[0]), "r"(b[1]), "r"(b[2]), "r"(b[3]), "r"(b[4]), "r"(b[5]), "r"(b[6]), "r"(b[7]));
+#else
     asm("mad.lo.cc.u32 %0, %17, %19, %0;\n\tmadc.hi.cc.u32 %1, %17, %19, %1;\n\tmadc.lo.cc.u32 %2, %17, %21, %2;\n\tmadc.hi.cc.u32 %3, %17, %21, %3;\n\tmadc.lo.cc.u32 %4, %17, %23, %4;\n\tmadc.hi.cc.u32 %5, %17, %23, %5;\n\tmadc.lo.cc.u32 %6, %17, %25, %6;\n\tmadc.hi.u32 %7, %17, %25, %7;\n\tmad.lo.cc.u32 %8, %17, %18, %8;\n\tmadc.hi.cc.u32 %9, %17, %18, %9;\n\tmadc.lo.cc.u32 %10, %17, %20, %10;\n\tmadc.hi.cc.u32 %11, %17, %20, %11;\n\tmadc.lo.cc.u32 %12, %17, %22, %12;\n\tmadc.hi.cc.u32 %13, %17, %22, %13;\n\tmadc.lo.cc.u32 %14, %17, %24, %14;\n\tmadc.hi.cc.u32 %15, %17, %24, %15;\n\taddc.u32 %16, %16, 0;"
         : "+r"(E[8]), "+r"(E[9]), "+r"(E[10]), "+r"(E[11]), "+r"(E[12]), "+r"(E[13]), "+r"(E[14]), "+r"(E[15]), "+r"(Od[6]), "+r"(Od[7]), "+r"(Od[8]), "+r"(Od[9]), "+r"(Od[10]), "+r"(Od[11]), "+r"(Od[12]), "+r"(Od[13]), "+r"(Od[14])
         : "r"(a[7]), "r"(b[0]), "r"(b[1]), "r"(b[2]), "r"(b[3]), "r"(b[4]), "r"(b[5]), "r"(b[6]), "r"(b[7]));
+#endif
     // hi = words 8..15 of the product = E[8..15] + Od[7..14]. No carry out: the sum is at most the
     // product's high half (it lacks only the carry from the low half), which is below 2^256.
     uint32_t hi[8];
@@ -683,29 +728,65 @@ template<int FS, int NB = 0> __device__ void fe_sq_impl(fe &h, const fe &f) {
         : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(a[4]), "r"(a[5]), "r"(a[6]), "r"(a[7]));
 #endif
     // sq row 1
+#if PX_ZFREE
+    asm("mad.lo.cc.u32 %0, %13, %15, %0;\n\tmadc.hi.cc.u32 %1, %13, %15, %1;\n\tmadc.lo.cc.u32 %2, %13, %17, %2;\n\tmadc.hi.cc.u32 %3, %13, %17, %3;\n\tmadc.lo.cc.u32 %4, %13, %19, 0;\n\tmadc.hi.u32 %5, %13, %19, 0;\n\tmad.lo.cc.u32 %6, %13, %14, %6;\n\tmadc.hi.cc.u32 %7, %13, %14, %7;\n\tmadc.lo.cc.u32 %8, %13, %16, %8;\n\tmadc.hi.cc.u32 %9, %13, %16, %9;\n\tmadc.lo.cc.u32 %10, %13, %18, %10;\n\tmadc.hi.cc.u32 %11, %13, %18, %11;\n\taddc.u32 %12, 0, 0;"
+        : "+r"(E[4]), "+r"(E[5]), "+r"(E[6]), "+r"(E[7]), "=&r"(E[8]), "=&r"(E[9]), "+r"(Od[2]), "+r"(Od[3]), "+r"(Od[4]), "+r"(Od[5]), "+r"(Od[6]), "+r"(Od[7]), "=&r"(Od[8])
+        : "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(a[4]), "r"(a[5]), "r"(a[6]), "r"(a[7]));
+#else
     asm("mad.lo.cc.u32 %0, %13, %15, %0;\n\tmadc.hi.cc.u32 %1, %13, %15, %1;\n\tmadc.lo.cc.u32 %2, %13, %17, %2;\n\tmadc.hi.cc.u32 %3, %13, %17, %3;\n\tmadc.lo.cc.u32 %4, %13, %19, %4;\n\tmadc.hi.u32 %5, %13, %19, %5;\n\tmad.lo.cc.u32 %6, %13, %14, %6;\n\tmadc.hi.cc.u32 %7, %13, %14, %7;\n\tmadc.lo.cc.u32 %8, %13, %16, %8;\n\tmadc.hi.cc.u32 %9, %13, %16, %9;\n\tmadc.lo.cc.u32 %10, %13, %18, %10;\n\tmadc.hi.cc.u32 %11, %13, %18, %11;\n\taddc.u32 %12, %12, 0;"
         : "+r"(E[4]), "+r"(E[5]), "+r"(E[6]), "+r"(E[7]), "+r"(E[8]), "+r"(E[9]), "+r"(Od[2]), "+r"(Od[3]), "+r"(Od[4]), "+r"(Od[5]), "+r"(Od[6]), "+r"(Od[7]), "+r"(Od[8])
         : "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(a[4]), "r"(a[5]), "r"(a[6]), "r"(a[7]));
+#endif
     // sq row 2
+#if PX_ZFREE
+    asm("mad.lo.cc.u32 %0, %11, %13, %0;\n\tmadc.hi.cc.u32 %1, %11, %13, %1;\n\tmadc.lo.cc.u32 %2, %11, %15, %2;\n\tmadc.hi.cc.u32 %3, %11, %15, %3;\n\taddc.u32 %4, 0, 0;\n\tmad.lo.cc.u32 %5, %11, %12, %5;\n\tmadc.hi.cc.u32 %6, %11, %12, %6;\n\tmadc.lo.cc.u32 %7, %11, %14, %7;\n\tmadc.hi.cc.u32 %8, %11, %14, %8;\n\tmadc.lo.cc.u32 %9, %11, %16, %9;\n\tmadc.hi.u32 %10, %11, %16, 0;"
+        : "+r"(E[6]), "+r"(E[7]), "+r"(E[8]), "+r"(E[9]), "=&r"(E[10]), "+r"(Od[4]), "+r"(Od[5]), "+r"(Od[6]), "+r"(Od[7]), "+r"(Od[8]), "=&r"(Od[9])
+        : "r"(a[2]), "r"(a[3]), "r"(a[4]), "r"(a[5]), "r"(a[6]), "r"(a[7]));
+#else
     asm("mad.lo.cc.u32 %0, %11, %13, %0;\n\tmadc.hi.cc.u32 %1, %11, %13, %1;\n\tmadc.lo.cc.u32 %2, %11, %15, %2;\n\tmadc.hi.cc.u32 %3, %11, %15, %3;\n\taddc.u32 %4, %4, 0;\n\tmad.lo.cc.u32 %5, %11, %12, %5;\n\tmadc.hi.cc.u32 %6, %11, %12, %6;\n\tmadc.lo.cc.u32 %7, %11, %14, %7;\n\tmadc.hi.cc.u32 %8, %11, %14, %8;\n\tmadc.lo.cc.u32 %9, %11, %16, %9;\n\tmadc.hi.u32 %10, %11, %16, %10;"
         : "+r"(E[6]), "+r"(E[7]), "+r"(E[8]), "+r"(E[9]), "+r"(E[10]), "+r"(Od[4]), "+r"(Od[5]), "+r"(Od[6]), "+r"(Od[7]), "+r"(Od[8]), "+r"(Od[9])
         : "r"(a[2]), "r"(a[3]), "r"(a[4]), "r"(a[5]), "r"(a[6]), "r"(a[7]));
+#endif
     // sq row 3
+#if PX_ZFREE
+    asm("mad.lo.cc.u32 %0, %9, %11, %0;\n\tmadc.hi.cc.u32 %1, %9, %11, %1;\n\tmadc.lo.cc.u32 %2, %9, %13, %2;\n\tmadc.hi.u32 %3, %9, %13, 0;\n\tmad.lo.cc.u32 %4, %9, %10, %4;\n\tmadc.hi.cc.u32 %5, %9, %10, %5;\n\tmadc.lo.cc.u32 %6, %9, %12, %6;\n\tmadc.hi.cc.u32 %7, %9, %12, %7;\n\taddc.u32 %8, 0, 0;"
+        : "+r"(E[8]), "+r"(E[9]), "+r"(E[10]), "=&r"(E[11]), "+r"(Od[6]), "+r"(Od[7]), "+r"(Od[8]), "+r"(Od[9]), "=&r"(Od[10])
+        : "r"(a[3]), "r"(a[4]), "r"(a[5]), "r"(a[6]), "r"(a[7]));
+#else
     asm("mad.lo.cc.u32 %0, %9, %11, %0;\n\tmadc.hi.cc.u32 %1, %9, %11, %1;\n\tmadc.lo.cc.u32 %2, %9, %13, %2;\n\tmadc.hi.u32 %3, %9, %13, %3;\n\tmad.lo.cc.u32 %4, %9, %10, %4;\n\tmadc.hi.cc.u32 %5, %9, %10, %5;\n\tmadc.lo.cc.u32 %6, %9, %12, %6;\n\tmadc.hi.cc.u32 %7, %9, %12, %7;\n\taddc.u32 %8, %8, 0;"
         : "+r"(E[8]), "+r"(E[9]), "+r"(E[10]), "+r"(E[11]), "+r"(Od[6]), "+r"(Od[7]), "+r"(Od[8]), "+r"(Od[9]), "+r"(Od[10])
         : "r"(a[3]), "r"(a[4]), "r"(a[5]), "r"(a[6]), "r"(a[7]));
+#endif
     // sq row 4
+#if PX_ZFREE
+    asm("mad.lo.cc.u32 %0, %7, %9, %0;\n\tmadc.hi.cc.u32 %1, %7, %9, %1;\n\taddc.u32 %2, 0, 0;\n\tmad.lo.cc.u32 %3, %7, %8, %3;\n\tmadc.hi.cc.u32 %4, %7, %8, %4;\n\tmadc.lo.cc.u32 %5, %7, %10, %5;\n\tmadc.hi.u32 %6, %7, %10, 0;"
+        : "+r"(E[10]), "+r"(E[11]), "=&r"(E[12]), "+r"(Od[8]), "+r"(Od[9]), "+r"(Od[10]), "=&r"(Od[11])
+        : "r"(a[4]), "r"(a[5]), "r"(a[6]), "r"(a[7]));
+#else
     asm("mad.lo.cc.u32 %0, %7, %9, %0;\n\tmadc.hi.cc.u32 %1, %7, %9, %1;\n\taddc.u32 %2, %2, 0;\n\tmad.lo.cc.u32 %3, %7, %8, %3;\n\tmadc.hi.cc.u32 %4, %7, %8, %4;\n\tmadc.lo.cc.u32 %5, %7, %10, %5;\n\tmadc.hi.u32 %6, %7, %10, %6;"
         : "+r"(E[10]), "+r"(E[11]), "+r"(E[12]), "+r"(Od[8]), "+r"(Od[9]), "+r"(Od[10]), "+r"(Od[11])
         : "r"(a[4]), "r"(a[5]), "r"(a[6]), "r"(a[7]));
+#endif
     // sq row 5
+#if PX_ZFREE
+    asm("mad.lo.cc.u32 %0, %5, %7, %0;\n\tmadc.hi.u32 %1, %5, %7, 0;\n\tmad.lo.cc.u32 %2, %5, %6, %2;\n\tmadc.hi.cc.u32 %3, %5, %6, %3;\n\taddc.u32 %4, 0, 0;"
+        : "+r"(E[12]), "=&r"(E[13]), "+r"(Od[10]), "+r"(Od[11]), "=&r"(Od[12])
+        : "r"(a[5]), "r"(a[6]), "r"(a[7]));
+#else
     asm("mad.lo.cc.u32 %0, %5, %7, %0;\n\tmadc.hi.u32 %1, %5, %7, %1;\n\tmad.lo.cc.u32 %2, %5, %6, %2;\n\tmadc.hi.cc.u32 %3, %5, %6, %3;\n\taddc.u32 %4, %4, 0;"
         : "+r"(E[12]), "+r"(E[13]), "+r"(Od[10]), "+r"(Od[11]), "+r"(Od[12])
         : "r"(a[5]), "r"(a[6]), "r"(a[7]));
+#endif
     // sq row 6
+#if PX_ZFREE
+    asm("mad.lo.cc.u32 %0, %2, %3, %0;\n\tmadc.hi.u32 %1, %2, %3, 0;"
+        : "+r"(Od[12]), "=&r"(Od[13])
+        : "r"(a[6]), "r"(a[7]));
+#else
     asm("mad.lo.cc.u32 %0, %2, %3, %0;\n\tmadc.hi.u32 %1, %2, %3, %1;"
         : "+r"(Od[12]), "+r"(Od[13])
         : "r"(a[6]), "r"(a[7]));
+#endif
     // cross sum s = E + Od<<32 (< 2^480), doubled by a funnel shift
     uint32_t s[16];
     s[0] = E[0];
@@ -1644,6 +1725,9 @@ struct Scratch {
     ProjectivePoint *projective;
 #endif
     HPoint *pts; uint64_t *nonce[2]; uint8_t *ctr[2]; unsigned *cnt; size_t n;
+#if PX_TAIL_SPLIT
+    cudaStream_t sa, sb; cudaEvent_t ev0, evk, evda, evdb; int sms;
+#endif
 #if PX_H2C_MID
     uint64_t *mid;   // per launch: SHA-512 state after the job-constant rounds 0..7 + message words 0..8 (see sha_prep_kernel)
 #endif
@@ -2492,9 +2576,9 @@ __global__ void PX_PREP_ATTR prepx_kernel(const unsigned *n_ptr, HPoint *pts) {
     }
 }
 #else
-__global__ void PX_PREP_ATTR prepx_kernel(const unsigned *n_ptr, HPoint *pts) {
-    unsigned n = *n_ptr, total = gridDim.x * blockDim.x;
-    for (unsigned base = blockIdx.x * blockDim.x + threadIdx.x; base < n; base += total * PX_PREP_BATCH) {
+__global__ void PX_PREP_ATTR prepx_kernel(const unsigned *n_ptr, HPoint *pts, const unsigned *lo_ptr = nullptr) {
+    unsigned n = *n_ptr, total = gridDim.x * blockDim.x, lo = lo_ptr ? *lo_ptr : 0u;
+    for (unsigned base = lo + blockIdx.x * blockDim.x + threadIdx.x; base < n; base += total * PX_PREP_BATCH) {
         fe prefix[PX_PREP_BATCH], prod; fe_1(prod);
         #pragma unroll
         for (int k = 0; k < PX_PREP_BATCH; k++) {
@@ -2519,9 +2603,9 @@ __global__ void PX_PREP_ATTR prepx_kernel(const unsigned *n_ptr, HPoint *pts) {
 }
 #endif
 // x-only: out.Y = X - Z, out.Z = X + Z of s*P, so y(s*P) = out.Y / out.Z
-__global__ void PX_LADDER_ATTR ladderx_kernel(const HPoint *pts, const unsigned *n_ptr, ProjectivePoint *out) {
-    unsigned n = *n_ptr;
-    for (unsigned i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += gridDim.x * blockDim.x) {
+__global__ void PX_LADDER_ATTR ladderx_kernel(const HPoint *pts, const unsigned *n_ptr, ProjectivePoint *out, const unsigned *lo_ptr = nullptr) {
+    unsigned n = *n_ptr, lo = lo_ptr ? *lo_ptr : 0u;
+    for (unsigned i = lo + blockIdx.x * blockDim.x + threadIdx.x; i < n; i += gridDim.x * blockDim.x) {
         fe xP; fe_copy(xP, pts[i].X);
         out[i].nonce = pts[i].nonce;
         if (fe_iszero(xP)) { out[i].valid = 0; fe_1(out[i].Z); continue; }
@@ -2637,9 +2721,9 @@ __global__ void __launch_bounds__(256, PX_LB_FSHA) fsha_kernel(const JobDev *job
         if (pts[i].valid) { fe y; fe_copy(y, pts[i].Y); finishx_point(job, y, pts[i].nonce, hits, nhits); }
 }
 #else
-__global__ void PX_FIN_ATTR finishx_kernel(const JobDev *job, const ProjectivePoint *pts, const unsigned *n_ptr, Hit *hits, unsigned *nhits) {
-    unsigned n = *n_ptr, total = gridDim.x * blockDim.x;
-    for (unsigned base = blockIdx.x * blockDim.x + threadIdx.x; base < n; base += total * PX_SPLIT_FINISH) {
+__global__ void PX_FIN_ATTR finishx_kernel(const JobDev *job, const ProjectivePoint *pts, const unsigned *n_ptr, Hit *hits, unsigned *nhits, const unsigned *lo_ptr = nullptr) {
+    unsigned n = *n_ptr, total = gridDim.x * blockDim.x, lo = lo_ptr ? *lo_ptr : 0u;
+    for (unsigned base = lo + blockIdx.x * blockDim.x + threadIdx.x; base < n; base += total * PX_SPLIT_FINISH) {
         fe prefix[PX_SPLIT_FINISH], prod; fe_1(prod);
         #pragma unroll
         for (int k = 0; k < PX_SPLIT_FINISH; k++) {
@@ -2922,7 +3006,15 @@ static void *v_alloc_one(size_t n) {
 #if PX_H2C_MID
     CUDA_CHECK(cudaMalloc(&sc->mid, 17 * sizeof(uint64_t)));
 #endif
-    CUDA_CHECK(cudaMalloc(&sc->cnt, (PX_MAX_PASSES + 2) * sizeof(unsigned)));
+    CUDA_CHECK(cudaMalloc(&sc->cnt, (PX_MAX_PASSES + 3) * sizeof(unsigned)));
+#if PX_TAIL_SPLIT
+    {   int lo = 0, hi = 0, dev = 0; CUDA_CHECK(cudaDeviceGetStreamPriorityRange(&lo, &hi));
+        CUDA_CHECK(cudaStreamCreateWithPriority(&sc->sa, cudaStreamNonBlocking, hi));
+        CUDA_CHECK(cudaStreamCreateWithPriority(&sc->sb, cudaStreamNonBlocking, lo));
+        CUDA_CHECK(cudaEventCreateWithFlags(&sc->ev0, cudaEventDisableTiming)); CUDA_CHECK(cudaEventCreateWithFlags(&sc->evk, cudaEventDisableTiming));
+        CUDA_CHECK(cudaEventCreateWithFlags(&sc->evda, cudaEventDisableTiming)); CUDA_CHECK(cudaEventCreateWithFlags(&sc->evdb, cudaEventDisableTiming));
+        CUDA_CHECK(cudaGetDevice(&dev)); CUDA_CHECK(cudaDeviceGetAttribute(&sc->sms, cudaDevAttrMultiProcessorCount, dev)); }
+#endif
     unsigned N = (unsigned)n; CUDA_CHECK(cudaMemcpy(sc->cnt + PX_MAX_PASSES + 1, &N, sizeof N, cudaMemcpyHostToDevice));
     return sc;
 #else
@@ -2937,6 +3029,9 @@ static void v_free_one(void *scratch) {
 #endif
 #if PX_H2C_MID
     cudaFree(sc->mid);
+#endif
+#if PX_TAIL_SPLIT
+    cudaStreamDestroy(sc->sa); cudaStreamDestroy(sc->sb); cudaEventDestroy(sc->ev0); cudaEventDestroy(sc->evk); cudaEventDestroy(sc->evda); cudaEventDestroy(sc->evdb);
 #endif
     cudaFree(sc->pts); for (int b = 0; b < 2; b++) { cudaFree(sc->nonce[b]); cudaFree(sc->ctr[b]); } cudaFree(sc->cnt); delete sc;
 #else
@@ -3129,6 +3224,45 @@ static void v_mine(int blocks, int threads, const JobDev *job, uint64_t nonce_ba
         resolve_kernel<<<1, 128>>>(job, hits, nhits);   // legacy default stream: after every slice
         return; }
 #endif
+#if PX_TAIL_SPLIT
+    {   // PX_TAIL_SPLIT = K: hash-to-curve passes 0..K-1, then prep / ladder / finish of those points on the main stream,
+        // while passes K.. (a few, latency-bound retries) and the prep / ladder / finish of their points run on a
+        // low-priority stream beside them instead of on an otherwise idle GPU. Same points and outputs as the passes.
+        Scratch *sc = (Scratch *)scratch;
+        size_t N = stride * (size_t)iters;
+        cudaStream_t A = sc->sa, B = sc->sb;
+        unsigned *nk = sc->cnt + PX_MAX_PASSES + 2;
+        CUDA_CHECK(cudaEventRecord(sc->ev0, 0));
+        CUDA_CHECK(cudaStreamWaitEvent(A, sc->ev0, 0));
+        CUDA_CHECK(cudaMemsetAsync(sc->cnt, 0, (PX_MAX_PASSES + 1) * sizeof(unsigned), A));
+        int g1 = (int)((N + 255) / 256);
+        sha_prep_kernel<<<1, 32, 0, A>>>(job, sc->mid);
+        h2cx_kernel<<<g1, 256, 0, A>>>(job, sc->mid, nonce_base, nullptr, nullptr, sc->cnt + PX_MAX_PASSES + 1, sc->pts, sc->cnt, sc->nonce[0], sc->ctr[0], sc->cnt + 1);
+        for (int p = 1; p < PX_TAIL_SPLIT; p++) {
+            int in = (p - 1) & 1, out = p & 1;
+            h2cx_kernel<<<max(1, g1 >> p), 256, 0, A>>>(job, sc->mid, nonce_base, sc->nonce[in], sc->ctr[in], sc->cnt + p, sc->pts, sc->cnt, sc->nonce[out], sc->ctr[out], sc->cnt + p + 1);
+        }
+        CUDA_CHECK(cudaMemcpyAsync(nk, sc->cnt, sizeof(unsigned), cudaMemcpyDeviceToDevice, A));
+        CUDA_CHECK(cudaEventRecord(sc->evk, A));
+        prepx_kernel<<<(blocks + PX_PREP_BATCH - 1) / PX_PREP_BATCH, threads, 0, A>>>(nk, sc->pts);
+        ladderx_kernel<<<blocks, threads, 0, A>>>(sc->pts, nk, sc->projective);
+        finishx_kernel<<<(blocks + PX_SPLIT_FINISH - 1) / PX_SPLIT_FINISH, threads, 0, A>>>(job, sc->projective, nk, hits, nhits);
+        CUDA_CHECK(cudaEventRecord(sc->evda, A));
+        CUDA_CHECK(cudaStreamWaitEvent(B, sc->evk, 0));
+        for (int p = PX_TAIL_SPLIT; p < PX_MAX_PASSES; p++) {
+            int in = (p - 1) & 1, out = p & 1;
+            h2cx_kernel<<<max(1, g1 >> p), 256, 0, B>>>(job, sc->mid, nonce_base, sc->nonce[in], sc->ctr[in], sc->cnt + p, sc->pts, sc->cnt, sc->nonce[out], sc->ctr[out], sc->cnt + p + 1);
+        }
+        int gt = max(1, (blocks >> PX_TAIL_SPLIT));
+        prepx_kernel<<<max(1, (gt + PX_PREP_BATCH - 1) / PX_PREP_BATCH), threads, 0, B>>>(sc->cnt, sc->pts, nk);
+        ladderx_kernel<<<gt, threads, 0, B>>>(sc->pts, sc->cnt, sc->projective, nk);
+        finishx_kernel<<<max(1, (gt + PX_SPLIT_FINISH - 1) / PX_SPLIT_FINISH), threads, 0, B>>>(job, sc->projective, sc->cnt, hits, nhits, nk);
+        CUDA_CHECK(cudaEventRecord(sc->evdb, B));
+        CUDA_CHECK(cudaStreamWaitEvent(0, sc->evda, 0)); CUDA_CHECK(cudaStreamWaitEvent(0, sc->evdb, 0));
+        resolve_kernel<<<1, 128>>>(job, hits, nhits);
+        return;
+    }
+#endif
 #if PX_COMPACT
     Scratch *sc = (Scratch *)scratch;
     size_t N = stride * (size_t)iters;
@@ -3252,6 +3386,8 @@ static const VariantOps ops = { PX_VARIANT_NAME,
 #undef PX_SMALLMUL_WIDE
 #undef PX_JAC_MASK
 #undef PX_PFX_MEM
+#undef PX_ZFREE
+#undef PX_TAIL_SPLIT
 #undef PX_LAD_KARA
 #undef PX_ADDFOLD_ALU
 #undef PX_H2C_PERSIST

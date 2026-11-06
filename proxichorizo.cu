@@ -863,6 +863,266 @@ namespace v_fe32x_mlk1_c {
 #include "proxichorizo_device.cuh"
 }
 #endif
+#ifdef PX_DEV_R4L
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 4
+#define PX_JAC_B1 1
+#define PX_JAC_STEPS 30
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_ADDFOLD_ALU 1
+#define PX_ROW0C 1
+#define PX_SMALLMUL_WIDE 1
+#define PX_LB_H2C 3
+#undef PX_VARIANT_NAME
+#define PX_VARIANT_NAME "fe32x_mlb3_c"
+namespace v_fe32x_mlb3_c {
+#include "proxichorizo_device.cuh"
+}
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 4
+#define PX_JAC_B1 1
+#define PX_JAC_STEPS 30
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_ADDFOLD_ALU 1
+#define PX_ROW0C 1
+#define PX_SMALLMUL_WIDE 1
+#define PX_LB_H2C 2
+#define PX_H2C_PERSIST 1
+#undef PX_VARIANT_NAME
+#define PX_VARIANT_NAME "fe32x_mlb4_c"
+namespace v_fe32x_mlb4_c {
+#include "proxichorizo_device.cuh"
+}
+#endif
+#ifdef PX_DEV_R4M
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 4
+#define PX_JAC_B1 1
+#define PX_JAC_STEPS 30
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_ADDFOLD_ALU 1
+#define PX_ROW0C 1
+#define PX_SMALLMUL_WIDE 1
+#define PX_TAIL_SPLIT 5
+#undef PX_VARIANT_NAME
+#define PX_VARIANT_NAME "fe32x_mlt5_c"
+namespace v_fe32x_mlt5_c {
+#include "proxichorizo_device.cuh"
+}
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 4
+#define PX_JAC_B1 1
+#define PX_JAC_STEPS 30
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_ADDFOLD_ALU 1
+#define PX_ROW0C 1
+#define PX_SMALLMUL_WIDE 1
+#define PX_TAIL_SPLIT 7
+#undef PX_VARIANT_NAME
+#define PX_VARIANT_NAME "fe32x_mlt7_c"
+namespace v_fe32x_mlt7_c {
+#include "proxichorizo_device.cuh"
+}
+#endif
+#ifdef PX_DEV_R4N
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 4
+#define PX_JAC_B1 1
+#define PX_JAC_STEPS 30
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_ADDFOLD_ALU 1
+#define PX_ROW0C 1
+#define PX_SMALLMUL_WIDE 1
+#define PX_LB_PREP 2
+#define PX_LB_FIN 2
+#undef PX_VARIANT_NAME
+#define PX_VARIANT_NAME "fe32x_mlq1_c"
+namespace v_fe32x_mlq1_c {
+#include "proxichorizo_device.cuh"
+}
+#endif
+#ifdef PX_DEV_R4O
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 4
+#define PX_JAC_B1 1
+#define PX_JAC_STEPS 30
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_ADDFOLD_ALU 1
+#define PX_ROW0C 1
+#define PX_SMALLMUL_WIDE 1
+#define PX_ZFREE 1
+#undef PX_VARIANT_NAME
+#define PX_VARIANT_NAME "fe32x_mlz1_c"
+namespace v_fe32x_mlz1_c {
+#include "proxichorizo_device.cuh"
+}
+#endif
+#ifdef PX_DEV_R4P
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 4
+#define PX_JAC_B1 1
+#define PX_JAC_STEPS 30
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_ADDFOLD_ALU 1
+#define PX_ROW0C 1
+#define PX_SMALLMUL_WIDE 1
+#undef PX_VARIANT_NAME
+#define PX_VARIANT_NAME "fe32x_mla3_c"
+namespace v_fe32x_mla3_c {
+#include "proxichorizo_device.cuh"
+}
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 4
+#define PX_JAC_B1 1
+#define PX_JAC_STEPS 30
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_ADDFOLD_ALU 1
+#define PX_ROW0C 1
+#define PX_SMALLMUL_WIDE 1
+#define PX_LB_FIN 2
+#undef PX_VARIANT_NAME
+#define PX_VARIANT_NAME "fe32x_mla4_c"
+namespace v_fe32x_mla4_c {
+#include "proxichorizo_device.cuh"
+}
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 4
+#define PX_JAC_B1 1
+#define PX_JAC_STEPS 30
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_ADDFOLD_ALU 1
+#define PX_ROW0C 1
+#define PX_SMALLMUL_WIDE 1
+#define PX_LB_FIN 3
+#undef PX_VARIANT_NAME
+#define PX_VARIANT_NAME "fe32x_mlf5_c"
+namespace v_fe32x_mlf5_c {
+#include "proxichorizo_device.cuh"
+}
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 4
+#define PX_JAC_B1 1
+#define PX_JAC_STEPS 30
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_ADDFOLD_ALU 1
+#define PX_ROW0C 1
+#define PX_SMALLMUL_WIDE 1
+#define PX_LB_FIN 2
+#define PX_TAIL_SPLIT 5
+#undef PX_VARIANT_NAME
+#define PX_VARIANT_NAME "fe32x_mlt9_c"
+namespace v_fe32x_mlt9_c {
+#include "proxichorizo_device.cuh"
+}
+#endif
 #ifdef PX_DEV_W
 #define PX_FE32 1
 #define PX_COMBA 1
@@ -1582,6 +1842,16 @@ namespace v_fe32_w4_linear_split8_c {
 #ifdef PX_DEV_LADDER
 #ifdef PX_DEV_LADDER_ALL
 static const VariantOps *VARIANTS[] = { &v_fe32x_wnaf_s32_c::ops, &v_fe32x_mlad_c::ops, &v_fe32x_mladx_c::ops, &v_fe32x_mladxn_c::ops, &v_fe32x_mladxs2_c::ops, &v_fe32x_mladxs4_c::ops, &v_fe32x_mladxc2_c::ops, &v_fe32x_mladxc4_c::ops };
+#elif defined(PX_DEV_R4P)
+static const VariantOps *VARIANTS[] = { &v_fe32x_wnaf_s32_c::ops, &v_fe32x_mla3_c::ops, &v_fe32x_mla4_c::ops, &v_fe32x_mlf5_c::ops, &v_fe32x_mlt9_c::ops };
+#elif defined(PX_DEV_R4O)
+static const VariantOps *VARIANTS[] = { &v_fe32x_wnaf_s32_c::ops, &v_fe32x_mladxm_c::ops, &v_fe32x_mlz1_c::ops };
+#elif defined(PX_DEV_R4N)
+static const VariantOps *VARIANTS[] = { &v_fe32x_wnaf_s32_c::ops, &v_fe32x_mladxm_c::ops, &v_fe32x_mlq1_c::ops };
+#elif defined(PX_DEV_R4M)
+static const VariantOps *VARIANTS[] = { &v_fe32x_wnaf_s32_c::ops, &v_fe32x_mladxm_c::ops, &v_fe32x_mlt5_c::ops, &v_fe32x_mlt7_c::ops };
+#elif defined(PX_DEV_R4L)
+static const VariantOps *VARIANTS[] = { &v_fe32x_wnaf_s32_c::ops, &v_fe32x_mladxm_c::ops, &v_fe32x_mlb3_c::ops, &v_fe32x_mlb4_c::ops };
 #elif defined(PX_DEV_R4K)
 static const VariantOps *VARIANTS[] = { &v_fe32x_wnaf_s32_c::ops, &v_fe32x_mladxm_c::ops, &v_fe32x_mlk1_c::ops };
 #elif defined(PX_DEV_R4J)
