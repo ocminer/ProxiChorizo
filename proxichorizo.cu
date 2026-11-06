@@ -575,6 +575,219 @@ namespace v_fe32x_mljb_c {
 #include "proxichorizo_device.cuh"
 }
 #endif
+#ifdef PX_DEV_R4F
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 4
+#define PX_JAC_B1 1
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#undef PX_SPLIT_FINISH
+#define PX_SPLIT_FINISH 32
+#define PX_FIN_SPLIT 1
+#define PX_LB_FSHA 2
+#undef PX_VARIANT_NAME
+#define PX_VARIANT_NAME "fe32x_mlf1_c"
+namespace v_fe32x_mlf1_c {
+#include "proxichorizo_device.cuh"
+}
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 4
+#define PX_JAC_B1 1
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#undef PX_SPLIT_FINISH
+#define PX_SPLIT_FINISH 32
+#define PX_FIN_SPLIT 1
+#define PX_LB_FSHA 3
+#undef PX_VARIANT_NAME
+#define PX_VARIANT_NAME "fe32x_mlf2_c"
+namespace v_fe32x_mlf2_c {
+#include "proxichorizo_device.cuh"
+}
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 4
+#define PX_JAC_B1 1
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#undef PX_SPLIT_FINISH
+#define PX_SPLIT_FINISH 16
+#define PX_LB_FIN 2
+#undef PX_VARIANT_NAME
+#define PX_VARIANT_NAME "fe32x_mlf3_c"
+namespace v_fe32x_mlf3_c {
+#include "proxichorizo_device.cuh"
+}
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 4
+#define PX_JAC_B1 1
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#undef PX_SPLIT_FINISH
+#define PX_SPLIT_FINISH 32
+#define PX_PREP_BATCH 8
+#define PX_LB_PREP 2
+#undef PX_VARIANT_NAME
+#define PX_VARIANT_NAME "fe32x_mlp1_c"
+namespace v_fe32x_mlp1_c {
+#include "proxichorizo_device.cuh"
+}
+#undef PX_SPLIT_FINISH
+#define PX_SPLIT_FINISH 32
+#endif
+#ifdef PX_DEV_R4G
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 4
+#define PX_JAC_B1 1
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_ROW0C 1
+#undef PX_VARIANT_NAME
+#define PX_VARIANT_NAME "fe32x_mlr0_c"
+namespace v_fe32x_mlr0_c {
+#include "proxichorizo_device.cuh"
+}
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 4
+#define PX_JAC_B1 1
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_ROW0C 1
+#define PX_SMALLMUL_WIDE 1
+#undef PX_VARIANT_NAME
+#define PX_VARIANT_NAME "fe32x_mlr1_c"
+namespace v_fe32x_mlr1_c {
+#include "proxichorizo_device.cuh"
+}
+#endif
+#ifdef PX_DEV_R4H
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 4
+#define PX_JAC_B1 1
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_H2C_PERSIST 1
+#undef PX_VARIANT_NAME
+#define PX_VARIANT_NAME "fe32x_mlh1_c"
+namespace v_fe32x_mlh1_c {
+#include "proxichorizo_device.cuh"
+}
+#endif
+#ifdef PX_DEV_R4I
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 4
+#define PX_JAC_B1 1
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_ADDFOLD_ALU 1
+#undef PX_VARIANT_NAME
+#define PX_VARIANT_NAME "fe32x_mla0_c"
+namespace v_fe32x_mla0_c {
+#include "proxichorizo_device.cuh"
+}
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 4
+#define PX_JAC_B1 1
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_ADDFOLD_ALU 1
+#define PX_ROW0C 1
+#define PX_SMALLMUL_WIDE 1
+#undef PX_VARIANT_NAME
+#define PX_VARIANT_NAME "fe32x_mla1_c"
+namespace v_fe32x_mla1_c {
+#include "proxichorizo_device.cuh"
+}
+#endif
 #ifdef PX_DEV_W
 #define PX_FE32 1
 #define PX_COMBA 1
@@ -1294,6 +1507,14 @@ namespace v_fe32_w4_linear_split8_c {
 #ifdef PX_DEV_LADDER
 #ifdef PX_DEV_LADDER_ALL
 static const VariantOps *VARIANTS[] = { &v_fe32x_wnaf_s32_c::ops, &v_fe32x_mlad_c::ops, &v_fe32x_mladx_c::ops, &v_fe32x_mladxn_c::ops, &v_fe32x_mladxs2_c::ops, &v_fe32x_mladxs4_c::ops, &v_fe32x_mladxc2_c::ops, &v_fe32x_mladxc4_c::ops };
+#elif defined(PX_DEV_R4I)
+static const VariantOps *VARIANTS[] = { &v_fe32x_wnaf_s32_c::ops, &v_fe32x_mladxm_c::ops, &v_fe32x_mla0_c::ops, &v_fe32x_mla1_c::ops };
+#elif defined(PX_DEV_R4H)
+static const VariantOps *VARIANTS[] = { &v_fe32x_wnaf_s32_c::ops, &v_fe32x_mladxm_c::ops, &v_fe32x_mlh1_c::ops };
+#elif defined(PX_DEV_R4G)
+static const VariantOps *VARIANTS[] = { &v_fe32x_wnaf_s32_c::ops, &v_fe32x_mladxm_c::ops, &v_fe32x_mlr0_c::ops, &v_fe32x_mlr1_c::ops };
+#elif defined(PX_DEV_R4F)
+static const VariantOps *VARIANTS[] = { &v_fe32x_wnaf_s32_c::ops, &v_fe32x_mladxm_c::ops, &v_fe32x_mlf1_c::ops, &v_fe32x_mlf2_c::ops, &v_fe32x_mlf3_c::ops, &v_fe32x_mlp1_c::ops };
 #elif defined(PX_DEV_R4E)
 static const VariantOps *VARIANTS[] = { &v_fe32x_wnaf_s32_c::ops, &v_fe32x_mladxm_c::ops, &v_fe32x_mlj4_c::ops, &v_fe32x_mljb_c::ops };
 #elif defined(PX_DEV_R4D)

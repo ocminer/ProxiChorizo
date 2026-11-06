@@ -453,10 +453,20 @@ template<int NB, int FS = PX_FOLDSHIFT> __device__ void fe_mul_t(fe &h, const fe
     uint32_t E[16], Od[16];
     #pragma unroll
     for (int i = 0; i < 16; i++) { E[i] = 0; Od[i] = 0; }
+#if PX_ROW0C
+    // row 0 into zero accumulators: eight independent 32x32->64 products, no carries (one IMAD.WIDE each)
+    #pragma unroll
+    for (int c = 0; c < 4; c++) {
+        uint64_t pe = (uint64_t)a[0] * b[2 * c], po = (uint64_t)a[0] * b[2 * c + 1];
+        E[2 * c] = (uint32_t)pe; E[2 * c + 1] = (uint32_t)(pe >> 32);
+        Od[2 * c] = (uint32_t)po; Od[2 * c + 1] = (uint32_t)(po >> 32);
+    }
+#else
     // row 0
     asm("mad.lo.cc.u32 %0, %17, %18, %0;\n\tmadc.hi.cc.u32 %1, %17, %18, %1;\n\tmadc.lo.cc.u32 %2, %17, %20, %2;\n\tmadc.hi.cc.u32 %3, %17, %20, %3;\n\tmadc.lo.cc.u32 %4, %17, %22, %4;\n\tmadc.hi.cc.u32 %5, %17, %22, %5;\n\tmadc.lo.cc.u32 %6, %17, %24, %6;\n\tmadc.hi.cc.u32 %7, %17, %24, %7;\n\taddc.u32 %8, %8, 0;\n\tmad.lo.cc.u32 %9, %17, %19, %9;\n\tmadc.hi.cc.u32 %10, %17, %19, %10;\n\tmadc.lo.cc.u32 %11, %17, %21, %11;\n\tmadc.hi.cc.u32 %12, %17, %21, %12;\n\tmadc.lo.cc.u32 %13, %17, %23, %13;\n\tmadc.hi.cc.u32 %14, %17, %23, %14;\n\tmadc.lo.cc.u32 %15, %17, %25, %15;\n\tmadc.hi.u32 %16, %17, %25, %16;"
         : "+r"(E[0]), "+r"(E[1]), "+r"(E[2]), "+r"(E[3]), "+r"(E[4]), "+r"(E[5]), "+r"(E[6]), "+r"(E[7]), "+r"(E[8]), "+r"(Od[0]), "+r"(Od[1]), "+r"(Od[2]), "+r"(Od[3]), "+r"(Od[4]), "+r"(Od[5]), "+r"(Od[6]), "+r"(Od[7])
         : "r"(a[0]), "r"(b[0]), "r"(b[1]), "r"(b[2]), "r"(b[3]), "r"(b[4]), "r"(b[5]), "r"(b[6]), "r"(b[7]));
+#endif
     // row 1
     asm("mad.lo.cc.u32 %0, %17, %19, %0;\n\tmadc.hi.cc.u32 %1, %17, %19, %1;\n\tmadc.lo.cc.u32 %2, %17, %21, %2;\n\tmadc.hi.cc.u32 %3, %17, %21, %3;\n\tmadc.lo.cc.u32 %4, %17, %23, %4;\n\tmadc.hi.cc.u32 %5, %17, %23, %5;\n\tmadc.lo.cc.u32 %6, %17, %25, %6;\n\tmadc.hi.u32 %7, %17, %25, %7;\n\tmad.lo.cc.u32 %8, %17, %18, %8;\n\tmadc.hi.cc.u32 %9, %17, %18, %9;\n\tmadc.lo.cc.u32 %10, %17, %20, %10;\n\tmadc.hi.cc.u32 %11, %17, %20, %11;\n\tmadc.lo.cc.u32 %12, %17, %22, %12;\n\tmadc.hi.cc.u32 %13, %17, %22, %13;\n\tmadc.lo.cc.u32 %14, %17, %24, %14;\n\tmadc.hi.cc.u32 %15, %17, %24, %15;\n\taddc.u32 %16, %16, 0;"
         : "+r"(E[2]), "+r"(E[3]), "+r"(E[4]), "+r"(E[5]), "+r"(E[6]), "+r"(E[7]), "+r"(E[8]), "+r"(E[9]), "+r"(Od[0]), "+r"(Od[1]), "+r"(Od[2]), "+r"(Od[3]), "+r"(Od[4]), "+r"(Od[5]), "+r"(Od[6]), "+r"(Od[7]), "+r"(Od[8])
@@ -542,10 +552,23 @@ template<int FS, int NB = 0> __device__ void fe_sq_impl(fe &h, const fe &f) {
     uint32_t E[16], Od[16];
     #pragma unroll
     for (int i = 0; i < 16; i++) { E[i] = 0; Od[i] = 0; }
+#if PX_ROW0C
+    // sq row 0 into zero accumulators: a0*a1..a7 as independent wide products
+    {   uint64_t p;
+        p = (uint64_t)a[0] * a[2]; E[2] = (uint32_t)p; E[3] = (uint32_t)(p >> 32);
+        p = (uint64_t)a[0] * a[4]; E[4] = (uint32_t)p; E[5] = (uint32_t)(p >> 32);
+        p = (uint64_t)a[0] * a[6]; E[6] = (uint32_t)p; E[7] = (uint32_t)(p >> 32);
+        p = (uint64_t)a[0] * a[1]; Od[0] = (uint32_t)p; Od[1] = (uint32_t)(p >> 32);
+        p = (uint64_t)a[0] * a[3]; Od[2] = (uint32_t)p; Od[3] = (uint32_t)(p >> 32);
+        p = (uint64_t)a[0] * a[5]; Od[4] = (uint32_t)p; Od[5] = (uint32_t)(p >> 32);
+        p = (uint64_t)a[0] * a[7]; Od[6] = (uint32_t)p; Od[7] = (uint32_t)(p >> 32);
+    }
+#else
     // sq row 0
     asm("mad.lo.cc.u32 %0, %15, %17, %0;\n\tmadc.hi.cc.u32 %1, %15, %17, %1;\n\tmadc.lo.cc.u32 %2, %15, %19, %2;\n\tmadc.hi.cc.u32 %3, %15, %19, %3;\n\tmadc.lo.cc.u32 %4, %15, %21, %4;\n\tmadc.hi.cc.u32 %5, %15, %21, %5;\n\taddc.u32 %6, %6, 0;\n\tmad.lo.cc.u32 %7, %15, %16, %7;\n\tmadc.hi.cc.u32 %8, %15, %16, %8;\n\tmadc.lo.cc.u32 %9, %15, %18, %9;\n\tmadc.hi.cc.u32 %10, %15, %18, %10;\n\tmadc.lo.cc.u32 %11, %15, %20, %11;\n\tmadc.hi.cc.u32 %12, %15, %20, %12;\n\tmadc.lo.cc.u32 %13, %15, %22, %13;\n\tmadc.hi.u32 %14, %15, %22, %14;"
         : "+r"(E[2]), "+r"(E[3]), "+r"(E[4]), "+r"(E[5]), "+r"(E[6]), "+r"(E[7]), "+r"(E[8]), "+r"(Od[0]), "+r"(Od[1]), "+r"(Od[2]), "+r"(Od[3]), "+r"(Od[4]), "+r"(Od[5]), "+r"(Od[6]), "+r"(Od[7])
         : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(a[4]), "r"(a[5]), "r"(a[6]), "r"(a[7]));
+#endif
     // sq row 1
     asm("mad.lo.cc.u32 %0, %13, %15, %0;\n\tmadc.hi.cc.u32 %1, %13, %15, %1;\n\tmadc.lo.cc.u32 %2, %13, %17, %2;\n\tmadc.hi.cc.u32 %3, %13, %17, %3;\n\tmadc.lo.cc.u32 %4, %13, %19, %4;\n\tmadc.hi.u32 %5, %13, %19, %5;\n\tmad.lo.cc.u32 %6, %13, %14, %6;\n\tmadc.hi.cc.u32 %7, %13, %14, %7;\n\tmadc.lo.cc.u32 %8, %13, %16, %8;\n\tmadc.hi.cc.u32 %9, %13, %16, %9;\n\tmadc.lo.cc.u32 %10, %13, %18, %10;\n\tmadc.hi.cc.u32 %11, %13, %18, %11;\n\taddc.u32 %12, %12, 0;"
         : "+r"(E[4]), "+r"(E[5]), "+r"(E[6]), "+r"(E[7]), "+r"(E[8]), "+r"(E[9]), "+r"(Od[2]), "+r"(Od[3]), "+r"(Od[4]), "+r"(Od[5]), "+r"(Od[6]), "+r"(Od[7]), "+r"(Od[8])
@@ -1799,7 +1822,12 @@ __device__ __forceinline__ void fe_add_nb(fe &h, const fe &f, const fe &g) {
         : "=&r"(h.v[0]), "=&r"(h.v[1]), "=&r"(h.v[2]), "=&r"(h.v[3]), "=&r"(h.v[4]), "=&r"(h.v[5]), "=&r"(h.v[6]), "=&r"(h.v[7]), "=&r"(c)
         : "r"(f.v[0]), "r"(f.v[1]), "r"(f.v[2]), "r"(f.v[3]), "r"(f.v[4]), "r"(f.v[5]), "r"(f.v[6]), "r"(f.v[7]),
           "r"(g.v[0]), "r"(g.v[1]), "r"(g.v[2]), "r"(g.v[3]), "r"(g.v[4]), "r"(g.v[5]), "r"(g.v[6]), "r"(g.v[7]));
+#if PX_ADDFOLD_ALU
+    {   uint32_t t = (0u - c) & 38u;   // select on the integer pipe instead of a multiply
+        asm("add.cc.u32 %0, %0, %2;\n\taddc.u32 %1, %1, 0;" : "+r"(h.v[0]), "+r"(h.v[1]) : "r"(t)); }
+#else
     asm("mad.lo.cc.u32 %0, %2, 38, %0;\n\taddc.u32 %1, %1, 0;" : "+r"(h.v[0]), "+r"(h.v[1]) : "r"(c));
+#endif
 }
 __device__ __forceinline__ void fe_sub_nb(fe &h, const fe &f, const fe &g) {
     uint32_t b;
@@ -1810,7 +1838,11 @@ __device__ __forceinline__ void fe_sub_nb(fe &h, const fe &f, const fe &g) {
         : "=&r"(h.v[0]), "=&r"(h.v[1]), "=&r"(h.v[2]), "=&r"(h.v[3]), "=&r"(h.v[4]), "=&r"(h.v[5]), "=&r"(h.v[6]), "=&r"(h.v[7]), "=&r"(b)
         : "r"(f.v[0]), "r"(f.v[1]), "r"(f.v[2]), "r"(f.v[3]), "r"(f.v[4]), "r"(f.v[5]), "r"(f.v[6]), "r"(f.v[7]),
           "r"(g.v[0]), "r"(g.v[1]), "r"(g.v[2]), "r"(g.v[3]), "r"(g.v[4]), "r"(g.v[5]), "r"(g.v[6]), "r"(g.v[7]));
+#if PX_ADDFOLD_ALU
+    uint32_t t = b & 38u;              // b is 0 or all ones
+#else
     uint32_t t = (b & 1u) * 38u;
+#endif
     asm("sub.cc.u32 %0, %0, %2;\n\tsubc.u32 %1, %1, 0;" : "+r"(h.v[0]), "+r"(h.v[1]) : "r"(t));
 }
 // h = f * k for a small constant k < 2^20: eight 32x32->64 products, one carry chain, the top word folded as 38
@@ -2238,6 +2270,35 @@ __global__ void __launch_bounds__(256, PX_LB_H2C) h2cx_kernel(const JobDev *job,
         if (rt) { unsigned o = br + __popc(mr & lt); out_nonce[o] = nonce; out_ctr[o] = ctr + 1; }
     }
 }
+#if PX_H2C_PERSIST
+// PX_H2C_PERSIST: one persistent launch instead of PX_MAX_PASSES passes. Every lane keeps its nonce and retries the
+// next counter itself until the hash is a valid encoding (or the same counter bound as the passes is reached), then
+// takes the next nonce; the warp refills its free lanes with one atomic. Same points as the passes (first valid
+// counter below PX_MAX_PASSES), without the poorly occupied tail passes and the retry queues.
+__global__ void __launch_bounds__(256, PX_LB_H2C) h2cr_kernel(const JobDev *job, const uint64_t *mid, uint64_t nonce_base, const unsigned *n_ptr,
+                                                    unsigned *next, HPoint *pts, unsigned *n_pts) {
+    const unsigned N = *n_ptr, lane = threadIdx.x & 31u, lt = (1u << lane) - 1u;
+    unsigned idx = 0xFFFFFFFFu, ctr = 0; bool need = true;
+    for (;;) {
+        unsigned mn = __ballot_sync(0xffffffffu, need);
+        if (mn) {
+            unsigned b = 0;
+            if (lane == 0) b = atomicAdd(next, (unsigned)__popc(mn));
+            b = __shfl_sync(0xffffffffu, b, 0);
+            if (need) { unsigned j = b + __popc(mn & lt); idx = j < N ? j : 0xFFFFFFFFu; ctr = 0; need = false; }
+        }
+        bool act = idx != 0xFFFFFFFFu;
+        if (!__any_sync(0xffffffffu, act)) break;
+        bool ok = false; fe Y; uint64_t nonce = nonce_base + idx;
+        if (act) ok = h2c_try_y(job, mid, nonce, (uint8_t)ctr, Y);
+        unsigned mo = __ballot_sync(0xffffffffu, ok), bo = 0;
+        if (lane == 0 && mo) bo = atomicAdd(n_pts, __popc(mo));
+        bo = __shfl_sync(0xffffffffu, bo, 0);
+        if (ok) { unsigned o = bo + __popc(mo & lt); fe_copy(pts[o].Y, Y); pts[o].nonce = nonce; need = true; }
+        else if (act) { if (++ctr >= PX_MAX_PASSES) need = true; }
+    }
+}
+#endif
 #if PX_CORUN
 // one persistent 384-thread block per multiprocessor at <= 128 registers (49152 of 65536): the rest of the register
 // file stays free for one 128-thread block of the hash-to-curve / prep / finish kernels of the next slice, which then
@@ -2260,11 +2321,22 @@ __global__ void __launch_bounds__(256, PX_LB_H2C) h2cx_kernel(const JobDev *job,
 #define PX_SMALL_ATTR __launch_bounds__(256, 1)
 #endif
 #endif
+// separate occupancy for prep and finish (dev knobs); default as PX_SMALL_ATTR
+#ifdef PX_LB_PREP
+#define PX_PREP_ATTR __launch_bounds__(256, PX_LB_PREP)
+#else
+#define PX_PREP_ATTR PX_SMALL_ATTR
+#endif
+#ifdef PX_LB_FIN
+#define PX_FIN_ATTR __launch_bounds__(256, PX_LB_FIN)
+#else
+#define PX_FIN_ATTR PX_SMALL_ATTR
+#endif
 // in place: pts[i].X = u = (1 + y) / (1 - y); u = 0 marks a point the ladder skips (y = 1: identity, y = -1: order 2)
 #if PX_PFX_MEM
 // PX_PFX_MEM: the batch inversion keeps its prefix products in the point record itself (X is free until u is written)
 // instead of a register array, so the kernel needs few registers and runs at a useful occupancy
-__global__ void PX_SMALL_ATTR prepx_kernel(const unsigned *n_ptr, HPoint *pts) {
+__global__ void PX_PREP_ATTR prepx_kernel(const unsigned *n_ptr, HPoint *pts) {
     unsigned n = *n_ptr, total = gridDim.x * blockDim.x;
     for (unsigned base = blockIdx.x * blockDim.x + threadIdx.x; base < n; base += total * PX_PREP_BATCH) {
         fe prod; fe_1(prod);
@@ -2290,7 +2362,7 @@ __global__ void PX_SMALL_ATTR prepx_kernel(const unsigned *n_ptr, HPoint *pts) {
     }
 }
 #else
-__global__ void PX_SMALL_ATTR prepx_kernel(const unsigned *n_ptr, HPoint *pts) {
+__global__ void PX_PREP_ATTR prepx_kernel(const unsigned *n_ptr, HPoint *pts) {
     unsigned n = *n_ptr, total = gridDim.x * blockDim.x;
     for (unsigned base = blockIdx.x * blockDim.x + threadIdx.x; base < n; base += total * PX_PREP_BATCH) {
         fe prefix[PX_PREP_BATCH], prod; fe_1(prod);
@@ -2381,7 +2453,7 @@ __device__ __forceinline__ void finishx_point(const JobDev *job, const fe &y, ui
     }
 }
 #if PX_PFX_MEM
-__global__ void PX_SMALL_ATTR finishx_kernel(const JobDev *job, ProjectivePoint *pts, const unsigned *n_ptr, Hit *hits, unsigned *nhits) {
+__global__ void PX_FIN_ATTR finishx_kernel(const JobDev *job, ProjectivePoint *pts, const unsigned *n_ptr, Hit *hits, unsigned *nhits) {
     unsigned n = *n_ptr, total = gridDim.x * blockDim.x;
     for (unsigned base = blockIdx.x * blockDim.x + threadIdx.x; base < n; base += total * PX_SPLIT_FINISH) {
         fe prod; fe_1(prod);
@@ -2401,8 +2473,41 @@ __global__ void PX_SMALL_ATTR finishx_kernel(const JobDev *job, ProjectivePoint 
         }
     }
 }
+#elif PX_FIN_SPLIT
+// PX_FIN_SPLIT: the batch inversion writes affine y into the record (Y), and a separate low-register kernel hashes
+// both encodings at full occupancy (the hashing is most of the finish)
+__global__ void PX_FIN_ATTR finishx_kernel(const JobDev *job, ProjectivePoint *pts, const unsigned *n_ptr, Hit *hits, unsigned *nhits) {
+    (void)job; (void)hits; (void)nhits;
+    unsigned n = *n_ptr, total = gridDim.x * blockDim.x;
+    for (unsigned base = blockIdx.x * blockDim.x + threadIdx.x; base < n; base += total * PX_SPLIT_FINISH) {
+        fe prefix[PX_SPLIT_FINISH], prod; fe_1(prod);
+        #pragma unroll
+        for (int k = 0; k < PX_SPLIT_FINISH; k++) {
+            unsigned i = base + (unsigned)k * total;
+            fe_copy(prefix[k], prod);
+            if (i < n) fe_mul(prod, prod, pts[i].Z);
+        }
+        fe inv; fe_invert(inv, prod);
+        #pragma unroll
+        for (int k = PX_SPLIT_FINISH - 1; k >= 0; k--) {
+            unsigned i = base + (unsigned)k * total;
+            if (i < n) {
+                fe zi, y; fe_mul(zi, inv, prefix[k]); fe_mul(inv, inv, pts[i].Z);
+                fe_mul(y, pts[i].Y, zi); fe_copy(pts[i].Y, y);
+            }
+        }
+    }
+}
+#ifndef PX_LB_FSHA
+#define PX_LB_FSHA 2
+#endif
+__global__ void __launch_bounds__(256, PX_LB_FSHA) fsha_kernel(const JobDev *job, const ProjectivePoint *pts, const unsigned *n_ptr, Hit *hits, unsigned *nhits) {
+    unsigned n = *n_ptr;
+    for (unsigned i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += gridDim.x * blockDim.x)
+        if (pts[i].valid) { fe y; fe_copy(y, pts[i].Y); finishx_point(job, y, pts[i].nonce, hits, nhits); }
+}
 #else
-__global__ void PX_SMALL_ATTR finishx_kernel(const JobDev *job, const ProjectivePoint *pts, const unsigned *n_ptr, Hit *hits, unsigned *nhits) {
+__global__ void PX_FIN_ATTR finishx_kernel(const JobDev *job, const ProjectivePoint *pts, const unsigned *n_ptr, Hit *hits, unsigned *nhits) {
     unsigned n = *n_ptr, total = gridDim.x * blockDim.x;
     for (unsigned base = blockIdx.x * blockDim.x + threadIdx.x; base < n; base += total * PX_SPLIT_FINISH) {
         fe prefix[PX_SPLIT_FINISH], prod; fe_1(prod);
@@ -2890,8 +2995,16 @@ static void v_mine(int blocks, int threads, const JobDev *job, uint64_t nonce_ba
 #else
     const uint64_t *mid = nullptr;
 #endif
+#if PX_H2C_PERSIST
+    {   int sms = 0, dev = 0; CUDA_CHECK(cudaGetDevice(&dev)); CUDA_CHECK(cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, dev));
+        int gr = sms * PX_LB_H2C; if (gr > g1) gr = g1;
+        h2cr_kernel<<<gr, 256>>>(job, mid, nonce_base, sc->cnt + PX_MAX_PASSES + 1, sc->cnt + 1, sc->pts, sc->cnt); }
+    if (0)
+#endif
     PX_H2C_K<<<g1, 256>>>(job, mid, nonce_base, nullptr, nullptr, sc->cnt + PX_MAX_PASSES + 1, sc->pts, sc->cnt, sc->nonce[0], sc->ctr[0], sc->cnt + 1);
-#if PX_H2C_TAIL
+#if PX_H2C_PERSIST
+    const int last = 1;
+#elif PX_H2C_TAIL
     const int last = PX_H2C_TAIL;
 #else
     const int last = PX_MAX_PASSES;
@@ -2909,6 +3022,9 @@ static void v_mine(int blocks, int threads, const JobDev *job, uint64_t nonce_ba
     prepx_kernel<<<(blocks + PX_PREP_BATCH - 1) / PX_PREP_BATCH, threads>>>(sc->cnt, sc->pts);
     ladderx_kernel<<<blocks, threads>>>(sc->pts, sc->cnt, sc->projective);
     finishx_kernel<<<(blocks+PX_SPLIT_FINISH-1)/PX_SPLIT_FINISH,threads>>>(job,sc->projective,sc->cnt,hits,nhits);
+#if PX_FIN_SPLIT
+    fsha_kernel<<<blocks, threads>>>(job, sc->projective, sc->cnt, hits, nhits);
+#endif
     resolve_kernel<<<1, 128>>>(job, hits, nhits);
 #elif PX_LADDER
     prep_kernel<<<(blocks + PX_PREP_BATCH - 1) / PX_PREP_BATCH, threads>>>(sc->cnt, sc->pts);
@@ -2990,6 +3106,15 @@ static const VariantOps ops = { PX_VARIANT_NAME,
 #undef PX_SMALLMUL_WIDE
 #undef PX_JAC_MASK
 #undef PX_PFX_MEM
+#undef PX_ADDFOLD_ALU
+#undef PX_H2C_PERSIST
+#undef PX_ROW0C
+#undef PX_FIN_SPLIT
+#undef PX_LB_FSHA
+#undef PX_LB_PREP
+#undef PX_LB_FIN
+#undef PX_PREP_ATTR
+#undef PX_FIN_ATTR
 #undef PX_JAC_B1
 #undef PX_LAD_FSS
 #undef PX_LAD_FSM
