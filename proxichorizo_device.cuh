@@ -2074,6 +2074,30 @@ template<int NB> __device__ __forceinline__ void fe_mul_small_t(fe &h, const fe 
     fe_addtop_t<NB>(h, top * 38u, 0);   // top < 2^20: top*38 < 2^26
 }
 __device__ __forceinline__ void fe_mul_small(fe &h, const fe &f, uint32_t k) { fe_mul_small_t<0>(h, f, k); }
+#if PX_SMALLADD
+// h = f * k + g for a small constant k (< 2^20): the products of the even limbs are accumulated straight onto g in one
+// carry chain, the odd ones are independent wide products, one combining chain; replaces fe_mul_small + fe_add_nb
+template<int NB> __device__ __forceinline__ void fe_mul_small_add_t(fe &h, const fe &f, uint32_t k, const fe &g) {
+    uint32_t s[8], Od2[8], t8;
+    asm("mad.lo.cc.u32 %0, %17, %21, %9;\n\tmadc.hi.cc.u32 %1, %17, %21, %10;\n\tmadc.lo.cc.u32 %2, %18, %21, %11;\n\tmadc.hi.cc.u32 %3, %18, %21, %12;\n\t"
+        "madc.lo.cc.u32 %4, %19, %21, %13;\n\tmadc.hi.cc.u32 %5, %19, %21, %14;\n\tmadc.lo.cc.u32 %6, %20, %21, %15;\n\tmadc.hi.cc.u32 %7, %20, %21, %16;\n\taddc.u32 %8, 0, 0;"
+        : "=&r"(s[0]), "=&r"(s[1]), "=&r"(s[2]), "=&r"(s[3]), "=&r"(s[4]), "=&r"(s[5]), "=&r"(s[6]), "=&r"(s[7]), "=&r"(t8)
+        : "r"(g.v[0]), "r"(g.v[1]), "r"(g.v[2]), "r"(g.v[3]), "r"(g.v[4]), "r"(g.v[5]), "r"(g.v[6]), "r"(g.v[7]),
+          "r"(f.v[0]), "r"(f.v[2]), "r"(f.v[4]), "r"(f.v[6]), "r"(k));
+    #pragma unroll
+    for (int c = 0; c < 4; c++) { uint64_t q = (uint64_t)f.v[2 * c + 1] * k; Od2[2 * c] = (uint32_t)q; Od2[2 * c + 1] = (uint32_t)(q >> 32); }
+    uint32_t o[8];
+    asm("add.cc.u32 %0, %9, %16;\n\taddc.cc.u32 %1, %10, %17;\n\taddc.cc.u32 %2, %11, %18;\n\taddc.cc.u32 %3, %12, %19;\n\t"
+        "addc.cc.u32 %4, %13, %20;\n\taddc.cc.u32 %5, %14, %21;\n\taddc.cc.u32 %6, %15, %22;\n\taddc.u32 %7, %8, %23;"
+        : "=&r"(o[1]), "=&r"(o[2]), "=&r"(o[3]), "=&r"(o[4]), "=&r"(o[5]), "=&r"(o[6]), "=&r"(o[7]), "=&r"(t8)
+        : "r"(t8), "r"(s[1]), "r"(s[2]), "r"(s[3]), "r"(s[4]), "r"(s[5]), "r"(s[6]), "r"(s[7]),
+          "r"(Od2[0]), "r"(Od2[1]), "r"(Od2[2]), "r"(Od2[3]), "r"(Od2[4]), "r"(Od2[5]), "r"(Od2[6]), "r"(Od2[7]));
+    o[0] = s[0];
+    #pragma unroll
+    for (int i = 0; i < 8; i++) h.v[i] = o[i];
+    fe_addtop_t<NB>(h, t8 * 38u, 0u);   // t8 < 2^21
+}
+#endif
 // one ladder step: (x2:z2) <- 2*(x2:z2), (x3:z3) <- (x2:z2) + (x3:z3), whose difference has affine u = x1
 __device__ __forceinline__ void mlad_step(fe &x2, fe &z2, fe &x3, fe &z3, const fe &x1) {
     fe A, B, C, D, AA, BB, E, DA, CB;
@@ -2110,7 +2134,11 @@ __device__ __forceinline__ void mlad_step_nb(fe &x2, fe &z2, fe &x3, fe &z3, con
     fe_sub_nb(z3, DA, CB); fe_sq_impl<PX_LAD_FSS, 1>(z3, z3); PX_LMUL(z3, z3, x1);
     PX_LMUL(x2, AA, BB);
     fe_sub_nb(E, AA, BB);
+#if PX_SMALLADD
+    fe_mul_small_add_t<1>(C, E, PX_MONT_A24, AA); PX_LMUL(z2, E, C);
+#else
     fe_mul_small_t<1>(C, E, PX_MONT_A24); fe_add_nb(C, C, AA); PX_LMUL(z2, E, C);
+#endif
 #undef PX_LMUL
 }
 #endif
@@ -3300,7 +3328,12 @@ static void v_mine(int blocks, int threads, const JobDev *job, uint64_t nonce_ba
 #endif
 #if PX_XONLY
     prepx_kernel<<<(blocks + PX_PREP_BATCH - 1) / PX_PREP_BATCH, threads>>>(sc->cnt, sc->pts);
+#ifdef PX_DEV_LGRID
+    {   static const int lg = getenv("PX_LADDER_DIV") ? atoi(getenv("PX_LADDER_DIV")) : 1;   // development: ladder grid / lg
+        ladderx_kernel<<<max(1, blocks / lg), threads>>>(sc->pts, sc->cnt, sc->projective); }
+#else
     ladderx_kernel<<<blocks, threads>>>(sc->pts, sc->cnt, sc->projective);
+#endif
     finishx_kernel<<<(blocks+PX_SPLIT_FINISH-1)/PX_SPLIT_FINISH,threads>>>(job,sc->projective,sc->cnt,hits,nhits);
 #if PX_FIN_SPLIT
     fsha_kernel<<<blocks, threads>>>(job, sc->projective, sc->cnt, hits, nhits);
@@ -3386,6 +3419,7 @@ static const VariantOps ops = { PX_VARIANT_NAME,
 #undef PX_SMALLMUL_WIDE
 #undef PX_JAC_MASK
 #undef PX_PFX_MEM
+#undef PX_SMALLADD
 #undef PX_ZFREE
 #undef PX_TAIL_SPLIT
 #undef PX_LAD_KARA
