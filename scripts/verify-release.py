@@ -18,9 +18,10 @@ def text(data):
 
 
 def check_notices(files, version, release_notes=True):
-    names = ["LICENSE", "NOTICE", "README.md", "USAGE.md", "vectors.json"]
+    names = ["LICENSE", "NOTICE", "README.md", "USAGE.md", "vectors.json",
+             "PLATFORMS.md", "benchmarks/amd-20261106.csv"]
     if release_notes:
-        names += ["PLATFORMS.md", "RELEASE-v" + version + ".md"]
+        names += ["RELEASE-v" + version + ".md"]
     for name in names:
         assert name in files, "missing packaged " + name
         assert text(files[name]) == text((ROOT / name).read_bytes()), "source mismatch: " + name
@@ -97,7 +98,8 @@ def main():
     assert args.directory or args.archives, "nothing to verify"
     commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     if args.directory:
-        files = {p.name: p.read_bytes() for p in args.directory.iterdir() if p.is_file()}
+        files = {p.relative_to(args.directory).as_posix(): p.read_bytes()
+                 for p in args.directory.rglob("*") if p.is_file()}
         check_notices(files, args.version, release_notes=False)
         assert files["proxichorizo"].startswith(b"\x7fELF")
         print("verified container contents and notices against source", commit)

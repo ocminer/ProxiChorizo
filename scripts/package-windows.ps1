@@ -10,6 +10,7 @@ if (!(Test-Path $Exe)) { throw "executable missing: $Exe" }
 Copy-Item $Exe "$stage/proxichorizo.exe"
 Copy-Item windows/* $stage
 Copy-Item README.md, USAGE.md, LICENSE, NOTICE, PLATFORMS.md, vectors.json $stage
+Copy-Item -Recurse benchmarks (Join-Path $stage 'benchmarks')
 if (Test-Path "RELEASE-v$Version.md") { Copy-Item "RELEASE-v$Version.md" $stage }
 # stratum+ssl:// loads OpenSSL at run time: ship OpenSSL 3's two DLLs (from the runner's OpenSSL
 # installation, or $env:OPENSSL_DIR) and Mozilla's CA bundle as cacert.pem next to the miner
@@ -20,7 +21,7 @@ $osslLicense = @((Join-Path $ossl '..\license.txt'), (Join-Path $ossl '..\LICENS
 if ($osslLicense) { Copy-Item $osslLicense "$stage/LICENSE-OpenSSL.txt" }
 Invoke-WebRequest -UseBasicParsing -Uri 'https://curl.se/ca/cacert.pem' -OutFile "$stage/cacert.pem"
 if ((Get-Item "$stage/cacert.pem").Length -lt 100000) { throw 'cacert.pem download looks wrong' }
-(Get-Content "$stage/README.txt") -replace 'ProxiChorizo 0\.[0-9.]+ -', "ProxiChorizo $Version -" | Set-Content "$stage/README.txt"
+(Get-Content "$stage/README.txt") -replace 'ProxiChorizo [0-9]+\.[0-9.]+ -', "ProxiChorizo $Version -" | Set-Content "$stage/README.txt"
 $info = @{
     version = $Version; source_commit = (& git rev-parse HEAD).Trim()
     ci_run = "https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"

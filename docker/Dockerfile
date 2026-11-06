@@ -12,7 +12,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 WORKDIR /app
 COPY --from=build /src/proxichorizo /app/proxichorizo
 COPY docker/entrypoint.sh /app/entrypoint.sh
-COPY README.md USAGE.md LICENSE NOTICE vectors.json /app/
+COPY README.md USAGE.md LICENSE NOTICE PLATFORMS.md vectors.json /app/
+COPY benchmarks/ /app/benchmarks/
 RUN chmod +x /app/entrypoint.sh /app/proxichorizo
 ENV CUDA_DEVICE_ORDER=PCI_BUS_ID NVIDIA_DRIVER_CAPABILITIES=compute,utility
 EXPOSE 4078
