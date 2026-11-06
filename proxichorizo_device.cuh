@@ -2175,7 +2175,16 @@ __device__ __forceinline__ void mlad_step_nb(fe &x2, fe &z2, fe &x3, fe &z3, con
 #define PX_LMUL(h, f, g) fe_mul_t<1, PX_LAD_FSM>(h, f, g)
 #endif
 #define PX_LSQ(h, f) fe_sq_impl<PX_LAD_FSS, 1>(h, f)
-#if PX_LAD_ORDER == 1 && PX_SMALLADD
+// PX_LAD_ORDER_SM120: step order used only in the sm_120 (Blackwell) device code; other architectures keep the
+// order of PX_LAD_ORDER (default 0). Same arithmetic, different instruction schedule.
+#if defined(PX_LAD_ORDER_SM120) && defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1200
+#define PX_LAD_ORD PX_LAD_ORDER_SM120
+#elif defined(PX_LAD_ORDER)
+#define PX_LAD_ORD PX_LAD_ORDER
+#else
+#define PX_LAD_ORD 0
+#endif
+#if PX_LAD_ORD == 1 && PX_SMALLADD
     // doubling half first
     PX_LSQ(AA, A); PX_LSQ(BB, B);
     PX_LMUL(x2, AA, BB); fe_sub_nb(E, AA, BB);
@@ -2183,21 +2192,21 @@ __device__ __forceinline__ void mlad_step_nb(fe &x2, fe &z2, fe &x3, fe &z3, con
     PX_LMUL(DA, D, A); PX_LMUL(CB, C, B);
     fe_add_nb(x3, DA, CB); PX_LSQ(x3, x3);
     fe_sub_nb(z3, DA, CB); PX_LSQ(z3, z3); PX_LMUL(z3, z3, x1);
-#elif PX_LAD_ORDER == 4 && PX_SMALLADD
+#elif PX_LAD_ORD == 4 && PX_SMALLADD
     PX_LSQ(AA, A); PX_LSQ(BB, B);
     PX_LMUL(DA, D, A); PX_LMUL(CB, C, B);
     PX_LMUL(x2, AA, BB); fe_sub_nb(E, AA, BB);
     fe_mul_small_add_t<1>(AA, E, PX_MONT_A24, AA); PX_LMUL(z2, E, AA);
     fe_add_nb(x3, DA, CB); PX_LSQ(x3, x3);
     fe_sub_nb(z3, DA, CB); PX_LSQ(z3, z3); PX_LMUL(z3, z3, x1);
-#elif PX_LAD_ORDER == 6 && PX_SMALLADD
+#elif PX_LAD_ORD == 6 && PX_SMALLADD
     PX_LSQ(AA, A); PX_LSQ(BB, B);
     PX_LMUL(x2, AA, BB); fe_sub_nb(E, AA, BB);
     fe_mul_small_add_t<1>(AA, E, PX_MONT_A24, AA); PX_LMUL(z2, E, AA);
     PX_LMUL(DA, D, A); PX_LMUL(CB, C, B);
     fe_sub_nb(z3, DA, CB); PX_LSQ(z3, z3); PX_LMUL(z3, z3, x1);
     fe_add_nb(x3, DA, CB); PX_LSQ(x3, x3);
-#elif PX_LAD_ORDER == 7 && PX_SMALLADD
+#elif PX_LAD_ORD == 7 && PX_SMALLADD
     PX_LSQ(AA, A); PX_LSQ(BB, B);
     fe_sub_nb(E, AA, BB);
     fe_mul_small_add_t<1>(C, E, PX_MONT_A24, AA); PX_LMUL(z2, E, C);
@@ -2205,14 +2214,14 @@ __device__ __forceinline__ void mlad_step_nb(fe &x2, fe &z2, fe &x3, fe &z3, con
     PX_LMUL(DA, D, A); fe_add_nb(C, x3, z3); PX_LMUL(CB, C, B);
     fe_add_nb(x3, DA, CB); PX_LSQ(x3, x3);
     fe_sub_nb(z3, DA, CB); PX_LSQ(z3, z3); PX_LMUL(z3, z3, x1);
-#elif PX_LAD_ORDER == 8 && PX_SMALLADD
+#elif PX_LAD_ORD == 8 && PX_SMALLADD
     PX_LMUL(DA, D, A); PX_LMUL(CB, C, B);
     fe_add_nb(x3, DA, CB); PX_LSQ(x3, x3);
     fe_sub_nb(z3, DA, CB); PX_LSQ(z3, z3); PX_LMUL(z3, z3, x1);
     PX_LSQ(AA, A); PX_LSQ(BB, B);
     PX_LMUL(x2, AA, BB); fe_sub_nb(E, AA, BB);
     fe_mul_small_add_t<1>(AA, E, PX_MONT_A24, AA); PX_LMUL(z2, E, AA);
-#elif PX_LAD_ORDER == 9 && PX_SMALLADD
+#elif PX_LAD_ORD == 9 && PX_SMALLADD
     // o1 with the z2 product last
     PX_LSQ(AA, A); PX_LSQ(BB, B);
     fe_sub_nb(E, AA, BB); PX_LMUL(x2, AA, BB);
@@ -2221,14 +2230,14 @@ __device__ __forceinline__ void mlad_step_nb(fe &x2, fe &z2, fe &x3, fe &z3, con
     fe_add_nb(x3, DA, CB); PX_LSQ(x3, x3);
     fe_sub_nb(z3, DA, CB); PX_LSQ(z3, z3); PX_LMUL(z3, z3, x1);
     PX_LMUL(z2, E, AA);
-#elif PX_LAD_ORDER == 2 && PX_SMALLADD
+#elif PX_LAD_ORD == 2 && PX_SMALLADD
     // interleaved
     PX_LMUL(DA, D, A); PX_LSQ(AA, A); PX_LMUL(CB, C, B); PX_LSQ(BB, B);
     fe_add_nb(x3, DA, CB); fe_sub_nb(z3, DA, CB);
     PX_LMUL(x2, AA, BB); PX_LSQ(x3, x3); fe_sub_nb(E, AA, BB);
     PX_LSQ(z3, z3); fe_mul_small_add_t<1>(AA, E, PX_MONT_A24, AA);
     PX_LMUL(z3, z3, x1); PX_LMUL(z2, E, AA);
-#elif PX_LAD_ORDER == 3 && PX_SMALLADD
+#elif PX_LAD_ORD == 3 && PX_SMALLADD
     // doubling outputs before the addition outputs
     PX_LMUL(DA, D, A); PX_LMUL(CB, C, B);
     PX_LSQ(AA, A); PX_LSQ(BB, B);
@@ -2249,6 +2258,7 @@ __device__ __forceinline__ void mlad_step_nb(fe &x2, fe &z2, fe &x3, fe &z3, con
     fe_mul_small_t<1>(C, E, PX_MONT_A24); fe_add_nb(C, C, AA); PX_LMUL(z2, E, C);
 #endif
 #endif
+#undef PX_LAD_ORD
 #undef PX_LSQ
 #undef PX_LMUL
 }
@@ -2794,6 +2804,22 @@ __global__ void PX_LADDER_ATTR ladderx_kernel(const HPoint *pts, const unsigned 
             asm volatile("ld.volatile.shared.v4.u32 {%0,%1,%2,%3}, [%4];" : "=r"(x1.v[4]), "=r"(x1.v[5]), "=r"(x1.v[6]), "=r"(x1.v[7]) : "r"(sb));
             if ((c_xscalar[b >> 3] >> (b & 7)) & 1) PX_XSTEP(x3, z3, x2, z2, x1);
             else PX_XSTEP(x2, z2, x3, z3, x1);
+        }
+#elif PX_LAD_PAIR
+        // two scalar bits per iteration, one straight-line block per bit pair: ptxas can overlap the tail of the
+        // first step with the head of the second (a single step is one basic block between two warp-uniform branches)
+        {
+            int b = c_xladder_top;
+#define PX_KB(b) ((c_xscalar[(b) >> 3] >> ((b) & 7)) & 1)
+            if (!(b & 1)) { if (PX_KB(b)) PX_XSTEP(x3, z3, x2, z2, xP); else PX_XSTEP(x2, z2, x3, z3, xP); b--; }
+            for (; b >= 1; b -= 2) {
+                const unsigned two = (PX_KB(b) << 1) | PX_KB(b - 1);
+                if (two == 0) { PX_XSTEP(x2, z2, x3, z3, xP); PX_XSTEP(x2, z2, x3, z3, xP); }
+                else if (two == 1) { PX_XSTEP(x2, z2, x3, z3, xP); PX_XSTEP(x3, z3, x2, z2, xP); }
+                else if (two == 2) { PX_XSTEP(x3, z3, x2, z2, xP); PX_XSTEP(x2, z2, x3, z3, xP); }
+                else { PX_XSTEP(x3, z3, x2, z2, xP); PX_XSTEP(x3, z3, x2, z2, xP); }
+            }
+#undef PX_KB
         }
 #else
         for (int b = c_xladder_top; b >= 0; b--) {
@@ -3595,6 +3621,8 @@ static const VariantOps ops = { PX_VARIANT_NAME,
 #undef PX_LAD_TPB
 #undef PX_LAD_SHX
 #undef PX_LAD_ORDER
+#undef PX_LAD_ORDER_SM120
+#undef PX_LAD_PAIR
 #undef PX_LAD_MINB
 #undef PX_MONT_A
 #undef PX_MONT_A24

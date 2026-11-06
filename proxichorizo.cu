@@ -329,6 +329,7 @@ namespace v_fe32x_wnaf_s32_c {
 #define PX_LB_FIN 2
 #define PX_SMALLADD 1
 #define PX_SHA_PRE 1
+#define PX_LAD_ORDER_SM120 9
 #define PX_VARIANT_NAME "fe32x_mlsp_c"
 namespace v_fe32x_mlsp_c {
 #include "proxichorizo_device.cuh"
@@ -1096,6 +1097,134 @@ namespace v_fe32x_mlsp_o8_c {
 #define PX_LAD_ORDER 9
 #define PX_VARIANT_NAME "fe32x_mlsp_o9_c"
 namespace v_fe32x_mlsp_o9_c {
+#include "proxichorizo_device.cuh"
+}
+#undef PX_FE32
+#undef PX_COMBA
+#undef PX_WINDOW
+#undef PX_LB_BLOCKS
+#undef PX_COMPACT
+#undef PX_SPLIT_FINISH
+#undef PX_VARIANT_NAME
+#undef PX_LB_THREADS
+#undef PX_LB_MULT_BLOCKS
+#endif
+#ifdef PXV_fe32x_mlsp_p2o9_c
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_WINDOW 5
+#define PX_LB_BLOCKS 2
+#define PX_COMPACT 1
+#define PX_SPLIT_FINISH 32
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 4
+#define PX_JAC_B1 1
+#define PX_JAC_STEPS 30
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_ADDFOLD_ALU 1
+#define PX_ROW0C 1
+#define PX_SMALLMUL_WIDE 1
+#define PX_LB_FIN 2
+#define PX_SMALLADD 1
+#define PX_SHA_PRE 1
+#define PX_LAD_ORDER 9
+#define PX_LAD_PAIR 1
+#define PX_VARIANT_NAME "fe32x_mlsp_p2o9_c"
+namespace v_fe32x_mlsp_p2o9_c {
+#include "proxichorizo_device.cuh"
+}
+#undef PX_FE32
+#undef PX_COMBA
+#undef PX_WINDOW
+#undef PX_LB_BLOCKS
+#undef PX_COMPACT
+#undef PX_SPLIT_FINISH
+#undef PX_VARIANT_NAME
+#undef PX_LB_THREADS
+#undef PX_LB_MULT_BLOCKS
+#endif
+#ifdef PXV_fe32x_mlsp_p2o1_c
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_WINDOW 5
+#define PX_LB_BLOCKS 2
+#define PX_COMPACT 1
+#define PX_SPLIT_FINISH 32
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 4
+#define PX_JAC_B1 1
+#define PX_JAC_STEPS 30
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_ADDFOLD_ALU 1
+#define PX_ROW0C 1
+#define PX_SMALLMUL_WIDE 1
+#define PX_LB_FIN 2
+#define PX_SMALLADD 1
+#define PX_SHA_PRE 1
+#define PX_LAD_ORDER 1
+#define PX_LAD_PAIR 1
+#define PX_VARIANT_NAME "fe32x_mlsp_p2o1_c"
+namespace v_fe32x_mlsp_p2o1_c {
+#include "proxichorizo_device.cuh"
+}
+#undef PX_FE32
+#undef PX_COMBA
+#undef PX_WINDOW
+#undef PX_LB_BLOCKS
+#undef PX_COMPACT
+#undef PX_SPLIT_FINISH
+#undef PX_VARIANT_NAME
+#undef PX_LB_THREADS
+#undef PX_LB_MULT_BLOCKS
+#endif
+#ifdef PXV_fe32x_mlsp_p2_c
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_WINDOW 5
+#define PX_LB_BLOCKS 2
+#define PX_COMPACT 1
+#define PX_SPLIT_FINISH 32
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 4
+#define PX_JAC_B1 1
+#define PX_JAC_STEPS 30
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_ADDFOLD_ALU 1
+#define PX_ROW0C 1
+#define PX_SMALLMUL_WIDE 1
+#define PX_LB_FIN 2
+#define PX_SMALLADD 1
+#define PX_SHA_PRE 1
+#define PX_LAD_PAIR 1
+#define PX_VARIANT_NAME "fe32x_mlsp_p2_c"
+namespace v_fe32x_mlsp_p2_c {
 #include "proxichorizo_device.cuh"
 }
 #undef PX_FE32
