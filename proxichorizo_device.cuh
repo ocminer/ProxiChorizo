@@ -1761,6 +1761,26 @@ __global__ void sha_prep_kernel(const JobDev *job, uint64_t *mid) {
     }
     mid[0] = a; mid[1] = b; mid[2] = c; mid[3] = d; mid[4] = e; mid[5] = f; mid[6] = g; mid[7] = h;
     for (int i = 0; i < 9; i++) mid[8 + i] = W[i];
+    // job constants beyond the state (used with PX_SHA_PRE): round 8 apart from the nonce's top byte, and the parts of
+    // schedule words 16..23 that do not depend on the nonce (words 10..15 are fixed padding, 11..14 zero)
+    {   auto s0f = [](uint64_t x) { return rotr64(x, 1) ^ rotr64(x, 8) ^ (x >> 7); };
+        auto s1f = [](uint64_t x) { return rotr64(x, 19) ^ rotr64(x, 61) ^ (x >> 6); };
+        const uint64_t W10 = 0x0080000000000000ULL, W15 = (uint64_t)(2 + 32 + PX_MID_PREFIX + 8 + 2) * 8;
+        uint64_t S1 = rotr64(e, 14) ^ rotr64(e, 18) ^ rotr64(e, 41), ch = (e & f) ^ (~e & g);
+        mid[17] = h + S1 + ch + c_K512[8] + W[8];                       // t1 of round 8 minus the nonce top byte
+        mid[18] = (rotr64(a, 28) ^ rotr64(a, 34) ^ rotr64(a, 39)) + ((a & b) ^ (a & c) ^ (b & c));   // t2 of round 8
+        uint64_t C17 = s1f(W15) + W10 + s0f(W[2]) + W[1];
+        uint64_t C19 = s1f(C17) + s0f(W[4]) + W[3];
+        uint64_t C21 = s1f(C19) + s0f(W[6]) + W[5];
+        mid[19] = s0f(W[1]) + W[0];                                      // W16 = this + W9
+        mid[20] = C17;
+        mid[21] = s0f(W[3]) + W[2];                                      // W18 = s1(W16) + this
+        mid[22] = C19;
+        mid[23] = s0f(W[5]) + W[4];                                      // W20 = s1(W18) + this
+        mid[24] = C21;
+        mid[25] = W15 + s0f(W[7]) + W[6];                                // W22 = s1(W20) + this
+        mid[26] = s1f(C21) + W[7];                                       // W23 = this + W16 + s0(W8)
+    }
 }
 // the hash-to-curve SHA-512 from round 8 on; identical arithmetic to sha512_single for the 81-byte message
 __device__ __forceinline__ void sha512_h2c_mid_st(const uint64_t *mid, uint64_t nonce, uint8_t ctr, uint64_t st_out[8]) {
@@ -1773,11 +1793,37 @@ __device__ __forceinline__ void sha512_h2c_mid_st(const uint64_t *mid, uint64_t 
     W[11] = 0; W[12] = 0; W[13] = 0; W[14] = 0;
     W[15] = (uint64_t)(2 + 32 + PX_MID_PREFIX + 8 + 2) * 8;
     uint64_t a = mid[0], b = mid[1], c = mid[2], d = mid[3], e = mid[4], f = mid[5], g = mid[6], h = mid[7];
+#if PX_SHA_PRE
+    {   // round 8 from the job constants: only the nonce's top byte varies
+        uint64_t t1 = mid[17] + (nonce >> 56), t2 = mid[18];
+        h = g; g = f; f = e; e = d + t1; d = c; c = b; b = a; a = t1 + t2; }
+    #pragma unroll
+    for (int i = 9; i < 80; i++) {
+        uint64_t wi;
+        if (i < 16) wi = W[i];
+        else if (i <= 23) {
+            #define PX_S0(x) (rotr64(x, 1) ^ rotr64(x, 8) ^ ((x) >> 7))
+            #define PX_S1(x) (rotr64(x, 19) ^ rotr64(x, 61) ^ ((x) >> 6))
+            if (i == 16) wi = mid[19] + W[9];
+            else if (i == 17) wi = mid[20];
+            else if (i == 18) wi = PX_S1(W[0]) + mid[21];
+            else if (i == 19) wi = mid[22];
+            else if (i == 20) wi = PX_S1(W[2]) + mid[23];
+            else if (i == 21) wi = mid[24];
+            else if (i == 22) wi = PX_S1(W[4]) + mid[25];
+            else wi = mid[26] + W[0] + PX_S0(W[8]);
+            #undef PX_S0
+            #undef PX_S1
+            W[i & 15] = wi;
+        }
+        else {
+#else
     #pragma unroll
     for (int i = 8; i < 80; i++) {
         uint64_t wi;
         if (i < 16) wi = W[i];
         else {
+#endif
             uint64_t w15 = W[(i - 15) & 15], w2 = W[(i - 2) & 15];
             uint64_t s0 = rotr64(w15, 1) ^ rotr64(w15, 8) ^ (w15 >> 7);
             uint64_t s1 = rotr64(w2, 19) ^ rotr64(w2, 61) ^ (w2 >> 6);
@@ -3032,7 +3078,7 @@ static void *v_alloc_one(size_t n) {
 #endif
     for (int b = 0; b < 2; b++) { CUDA_CHECK(cudaMalloc(&sc->nonce[b], n * sizeof(uint64_t))); CUDA_CHECK(cudaMalloc(&sc->ctr[b], n)); }
 #if PX_H2C_MID
-    CUDA_CHECK(cudaMalloc(&sc->mid, 17 * sizeof(uint64_t)));
+    CUDA_CHECK(cudaMalloc(&sc->mid, 32 * sizeof(uint64_t)));
 #endif
     CUDA_CHECK(cudaMalloc(&sc->cnt, (PX_MAX_PASSES + 3) * sizeof(unsigned)));
 #if PX_TAIL_SPLIT
@@ -3419,6 +3465,7 @@ static const VariantOps ops = { PX_VARIANT_NAME,
 #undef PX_SMALLMUL_WIDE
 #undef PX_JAC_MASK
 #undef PX_PFX_MEM
+#undef PX_SHA_PRE
 #undef PX_SMALLADD
 #undef PX_ZFREE
 #undef PX_TAIL_SPLIT
