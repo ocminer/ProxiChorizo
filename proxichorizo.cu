@@ -3336,13 +3336,13 @@ static GpuCfg autotune(int dev, const uint8_t scalar[32], const uint8_t pk[32], 
     double bestRate = 0;
     // threads, nonces per thread, blocks per multiprocessor (ignored under --blocks)
     const int geoAll[][3] = { {256, 4, 8}, {256, 2, 8}, {128, 4, 8}, {256, 1, 64}, {256, 1, 128}, {256, 2, 64} };
-    // quick: the kernels that win somewhere (0.5.10 wide-chain, 0.5.8 comba, wNAF, 4-bit table), at the two launch shapes that do
+    // quick: the kernels that win somewhere (1.0.5 ladder, 1.0.2, 0.5.10 wide-chain, 0.5.8 comba, wNAF, 4-bit table), at the two launch shapes that do
     const int geoQuick[][3] = { {256, 1, 128}, {256, 4, 8} };
     const int (*geo)[3] = quick ? geoQuick : geoAll;
     const int ngeo = quick ? 2 : 6;
     fprintf(stderr, "autotune GPU %d %s (sm_%d%d), %.0fs per trial:\n", dev, prop.name, prop.major, prop.minor, seconds);
     for (int v = 0; v < NVARIANTS; v++) {
-        if (quick && strcmp(VARIANTS[v]->name, "fe32x_wnaf_s32_c") != 0 && strcmp(VARIANTS[v]->name, "fe32w_wnaf_s16_c") != 0 && strcmp(VARIANTS[v]->name, "fe32c_wnaf_s16_c") != 0 && strcmp(VARIANTS[v]->name, "fe32_wnaf_lb2_c") != 0 && strcmp(VARIANTS[v]->name, "fe32_w4_lb2_c") != 0) continue;
+        if (quick && strcmp(VARIANTS[v]->name, "fe32x_mlsp_c") != 0 && strcmp(VARIANTS[v]->name, "fe32x_wnaf_s32_c") != 0 && strcmp(VARIANTS[v]->name, "fe32w_wnaf_s16_c") != 0 && strcmp(VARIANTS[v]->name, "fe32c_wnaf_s16_c") != 0 && strcmp(VARIANTS[v]->name, "fe32_wnaf_lb2_c") != 0 && strcmp(VARIANTS[v]->name, "fe32_w4_lb2_c") != 0) continue;
         uint8_t pk2[32];
         if (VARIANTS[v]->init(scalar, pk2) != 1 || memcmp(pk2, pk, 32) != 0) { fprintf(stderr, "  %-12s: init failed, skipped\n", VARIANTS[v]->name); continue; }
         for (int gi = 0; gi < ngeo; gi++) {
