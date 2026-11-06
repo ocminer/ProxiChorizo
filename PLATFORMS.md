@@ -629,3 +629,26 @@ Measured and not used: a lower register cap per thread for more resident warps (
 block per SM (−1 to −9.5 %), and one looping launch for the last hash-to-curve retries (−0.2 to −0.5 %). Memory clock:
 an RTX 5090 at a reduced power cap gains from 7001 MHz (+1.4 % at 420 W, +0.8 % at 575 W, ±0 at 600 W); 810 MHz is far
 too slow; RTX 5080 and RTX 3070 do not gain.
+
+## Round 13: 1.0.5 kernel `fe32x_mlsp_c` — 2026-11-06 (RTX 5090, RTX 5080, RTX 4070 Ti SUPER, RTX 3070, CMP 170HX)
+
+New default on sm_120, sm_89, sm_86 and the CMP 170HX, at 256 blocks per SM (one nonce per thread); A100/H100 rows,
+Turing (tuned on first start, now including this kernel) and AMD unchanged. Faster hash-to-curve and point
+multiplication; every reported hit is recomputed exactly on the GPU before it is returned. Bit-identical outputs
+(16 node vectors, 512 independent vectors, field test, `--verify` and 58 launch shapes on every card below).
+Matched `--bench` A/B/B/A, eight 60 s arms, the 1.0.5 release build vs the published 1.0.4, same card/cap/clocks
+(4070 Ti SUPER: single-architecture builds of both sources):
+
+| GPU | cap | 1.0.4 | 1.0.5 | gain | 1.0.5 power |
+|---|---:|---:|---:|---:|---:|
+| RTX 5090 | 600 W | 70.08 | 78.61 | +12.2 % | 600 W |
+| RTX 5090 | 420 W | 56.47 | 66.95 | +18.6 % | 420 W |
+| RTX 5080 | 360 W | 37.43 | 40.20 | +7.4 % | 326 W |
+| RTX 5080 (second card) | 360 W | 36.69 | 39.39 | +7.4 % | 292 W |
+| RTX 4070 Ti SUPER | 285 W | 28.45 | 31.32 | +10.1 % | 282 W |
+| RTX 3070 | 240 W | 13.75 | 15.09 | +9.7 % | 230 W |
+| RTX 3070 (second card) | 240 W | 13.56 | 14.83 | +9.4 % | 231 W |
+| CMP 170HX | 250 W | 15.89 | 17.05 | +7.3 % | 180 W |
+
+Launch size for this kernel (RTX 5090 at 575 W): 128 blocks/SM 76.5, 256 77.7, 512 77.7 MH/s; CMP 170HX 128 16.93,
+256 17.00; RTX 4070 Ti SUPER 128 31.04, 256 31.31. 256 is the default (shorter launches than 512 for the same rate).

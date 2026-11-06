@@ -107,16 +107,16 @@ which stays open for a while and will then be switched off. Update to 1.0.5.
 ## Which kernel runs on which card
 
 The platform table in `platform_profiles.h` (NVIDIA) and `opencl/proxichorizo_cl.cpp` (AMD) holds the
-measured default per GPU generation: Blackwell, Ampere GA10x, GA100 and RDNA3 / Vega were
-benchmarked (see PLATFORMS.md). A generation without measurements (Ada, Turing, RDNA2/4, anything
-unknown) is **tuned on the card itself at the first start**: the two candidate kernels are measured
+measured default per GPU generation: Blackwell, Ada, Ampere GA10x, GA100 and RDNA3 / Vega were
+benchmarked (see PLATFORMS.md). A generation without measurements (Turing, RDNA2/4, anything
+unknown) is **tuned on the card itself at the first start**: the candidate kernels are measured
 for about 15 s and the winner is written to `proxichorizo-autotune.cache` next to the miner, keyed by
 card and miner version, so later starts (and every new release) use or refresh it. `--autotune`
 measures every kernel and shape, `--variant` / `--blocks` / `--iters` override everything; the
 start-up line `GPU n ...: <variant>, <blocks>x<threads>x<iters> — <reason>` says what was chosen and why.
 
 A100 and H100 have separate measured profiles, selected automatically by model and compute
-capability for each GPU. The CMP 170HX and RTX PRO 6000 retain their existing profiles;
+capability for each GPU. The CMP 170HX runs the 1.0.5 kernel, the RTX PRO 6000 the Blackwell default;
 MIG partitions retain the generation defaults. The distribution build includes native SM90
 code for H100. See the datacenter measurements in `PLATFORMS.md` for the tested configurations.
 
@@ -140,7 +140,7 @@ code for H100. See the datacenter measurements in `PLATFORMS.md` for the tested 
 ./proxichorizo ... --max-temp 85 --log-interval 10 --quiet   # thermal limit per GPU (default 88 C, pauses only that card), console cadence
 ```
 Without a GPU argument the miner takes every GPU in the machine in one process; a GPU that overheats pauses alone and resumes when cool, a GPU with a device error is disabled alone. The console shows a start-up banner, per-GPU lines with temperature, power and clock, share results per GPU and a total line (colours on a terminal, plain text in logs).
-Measured (1.0.2, `--bench`, platform defaults): RTX 5090 ≈ 70 MH/s at 600 W / ≈ 56.6 at 420 W, RTX 5080 ≈ 37 MH/s, RTX 3070 ≈ 13.7 MH/s, RTX 4070 Ti SUPER ≈ 28.4 MH/s, CMP 170HX ≈ 15.7 MH/s; unchanged from earlier releases: RTX PRO 6000 ≈ 43 MH/s (0.5.6), H100 SXM ≈ 21.6 MH/s (0.5.7), A100 ≈ 12.7 MH/s (0.5.7), RTX A6000 ≈ 12 MH/s (0.5.6); one CPU core of the reference seeker ≈ 37 kH/s. See the [benchmarks](#benchmarks) below.
+Measured (1.0.5, `--bench`, platform defaults): RTX 5090 ≈ 78.6 MH/s at 600 W / ≈ 67 at 420 W, RTX 5080 ≈ 39.4–40.2 MH/s, RTX 3070 ≈ 14.8–15.1 MH/s, RTX 4070 Ti SUPER ≈ 31.3 MH/s, CMP 170HX ≈ 17.0 MH/s; unchanged from earlier releases: RTX PRO 6000 ≈ 43 MH/s (0.5.6), H100 SXM ≈ 21.6 MH/s (0.5.7), A100 ≈ 12.7 MH/s (0.5.7), RTX A6000 ≈ 12 MH/s (0.5.6); one CPU core of the reference seeker ≈ 37 kH/s. See the [benchmarks](#benchmarks) below.
 **[USAGE.md](USAGE.md)** has the full guide: registering at the pool, solo mining with `proxi node mine`, HiveOS / MMPOS / SMOS flight sheets, Docker, Windows, every option, troubleshooting.
 
 ## Build
@@ -162,37 +162,42 @@ glibc 2.31 so they run on HiveOS and mmpOS images.
 Per attempt: SHA-512, try-and-increment hash-to-curve (one field exponentiation per try),
 a 254-bit scalar multiplication on Ed25519, cofactor ×8, compression (one inversion),
 SHA-512. See `PLATFORMS.md` for the measured variants and why each exists.
-Reference points (the same binary, platform defaults): RTX 5090 ≈ 70 MH/s (600 W), RTX 5080 ≈ 37 MH/s,
-RTX 3070 ≈ 13.7 MH/s, RTX 4070 Ti SUPER ≈ 28.4 MH/s, CMP 170HX ≈ 15.7 MH/s, one CPU core of the reference Rust seeker ≈ 37 kH/s.
+Reference points (the same binary, platform defaults): RTX 5090 ≈ 78.6 MH/s (600 W), RTX 5080 ≈ 40 MH/s,
+RTX 3070 ≈ 15 MH/s, RTX 4070 Ti SUPER ≈ 31.3 MH/s, CMP 170HX ≈ 17.0 MH/s, one CPU core of the reference Rust seeker ≈ 37 kH/s.
 
 ## Benchmarks
 
-`--bench` on our own cards with platform defaults and driver-reported power. 1.0.2 numbers are matched A/B/B/A runs
-(eight 60 s arms) of the 1.0.2 release build against the published 1.0.1 binary on the same card, power cap and clocks
-(CMP 170HX and RTX 4070 Ti SUPER: a single-architecture build of the same source whose kernels are instruction-identical
-to the release build). 1.0.3 runs the same kernels as 1.0.2 (identical device code; it changes only the console and the
-statistics), and 1.0.4 changes only how the host waits for the GPU, so these rates apply to 1.0.3 and 1.0.4 unchanged.
-Pool rates are a little lower (job changes, idle gaps).
+`--bench` on our own cards with platform defaults and driver-reported power. 1.0.5 numbers are matched A/B/B/A runs
+(eight 60 s arms) of the 1.0.5 release build against the published 1.0.4 binary on the same card, power cap and clocks
+(RTX 4070 Ti SUPER: single-architecture builds of the 1.0.4 and 1.0.5 sources). Pool rates are a little lower (job
+changes, idle gaps).
+
+1.0.5 has a faster default kernel (faster hash-to-curve and point multiplication) on Blackwell, Ada, Ampere GA10x and
+the CMP 170HX, with launches of 256 blocks per multiprocessor. The cards draw the same or less power for more hashes.
 
 CPU use: from 1.0.4 on, each GPU's worker thread sleeps while its GPU works, about 3 % of one CPU core per GPU
 (RTX 5090: 3.0 %; one process on 2x RTX 3070 + RTX 5080: 8.8 % in total; same hashrate as with the busy wait).
 1.0.3 and earlier kept one full CPU core busy per mining GPU (the same 3-GPU rig: 300 %).
 
-| GPU | Power cap | 1.0.1 | **1.0.2** | Gain over 1.0.1 | Power drawn (1.0.2) | MH/s per W (1.0.2) |
+| GPU | Power cap | 1.0.4 | **1.0.5** | Gain over 1.0.4 | Power drawn (1.0.5) | MH/s per W (1.0.5) |
 |---|---:|---:|---:|---:|---:|---:|
-| RTX 5090 (sm_120, 170 SMs) | 600 W | 67.4 MH/s | **69.8 MH/s** | +3.5 % | 600 W | 0.116 |
-| RTX 5090 | 420 W | 54.1 MH/s | **56.6 MH/s** | +4.6 % | 418 W | 0.135 |
-| RTX 5080 (sm_120) | 360 W | 36.2 MH/s | **37.4 MH/s** | +3.4 % | 360 W | 0.104 |
-| RTX 5080 (second card) | 360 W | 35.6 MH/s | **36.6 MH/s** | +3.0 % | 322 W | 0.114 |
-| RTX 4070 Ti SUPER (sm_89) | 285 W | 27.3 MH/s | **28.4 MH/s** | +3.8 % | 284 W | 0.100 |
-| RTX 3070 (sm_86) | 240 W | 13.1 MH/s | **13.7 MH/s** | +4.7 % | 238 W | 0.058 |
-| CMP 170HX (sm_80, 74 SMs, default clocks) | 250 W | 14.9 MH/s | **15.7 MH/s** | +5.5 % | 182 W | 0.087 |
+| RTX 5090 (sm_120, 170 SMs) | 600 W | 70.1 MH/s | **78.6 MH/s** | +12.2 % | 600 W | 0.131 |
+| RTX 5090 | 420 W | 56.5 MH/s | **66.9 MH/s** | +18.6 % | 420 W | 0.159 |
+| RTX 5080 (sm_120) | 360 W | 37.4 MH/s | **40.2 MH/s** | +7.4 % | 326 W | 0.123 |
+| RTX 5080 (second card) | 360 W | 36.7 MH/s | **39.4 MH/s** | +7.4 % | 292 W | 0.135 |
+| RTX 4070 Ti SUPER (sm_89) | 285 W | 28.5 MH/s | **31.3 MH/s** | +10.1 % | 282 W | 0.111 |
+| RTX 3070 (sm_86) | 240 W | 13.8 MH/s | **15.1 MH/s** | +9.7 % | 230 W | 0.066 |
+| RTX 3070 (second card) | 240 W | 13.6 MH/s | **14.8 MH/s** | +9.4 % | 231 W | 0.064 |
+| CMP 170HX (sm_80, 74 SMs, default clocks) | 250 W | 15.9 MH/s | **17.0 MH/s** | +7.3 % | 180 W | 0.095 |
 
-Measured with an earlier release and not re-measured for 1.0.2 (these cards keep their earlier kernels or were not available):
+Earlier release-over-release gains on the same cards: 1.0.2 over 1.0.1 +3.0 to +5.5 % (1.0.3 and 1.0.4 run the 1.0.2
+kernels unchanged).
+
+Measured with an earlier release and not re-measured for 1.0.5 (these cards keep their earlier kernels or were not available):
 
 | GPU | Power cap | Rate | Measured with |
 |---|---:|---:|---|
-| RTX PRO 6000 Blackwell | 600 W | 43.0 MH/s | 0.5.6 (1.0.2 uses the Blackwell default; not re-measured) |
+| RTX PRO 6000 Blackwell | 600 W | 43.0 MH/s | 0.5.6 (1.0.5 uses the Blackwell default; not re-measured) |
 | H100 SXM (datacenter profile) | 700 W | 21.6 MH/s | 0.5.7 |
 | A100-SXM4-80GB (datacenter profile) | 400 W | 12.7 MH/s | 0.5.7 |
 | RTX A6000 | 300 W | 12 MH/s | 0.5.6 |
