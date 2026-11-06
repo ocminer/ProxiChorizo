@@ -46,7 +46,8 @@ to your PROX address by the pool (PPLNS, 1 % fee) and paid out to it.
    Accepted shares are green, rejected ones red, warnings yellow; colours switch off by
    themselves when the output is not a terminal (log files stay plain), or with `--no-color`.
    `--quiet` keeps only the total line, job changes, warnings and errors; `--log-interval 10`
-   changes the cadence; `--verbose` adds kernel occupancy and idle diagnostics per GPU.
+   changes the cadence; `--verbose` adds kernel occupancy and idle diagnostics per GPU and
+   reports each launch that a job change stopped early.
 
 **Several GPUs in one rig: start the miner once, without any GPU argument.** It takes every
 GPU in the machine in PCI bus order (`GPU #0 … GPU #7`, the numbers nvidia-smi shows), runs
