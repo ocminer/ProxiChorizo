@@ -547,6 +547,119 @@ template<int NB, int FS = PX_FOLDSHIFT> __device__ void fe_mul_t(fe &h, const fe
     }
 }
 __device__ __forceinline__ void fe_mul(fe &h, const fe &f, const fe &g) { fe_mul_t<0>(h, f, g); }
+#if PX_LAD_KARA
+// ----------------------------------------------------------------------------
+// PX_LAD_KARA: one level of (subtractive) Karatsuba for the ladder multiplications. The ladder is bound by the
+// multiplier pipe (IMAD.WIDE) while the integer pipe is mostly idle; three 4x4 products (48 wide multiplies)
+// instead of one 8x8 (64) trade 16 multiplies for about 60 integer additions per field multiplication.
+//   a = aL + 2^128 aH, b likewise; m = |aL - aH| |bL - bH|;
+//   a b = zL + (zL + zH -+ m) 2^128 + zH 2^256, zL = aL bL, zH = aH bH (minus when the differences have equal signs)
+// ----------------------------------------------------------------------------
+__device__ __forceinline__ void mul4w(uint32_t r[8], const uint32_t *a, const uint32_t *b) {
+    uint32_t E[8], Od[8];
+    { uint64_t p;
+      p = (uint64_t)a[0] * b[0]; E[0] = (uint32_t)p; E[1] = (uint32_t)(p >> 32);
+      p = (uint64_t)a[0] * b[2]; E[2] = (uint32_t)p; E[3] = (uint32_t)(p >> 32);
+      p = (uint64_t)a[0] * b[1]; Od[0] = (uint32_t)p; Od[1] = (uint32_t)(p >> 32);
+      p = (uint64_t)a[0] * b[3]; Od[2] = (uint32_t)p; Od[3] = (uint32_t)(p >> 32); }
+    E[4] = E[5] = E[6] = E[7] = 0; Od[4] = Od[5] = Od[6] = Od[7] = 0;
+    // row 1: even columns a1*b1 (2), a1*b3 (4); odd columns a1*b0 (1), a1*b2 (3)
+    asm("mad.lo.cc.u32 %0, %10, %12, %0;\n\tmadc.hi.cc.u32 %1, %10, %12, %1;\n\tmadc.lo.cc.u32 %2, %10, %14, %2;\n\tmadc.hi.cc.u32 %3, %10, %14, %3;\n\taddc.u32 %4, %4, 0;\n\t"
+        "mad.lo.cc.u32 %5, %10, %11, %5;\n\tmadc.hi.cc.u32 %6, %10, %11, %6;\n\tmadc.lo.cc.u32 %7, %10, %13, %7;\n\tmadc.hi.cc.u32 %8, %10, %13, %8;\n\taddc.u32 %9, %9, 0;"
+        : "+r"(E[2]), "+r"(E[3]), "+r"(E[4]), "+r"(E[5]), "+r"(E[6]), "+r"(Od[0]), "+r"(Od[1]), "+r"(Od[2]), "+r"(Od[3]), "+r"(Od[4])
+        : "r"(a[1]), "r"(b[0]), "r"(b[1]), "r"(b[2]), "r"(b[3]));
+    // row 2: even a2*b0 (2), a2*b2 (4); odd a2*b1 (3), a2*b3 (5)
+    asm("mad.lo.cc.u32 %0, %10, %11, %0;\n\tmadc.hi.cc.u32 %1, %10, %11, %1;\n\tmadc.lo.cc.u32 %2, %10, %13, %2;\n\tmadc.hi.cc.u32 %3, %10, %13, %3;\n\taddc.u32 %4, %4, 0;\n\t"
+        "mad.lo.cc.u32 %5, %10, %12, %5;\n\tmadc.hi.cc.u32 %6, %10, %12, %6;\n\tmadc.lo.cc.u32 %7, %10, %14, %7;\n\tmadc.hi.cc.u32 %8, %10, %14, %8;\n\taddc.u32 %9, %9, 0;"
+        : "+r"(E[2]), "+r"(E[3]), "+r"(E[4]), "+r"(E[5]), "+r"(E[6]), "+r"(Od[2]), "+r"(Od[3]), "+r"(Od[4]), "+r"(Od[5]), "+r"(Od[6])
+        : "r"(a[2]), "r"(b[0]), "r"(b[1]), "r"(b[2]), "r"(b[3]));
+    // row 3: even a3*b1 (4), a3*b3 (6); odd a3*b0 (3), a3*b2 (5)
+    asm("mad.lo.cc.u32 %0, %9, %11, %0;\n\tmadc.hi.cc.u32 %1, %9, %11, %1;\n\tmadc.lo.cc.u32 %2, %9, %13, %2;\n\tmadc.hi.u32 %3, %9, %13, %3;\n\t"
+        "mad.lo.cc.u32 %4, %9, %10, %4;\n\tmadc.hi.cc.u32 %5, %9, %10, %5;\n\tmadc.lo.cc.u32 %6, %9, %12, %6;\n\tmadc.hi.cc.u32 %7, %9, %12, %7;\n\taddc.u32 %8, %8, 0;"
+        : "+r"(E[4]), "+r"(E[5]), "+r"(E[6]), "+r"(E[7]), "+r"(Od[2]), "+r"(Od[3]), "+r"(Od[4]), "+r"(Od[5]), "+r"(Od[6])
+        : "r"(a[3]), "r"(b[0]), "r"(b[1]), "r"(b[2]), "r"(b[3]));
+    r[0] = E[0];
+    asm("add.cc.u32 %0, %7, %14;\n\taddc.cc.u32 %1, %8, %15;\n\taddc.cc.u32 %2, %9, %16;\n\taddc.cc.u32 %3, %10, %17;\n\t"
+        "addc.cc.u32 %4, %11, %18;\n\taddc.cc.u32 %5, %12, %19;\n\taddc.u32 %6, %13, %20;"
+        : "=&r"(r[1]), "=&r"(r[2]), "=&r"(r[3]), "=&r"(r[4]), "=&r"(r[5]), "=&r"(r[6]), "=&r"(r[7])
+        : "r"(E[1]), "r"(E[2]), "r"(E[3]), "r"(E[4]), "r"(E[5]), "r"(E[6]), "r"(E[7]),
+          "r"(Od[0]), "r"(Od[1]), "r"(Od[2]), "r"(Od[3]), "r"(Od[4]), "r"(Od[5]), "r"(Od[6]));
+}
+// d = |x - y| over four words; returns all ones when x < y
+__device__ __forceinline__ uint32_t absdiff4(uint32_t d[4], const uint32_t *x, const uint32_t *y) {
+    uint32_t s;
+    asm("sub.cc.u32 %0, %5, %9;\n\tsubc.cc.u32 %1, %6, %10;\n\tsubc.cc.u32 %2, %7, %11;\n\tsubc.cc.u32 %3, %8, %12;\n\tsubc.u32 %4, 0, 0;"
+        : "=&r"(d[0]), "=&r"(d[1]), "=&r"(d[2]), "=&r"(d[3]), "=&r"(s)
+        : "r"(x[0]), "r"(x[1]), "r"(x[2]), "r"(x[3]), "r"(y[0]), "r"(y[1]), "r"(y[2]), "r"(y[3]));
+    #pragma unroll
+    for (int i = 0; i < 4; i++) d[i] ^= s;
+    asm("sub.cc.u32 %0, %0, %4;\n\tsubc.cc.u32 %1, %1, %4;\n\tsubc.cc.u32 %2, %2, %4;\n\tsubc.u32 %3, %3, %4;"
+        : "+r"(d[0]), "+r"(d[1]), "+r"(d[2]), "+r"(d[3]) : "r"(s));
+    return s;
+}
+template<int NB> __device__ __forceinline__ void fe_mul_kara(fe &h, const fe &f, const fe &g) {
+    const uint32_t *a = f.v, *b = g.v;
+    uint32_t zL[8], zH[8], m[8], dA[4], dB[4];
+    mul4w(zL, a, b);
+    mul4w(zH, a + 4, b + 4);
+    uint32_t sA = absdiff4(dA, a, a + 4), sB = absdiff4(dB, b, b + 4);
+    mul4w(m, dA, dB);
+    // n = all ones when the middle term is zL + zH - m (equal signs), zero when it is zL + zH + m
+    uint32_t n = ~(sA ^ sB);
+    uint32_t M[9];
+    asm("add.cc.u32 %0, %9, %17;\n\taddc.cc.u32 %1, %10, %18;\n\taddc.cc.u32 %2, %11, %19;\n\taddc.cc.u32 %3, %12, %20;\n\t"
+        "addc.cc.u32 %4, %13, %21;\n\taddc.cc.u32 %5, %14, %22;\n\taddc.cc.u32 %6, %15, %23;\n\taddc.cc.u32 %7, %16, %24;\n\taddc.u32 %8, 0, 0;"
+        : "=&r"(M[0]), "=&r"(M[1]), "=&r"(M[2]), "=&r"(M[3]), "=&r"(M[4]), "=&r"(M[5]), "=&r"(M[6]), "=&r"(M[7]), "=&r"(M[8])
+        : "r"(zL[0]), "r"(zL[1]), "r"(zL[2]), "r"(zL[3]), "r"(zL[4]), "r"(zL[5]), "r"(zL[6]), "r"(zL[7]),
+          "r"(zH[0]), "r"(zH[1]), "r"(zH[2]), "r"(zH[3]), "r"(zH[4]), "r"(zH[5]), "r"(zH[6]), "r"(zH[7]));
+    // M += (m ^ n) - n over nine words (m[8] = 0): + m or - m, exact (the middle term is non-negative)
+    uint32_t t[8];
+    #pragma unroll
+    for (int i = 0; i < 8; i++) t[i] = m[i] ^ n;
+    asm("sub.cc.u32 %0, %0, %8;\n\tsubc.cc.u32 %1, %1, %8;\n\tsubc.cc.u32 %2, %2, %8;\n\tsubc.cc.u32 %3, %3, %8;\n\t"
+        "subc.cc.u32 %4, %4, %8;\n\tsubc.cc.u32 %5, %5, %8;\n\tsubc.cc.u32 %6, %6, %8;\n\tsubc.u32 %7, %7, %8;"
+        : "+r"(t[0]), "+r"(t[1]), "+r"(t[2]), "+r"(t[3]), "+r"(t[4]), "+r"(t[5]), "+r"(t[6]), "+r"(t[7]) : "r"(n));
+    // the ninth word of (m ^ n) - n is n - n - borrow; folded as: M[8] += n + carry chain below handles it exactly
+    {   uint32_t t8;
+        // recompute the borrow-out of the subtraction above: (m ^ n) - n borrows iff n = all ones and m != 0 ... handled
+        // directly: ninth word of -(m) is all ones unless m = 0; of +m is zero
+        uint32_t mz = m[0] | m[1] | m[2] | m[3] | m[4] | m[5] | m[6] | m[7];
+        t8 = n & (mz ? 0xFFFFFFFFu : 0u);
+        asm("add.cc.u32 %0, %0, %9;\n\taddc.cc.u32 %1, %1, %10;\n\taddc.cc.u32 %2, %2, %11;\n\taddc.cc.u32 %3, %3, %12;\n\t"
+            "addc.cc.u32 %4, %4, %13;\n\taddc.cc.u32 %5, %5, %14;\n\taddc.cc.u32 %6, %6, %15;\n\taddc.cc.u32 %7, %7, %16;\n\taddc.u32 %8, %8, %17;"
+            : "+r"(M[0]), "+r"(M[1]), "+r"(M[2]), "+r"(M[3]), "+r"(M[4]), "+r"(M[5]), "+r"(M[6]), "+r"(M[7]), "+r"(M[8])
+            : "r"(t[0]), "r"(t[1]), "r"(t[2]), "r"(t[3]), "r"(t[4]), "r"(t[5]), "r"(t[6]), "r"(t[7]), "r"(t8)); }
+    // P = zL + M 2^128 + zH 2^256 (16 words)
+    uint32_t P[16];
+    P[0] = zL[0]; P[1] = zL[1]; P[2] = zL[2]; P[3] = zL[3];
+    asm("add.cc.u32 %0, %12, %20;\n\taddc.cc.u32 %1, %13, %21;\n\taddc.cc.u32 %2, %14, %22;\n\taddc.cc.u32 %3, %15, %23;\n\t"
+        "addc.cc.u32 %4, %16, %24;\n\taddc.cc.u32 %5, %17, %25;\n\taddc.cc.u32 %6, %18, %26;\n\taddc.cc.u32 %7, %19, %27;\n\t"
+        "addc.cc.u32 %8, %28, %32;\n\taddc.cc.u32 %9, %29, 0;\n\taddc.cc.u32 %10, %30, 0;\n\taddc.u32 %11, %31, 0;"
+        : "=&r"(P[4]), "=&r"(P[5]), "=&r"(P[6]), "=&r"(P[7]), "=&r"(P[8]), "=&r"(P[9]), "=&r"(P[10]), "=&r"(P[11]),
+          "=&r"(P[12]), "=&r"(P[13]), "=&r"(P[14]), "=&r"(P[15])
+        : "r"(zL[4]), "r"(zL[5]), "r"(zL[6]), "r"(zL[7]), "r"(zH[0]), "r"(zH[1]), "r"(zH[2]), "r"(zH[3]),
+          "r"(M[0]), "r"(M[1]), "r"(M[2]), "r"(M[3]), "r"(M[4]), "r"(M[5]), "r"(M[6]), "r"(M[7]),
+          "r"(zH[4]), "r"(zH[5]), "r"(zH[6]), "r"(zH[7]), "r"(M[8]));
+    // fold 2^256 = 38: even columns as one chain into P[0..7], odd products independent, top word t8
+    uint32_t Od2[8], t8;
+    asm("mad.lo.cc.u32 %0, %9, 38, %0;\n\tmadc.hi.cc.u32 %1, %9, 38, %1;\n\tmadc.lo.cc.u32 %2, %10, 38, %2;\n\tmadc.hi.cc.u32 %3, %10, 38, %3;\n\t"
+        "madc.lo.cc.u32 %4, %11, 38, %4;\n\tmadc.hi.cc.u32 %5, %11, 38, %5;\n\tmadc.lo.cc.u32 %6, %12, 38, %6;\n\tmadc.hi.cc.u32 %7, %12, 38, %7;\n\taddc.u32 %8, 0, 0;"
+        : "+r"(P[0]), "+r"(P[1]), "+r"(P[2]), "+r"(P[3]), "+r"(P[4]), "+r"(P[5]), "+r"(P[6]), "+r"(P[7]), "=&r"(t8)
+        : "r"(P[8]), "r"(P[10]), "r"(P[12]), "r"(P[14]));
+    #pragma unroll
+    for (int c = 0; c < 4; c++) { uint64_t q = (uint64_t)P[9 + 2 * c] * 38u; Od2[2 * c] = (uint32_t)q; Od2[2 * c + 1] = (uint32_t)(q >> 32); }
+    uint32_t o[8];
+    asm("add.cc.u32 %0, %9, %16;\n\taddc.cc.u32 %1, %10, %17;\n\taddc.cc.u32 %2, %11, %18;\n\taddc.cc.u32 %3, %12, %19;\n\t"
+        "addc.cc.u32 %4, %13, %20;\n\taddc.cc.u32 %5, %14, %21;\n\taddc.cc.u32 %6, %15, %22;\n\taddc.u32 %7, %8, %23;"
+        : "=&r"(o[1]), "=&r"(o[2]), "=&r"(o[3]), "=&r"(o[4]), "=&r"(o[5]), "=&r"(o[6]), "=&r"(o[7]), "=&r"(t8)
+        : "r"(t8), "r"(P[1]), "r"(P[2]), "r"(P[3]), "r"(P[4]), "r"(P[5]), "r"(P[6]), "r"(P[7]),
+          "r"(Od2[0]), "r"(Od2[1]), "r"(Od2[2]), "r"(Od2[3]), "r"(Od2[4]), "r"(Od2[5]), "r"(Od2[6]), "r"(Od2[7]));
+    o[0] = P[0];
+    #pragma unroll
+    for (int i = 0; i < 8; i++) h.v[i] = o[i];
+    fe_addtop_t<NB>(h, fe_mul38small(t8), 0u);
+}
+#endif
 template<int FS, int NB = 0> __device__ void fe_sq_impl(fe &h, const fe &f) {
     const uint32_t *a = f.v;
     uint32_t E[16], Od[16];
@@ -640,6 +753,16 @@ template<int FS, int NB = 0> __device__ void fe_sq_impl(fe &h, const fe &f) {
     } else {
     // fold 38 * s[8..15] into s[0..7]: even columns into s itself (aligned), odd columns into Od2, top word t8
     uint32_t Od2[8], t8;
+#if PX_ROW0C
+    // even columns as one carry chain into s; the odd products have zero addends, so their chain never carries:
+    // four independent wide products
+    asm("mad.lo.cc.u32 %0, %9, 38, %0;\n\tmadc.hi.cc.u32 %1, %9, 38, %1;\n\tmadc.lo.cc.u32 %2, %10, 38, %2;\n\tmadc.hi.cc.u32 %3, %10, 38, %3;\n\t"
+        "madc.lo.cc.u32 %4, %11, 38, %4;\n\tmadc.hi.cc.u32 %5, %11, 38, %5;\n\tmadc.lo.cc.u32 %6, %12, 38, %6;\n\tmadc.hi.cc.u32 %7, %12, 38, %7;\n\taddc.u32 %8, 0, 0;"
+        : "+r"(s[0]), "+r"(s[1]), "+r"(s[2]), "+r"(s[3]), "+r"(s[4]), "+r"(s[5]), "+r"(s[6]), "+r"(s[7]), "=&r"(t8)
+        : "r"(s[8]), "r"(s[10]), "r"(s[12]), "r"(s[14]));
+    #pragma unroll
+    for (int c = 0; c < 4; c++) { uint64_t q = (uint64_t)s[9 + 2 * c] * 38u; Od2[2 * c] = (uint32_t)q; Od2[2 * c + 1] = (uint32_t)(q >> 32); }
+#else
     asm("mad.lo.cc.u32 %0, %17, 38, %0;\n\tmadc.hi.cc.u32 %1, %17, 38, %1;\n\tmadc.lo.cc.u32 %2, %19, 38, %2;\n\tmadc.hi.cc.u32 %3, %19, 38, %3;\n\t"
         "madc.lo.cc.u32 %4, %21, 38, %4;\n\tmadc.hi.cc.u32 %5, %21, 38, %5;\n\tmadc.lo.cc.u32 %6, %23, 38, %6;\n\tmadc.hi.cc.u32 %7, %23, 38, %7;\n\taddc.u32 %8, 0, 0;\n\t"
         "mad.lo.cc.u32 %9, %18, 38, 0;\n\tmadc.hi.cc.u32 %10, %18, 38, 0;\n\tmadc.lo.cc.u32 %11, %20, 38, 0;\n\tmadc.hi.cc.u32 %12, %20, 38, 0;\n\t"
@@ -647,6 +770,7 @@ template<int FS, int NB = 0> __device__ void fe_sq_impl(fe &h, const fe &f) {
         : "+r"(s[0]), "+r"(s[1]), "+r"(s[2]), "+r"(s[3]), "+r"(s[4]), "+r"(s[5]), "+r"(s[6]), "+r"(s[7]), "=&r"(t8),
           "=&r"(Od2[0]), "=&r"(Od2[1]), "=&r"(Od2[2]), "=&r"(Od2[3]), "=&r"(Od2[4]), "=&r"(Od2[5]), "=&r"(Od2[6]), "=&r"(Od2[7])
         : "r"(s[8]), "r"(s[9]), "r"(s[10]), "r"(s[11]), "r"(s[12]), "r"(s[13]), "r"(s[14]), "r"(s[15]));
+#endif
     uint32_t o[8];
     asm("add.cc.u32 %0, %9, %16;\n\taddc.cc.u32 %1, %10, %17;\n\taddc.cc.u32 %2, %11, %18;\n\taddc.cc.u32 %3, %12, %19;\n\t"
         "addc.cc.u32 %4, %13, %20;\n\taddc.cc.u32 %5, %14, %21;\n\taddc.cc.u32 %6, %15, %22;\n\taddc.u32 %7, %8, %23;"
@@ -1891,13 +2015,19 @@ __device__ __forceinline__ void mlad_step_nb(fe &x2, fe &z2, fe &x3, fe &z3, con
     fe A, B, C, D, AA, BB, E, DA, CB;
     fe_add_nb(A, x2, z2); fe_sub_nb(B, x2, z2);
     fe_add_nb(C, x3, z3); fe_sub_nb(D, x3, z3);
-    fe_mul_t<1, PX_LAD_FSM>(DA, D, A); fe_mul_t<1, PX_LAD_FSM>(CB, C, B);
+#if PX_LAD_KARA
+#define PX_LMUL(h, f, g) fe_mul_kara<1>(h, f, g)
+#else
+#define PX_LMUL(h, f, g) fe_mul_t<1, PX_LAD_FSM>(h, f, g)
+#endif
+    PX_LMUL(DA, D, A); PX_LMUL(CB, C, B);
     fe_sq_impl<PX_LAD_FSS, 1>(AA, A); fe_sq_impl<PX_LAD_FSS, 1>(BB, B);
     fe_add_nb(x3, DA, CB); fe_sq_impl<PX_LAD_FSS, 1>(x3, x3);
-    fe_sub_nb(z3, DA, CB); fe_sq_impl<PX_LAD_FSS, 1>(z3, z3); fe_mul_t<1, PX_LAD_FSM>(z3, z3, x1);
-    fe_mul_t<1, PX_LAD_FSM>(x2, AA, BB);
+    fe_sub_nb(z3, DA, CB); fe_sq_impl<PX_LAD_FSS, 1>(z3, z3); PX_LMUL(z3, z3, x1);
+    PX_LMUL(x2, AA, BB);
     fe_sub_nb(E, AA, BB);
-    fe_mul_small_t<1>(C, E, PX_MONT_A24); fe_add_nb(C, C, AA); fe_mul_t<1, PX_LAD_FSM>(z2, E, C);
+    fe_mul_small_t<1>(C, E, PX_MONT_A24); fe_add_nb(C, C, AA); PX_LMUL(z2, E, C);
+#undef PX_LMUL
 }
 #endif
 #if PX_LADDER_NB
@@ -2580,6 +2710,22 @@ __global__ void fe_test_kernel(uint32_t seed, int n, int *fail, uint8_t *dump) {
         if (!code && !fe_eq(w, v)) code = 3;
         fe_copy(t, x); fe_sq(t, t);                          // aliasing
         if (!code && !fe_eq(t, s2)) code = 4;
+#if PX_LAD_KARA
+        {   // Karatsuba product against the schoolbook one, on the value and on structured variants (equal halves,
+            // a zero half, all-ones words, differences of either sign)
+            fe xs[4], ys[4];
+            fe_copy(xs[0], x); fe_copy(ys[0], y);
+            fe_copy(xs[1], x); for (int i = 0; i < 4; i++) xs[1].v[4 + i] = x.v[i];
+            fe_copy(ys[1], y); for (int i = 0; i < 4; i++) ys[1].v[i] = 0;
+            for (int i = 0; i < 8; i++) { xs[2].v[i] = (it >> (i & 3)) & 1 ? 0xFFFFFFFFu : x.v[i]; ys[2].v[i] = 0xFFFFFFFFu; }
+            ys[2].v[7] = (it & 4) ? 0xFFFFFFFFu : 0u;
+            fe_copy(xs[3], y); fe_copy(ys[3], x); for (int i = 0; i < 4; i++) ys[3].v[4 + i] = ys[3].v[i] + (uint32_t)(it & 1);
+            for (int c = 0; c < 4 && !code; c++) {
+                fe k1, k2; fe_mul_kara<0>(k1, xs[c], ys[c]); fe_mul(k2, xs[c], ys[c]);
+                if (!fe_eq(k1, k2)) code = 9;
+            }
+        }
+#endif
         if (code) { *fail = code * 1000000 + it; for (int i = 0; i < 32; i++) { dump[i] = xb[i]; dump[32 + i] = yb[i]; } fe_tobytes(dump + 64, s1); fe_tobytes(dump + 96, s2); return; }
     }
     // the sqrt(-1) exponentiation step by step, squaring vs multiplying
@@ -3106,6 +3252,7 @@ static const VariantOps ops = { PX_VARIANT_NAME,
 #undef PX_SMALLMUL_WIDE
 #undef PX_JAC_MASK
 #undef PX_PFX_MEM
+#undef PX_LAD_KARA
 #undef PX_ADDFOLD_ALU
 #undef PX_H2C_PERSIST
 #undef PX_ROW0C
