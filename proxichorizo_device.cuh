@@ -2174,6 +2174,69 @@ __device__ __forceinline__ void mlad_step_nb(fe &x2, fe &z2, fe &x3, fe &z3, con
 #else
 #define PX_LMUL(h, f, g) fe_mul_t<1, PX_LAD_FSM>(h, f, g)
 #endif
+#define PX_LSQ(h, f) fe_sq_impl<PX_LAD_FSS, 1>(h, f)
+#if PX_LAD_ORDER == 1 && PX_SMALLADD
+    // doubling half first
+    PX_LSQ(AA, A); PX_LSQ(BB, B);
+    PX_LMUL(x2, AA, BB); fe_sub_nb(E, AA, BB);
+    fe_mul_small_add_t<1>(AA, E, PX_MONT_A24, AA); PX_LMUL(z2, E, AA);
+    PX_LMUL(DA, D, A); PX_LMUL(CB, C, B);
+    fe_add_nb(x3, DA, CB); PX_LSQ(x3, x3);
+    fe_sub_nb(z3, DA, CB); PX_LSQ(z3, z3); PX_LMUL(z3, z3, x1);
+#elif PX_LAD_ORDER == 4 && PX_SMALLADD
+    PX_LSQ(AA, A); PX_LSQ(BB, B);
+    PX_LMUL(DA, D, A); PX_LMUL(CB, C, B);
+    PX_LMUL(x2, AA, BB); fe_sub_nb(E, AA, BB);
+    fe_mul_small_add_t<1>(AA, E, PX_MONT_A24, AA); PX_LMUL(z2, E, AA);
+    fe_add_nb(x3, DA, CB); PX_LSQ(x3, x3);
+    fe_sub_nb(z3, DA, CB); PX_LSQ(z3, z3); PX_LMUL(z3, z3, x1);
+#elif PX_LAD_ORDER == 6 && PX_SMALLADD
+    PX_LSQ(AA, A); PX_LSQ(BB, B);
+    PX_LMUL(x2, AA, BB); fe_sub_nb(E, AA, BB);
+    fe_mul_small_add_t<1>(AA, E, PX_MONT_A24, AA); PX_LMUL(z2, E, AA);
+    PX_LMUL(DA, D, A); PX_LMUL(CB, C, B);
+    fe_sub_nb(z3, DA, CB); PX_LSQ(z3, z3); PX_LMUL(z3, z3, x1);
+    fe_add_nb(x3, DA, CB); PX_LSQ(x3, x3);
+#elif PX_LAD_ORDER == 7 && PX_SMALLADD
+    PX_LSQ(AA, A); PX_LSQ(BB, B);
+    fe_sub_nb(E, AA, BB);
+    fe_mul_small_add_t<1>(C, E, PX_MONT_A24, AA); PX_LMUL(z2, E, C);
+    PX_LMUL(x2, AA, BB);
+    PX_LMUL(DA, D, A); fe_add_nb(C, x3, z3); PX_LMUL(CB, C, B);
+    fe_add_nb(x3, DA, CB); PX_LSQ(x3, x3);
+    fe_sub_nb(z3, DA, CB); PX_LSQ(z3, z3); PX_LMUL(z3, z3, x1);
+#elif PX_LAD_ORDER == 8 && PX_SMALLADD
+    PX_LMUL(DA, D, A); PX_LMUL(CB, C, B);
+    fe_add_nb(x3, DA, CB); PX_LSQ(x3, x3);
+    fe_sub_nb(z3, DA, CB); PX_LSQ(z3, z3); PX_LMUL(z3, z3, x1);
+    PX_LSQ(AA, A); PX_LSQ(BB, B);
+    PX_LMUL(x2, AA, BB); fe_sub_nb(E, AA, BB);
+    fe_mul_small_add_t<1>(AA, E, PX_MONT_A24, AA); PX_LMUL(z2, E, AA);
+#elif PX_LAD_ORDER == 9 && PX_SMALLADD
+    // o1 with the z2 product last
+    PX_LSQ(AA, A); PX_LSQ(BB, B);
+    fe_sub_nb(E, AA, BB); PX_LMUL(x2, AA, BB);
+    fe_mul_small_add_t<1>(AA, E, PX_MONT_A24, AA);
+    PX_LMUL(DA, D, A); PX_LMUL(CB, C, B);
+    fe_add_nb(x3, DA, CB); PX_LSQ(x3, x3);
+    fe_sub_nb(z3, DA, CB); PX_LSQ(z3, z3); PX_LMUL(z3, z3, x1);
+    PX_LMUL(z2, E, AA);
+#elif PX_LAD_ORDER == 2 && PX_SMALLADD
+    // interleaved
+    PX_LMUL(DA, D, A); PX_LSQ(AA, A); PX_LMUL(CB, C, B); PX_LSQ(BB, B);
+    fe_add_nb(x3, DA, CB); fe_sub_nb(z3, DA, CB);
+    PX_LMUL(x2, AA, BB); PX_LSQ(x3, x3); fe_sub_nb(E, AA, BB);
+    PX_LSQ(z3, z3); fe_mul_small_add_t<1>(AA, E, PX_MONT_A24, AA);
+    PX_LMUL(z3, z3, x1); PX_LMUL(z2, E, AA);
+#elif PX_LAD_ORDER == 3 && PX_SMALLADD
+    // doubling outputs before the addition outputs
+    PX_LMUL(DA, D, A); PX_LMUL(CB, C, B);
+    PX_LSQ(AA, A); PX_LSQ(BB, B);
+    PX_LMUL(x2, AA, BB); fe_sub_nb(E, AA, BB);
+    fe_mul_small_add_t<1>(AA, E, PX_MONT_A24, AA); PX_LMUL(z2, E, AA);
+    fe_add_nb(x3, DA, CB); PX_LSQ(x3, x3);
+    fe_sub_nb(z3, DA, CB); PX_LSQ(z3, z3); PX_LMUL(z3, z3, x1);
+#else
     PX_LMUL(DA, D, A); PX_LMUL(CB, C, B);
     fe_sq_impl<PX_LAD_FSS, 1>(AA, A); fe_sq_impl<PX_LAD_FSS, 1>(BB, B);
     fe_add_nb(x3, DA, CB); fe_sq_impl<PX_LAD_FSS, 1>(x3, x3);
@@ -2185,6 +2248,8 @@ __device__ __forceinline__ void mlad_step_nb(fe &x2, fe &z2, fe &x3, fe &z3, con
 #else
     fe_mul_small_t<1>(C, E, PX_MONT_A24); fe_add_nb(C, C, AA); PX_LMUL(z2, E, C);
 #endif
+#endif
+#undef PX_LSQ
 #undef PX_LMUL
 }
 #endif
@@ -2534,8 +2599,14 @@ __device__ __forceinline__ bool h2c_try_y(const JobDev *job, const uint64_t *mid
     fe_mul(u, u, v);
     return fe_is_square_or_zero(u);
 }
+// job-change abort: the host sets px_abort (from a side stream) when the pool replaces the job during a launch.
+// Every kernel of the x-only pipeline checks it once on entry, so blocks that have not started yet exit at once and
+// the next job starts within about one ladder wave instead of after the whole launch. Zero in tests and benchmarks.
+__device__ unsigned px_abort;
+#define PX_ABORTED() (*(volatile unsigned *)&px_abort != 0u)
 __global__ void __launch_bounds__(256, PX_LB_H2C) h2cx_kernel(const JobDev *job, const uint64_t *mid, uint64_t nonce_base, const uint64_t *in_nonce, const uint8_t *in_ctr, const unsigned *n_in_ptr,
                                                    HPoint *pts, unsigned *n_pts, uint64_t *out_nonce, uint8_t *out_ctr, unsigned *n_out) {
+    if (__any_sync(0xffffffffu, PX_ABORTED())) return;
     unsigned n_in = *n_in_ptr;
     unsigned total = gridDim.x * blockDim.x, lane = threadIdx.x & 31u;
     // warp-uniform loop; one atomic per warp and queue (ballot + prefix count) instead of one per point
@@ -2599,7 +2670,11 @@ __global__ void __launch_bounds__(256, PX_LB_H2C) h2cr_kernel(const JobDev *job,
 #define PX_LADDER_ATTR __maxnreg__(PX_LADDER_MAXREG)
 #define PX_SMALL_ATTR __launch_bounds__(128, 4)
 #else
+#ifdef PX_LAD_TPB
+#define PX_LADDER_ATTR __launch_bounds__(PX_LAD_TPB, PX_LAD_MINB)
+#else
 #define PX_LADDER_ATTR __launch_bounds__(256, PX_LB_LADDER)
+#endif
 #if PX_PFX_MEM
 #ifndef PX_LB_SMALL
 #define PX_LB_SMALL 3
@@ -2651,6 +2726,7 @@ __global__ void PX_PREP_ATTR prepx_kernel(const unsigned *n_ptr, HPoint *pts) {
 }
 #else
 __global__ void PX_PREP_ATTR prepx_kernel(const unsigned *n_ptr, HPoint *pts, const unsigned *lo_ptr = nullptr) {
+    if (PX_ABORTED()) return;
     unsigned n = *n_ptr, total = gridDim.x * blockDim.x, lo = lo_ptr ? *lo_ptr : 0u;
     for (unsigned base = lo + blockIdx.x * blockDim.x + threadIdx.x; base < n; base += total * PX_PREP_BATCH) {
         fe prefix[PX_PREP_BATCH], prod; fe_1(prod);
@@ -2678,6 +2754,7 @@ __global__ void PX_PREP_ATTR prepx_kernel(const unsigned *n_ptr, HPoint *pts, co
 #endif
 // x-only: out.Y = X - Z, out.Z = X + Z of s*P, so y(s*P) = out.Y / out.Z
 __global__ void PX_LADDER_ATTR ladderx_kernel(const HPoint *pts, const unsigned *n_ptr, ProjectivePoint *out, const unsigned *lo_ptr = nullptr) {
+    if (PX_ABORTED()) return;
     unsigned n = *n_ptr, lo = lo_ptr ? *lo_ptr : 0u;
     for (unsigned i = lo + blockIdx.x * blockDim.x + threadIdx.x; i < n; i += gridDim.x * blockDim.x) {
         fe xP; fe_copy(xP, pts[i].X);
@@ -2705,6 +2782,19 @@ __global__ void PX_LADDER_ATTR ladderx_kernel(const HPoint *pts, const unsigned 
                 uint32_t t = (x2.v[l] ^ x3.v[l]) & m; x2.v[l] ^= t; x3.v[l] ^= t;
                 uint32_t u = (z2.v[l] ^ z3.v[l]) & m; z2.v[l] ^= u; z3.v[l] ^= u;
             } }
+#elif PX_LAD_SHX
+        // the base u lives in shared memory and is re-read (volatile) in every step: 8 registers fewer in the ladder
+        __shared__ uint4 sx[2 * PX_LAD_SHX];
+        sx[threadIdx.x] = make_uint4(xP.v[0], xP.v[1], xP.v[2], xP.v[3]);
+        sx[PX_LAD_SHX + threadIdx.x] = make_uint4(xP.v[4], xP.v[5], xP.v[6], xP.v[7]);
+        const unsigned sa = (unsigned)__cvta_generic_to_shared(&sx[threadIdx.x]), sb = sa + 16u * PX_LAD_SHX;
+        for (int b = c_xladder_top; b >= 0; b--) {
+            fe x1;
+            asm volatile("ld.volatile.shared.v4.u32 {%0,%1,%2,%3}, [%4];" : "=r"(x1.v[0]), "=r"(x1.v[1]), "=r"(x1.v[2]), "=r"(x1.v[3]) : "r"(sa));
+            asm volatile("ld.volatile.shared.v4.u32 {%0,%1,%2,%3}, [%4];" : "=r"(x1.v[4]), "=r"(x1.v[5]), "=r"(x1.v[6]), "=r"(x1.v[7]) : "r"(sb));
+            if ((c_xscalar[b >> 3] >> (b & 7)) & 1) PX_XSTEP(x3, z3, x2, z2, x1);
+            else PX_XSTEP(x2, z2, x3, z3, x1);
+        }
 #else
         for (int b = c_xladder_top; b >= 0; b--) {
             if ((c_xscalar[b >> 3] >> (b & 7)) & 1) PX_XSTEP(x3, z3, x2, z2, xP);
@@ -2796,6 +2886,7 @@ __global__ void __launch_bounds__(256, PX_LB_FSHA) fsha_kernel(const JobDev *job
 }
 #else
 __global__ void PX_FIN_ATTR finishx_kernel(const JobDev *job, const ProjectivePoint *pts, const unsigned *n_ptr, Hit *hits, unsigned *nhits, const unsigned *lo_ptr = nullptr) {
+    if (PX_ABORTED()) return;
     unsigned n = *n_ptr, total = gridDim.x * blockDim.x, lo = lo_ptr ? *lo_ptr : 0u;
     for (unsigned base = lo + blockIdx.x * blockDim.x + threadIdx.x; base < n; base += total * PX_SPLIT_FINISH) {
         fe prefix[PX_SPLIT_FINISH], prod; fe_1(prod);
@@ -2819,6 +2910,9 @@ __global__ void PX_FIN_ATTR finishx_kernel(const JobDev *job, const ProjectivePo
 #endif
 // keep only candidates whose beta is the exact output of their nonce; one block, any hit count up to MAX_HITS
 __global__ void __launch_bounds__(128, 1) resolve_kernel(const JobDev *job, Hit *hits, unsigned *nhits) {
+#if PX_XONLY
+    if (PX_ABORTED()) return;
+#endif
     __shared__ uint8_t keep[MAX_HITS];
     unsigned n = *nhits; if (n > MAX_HITS) n = MAX_HITS;
     JobDev j = *job;
@@ -3377,6 +3471,8 @@ static void v_mine(int blocks, int threads, const JobDev *job, uint64_t nonce_ba
 #ifdef PX_DEV_LGRID
     {   static const int lg = getenv("PX_LADDER_DIV") ? atoi(getenv("PX_LADDER_DIV")) : 1;   // development: ladder grid / lg
         ladderx_kernel<<<max(1, blocks / lg), threads>>>(sc->pts, sc->cnt, sc->projective); }
+#elif defined(PX_LAD_TPB)
+    ladderx_kernel<<<(int)(((size_t)blocks * threads + PX_LAD_TPB - 1) / PX_LAD_TPB), PX_LAD_TPB>>>(sc->pts, sc->cnt, sc->projective);
 #else
     ladderx_kernel<<<blocks, threads>>>(sc->pts, sc->cnt, sc->projective);
 #endif
@@ -3428,13 +3524,22 @@ static int v_fetest(uint32_t seed, int n, uint8_t dump[128]) {
     cudaFree(d_fail); cudaFree(d_dump);
     return fail;
 }
+#if PX_XONLY
+static unsigned *v_abort_ptr() { void *p = nullptr; return cudaGetSymbolAddress(&p, px_abort) == cudaSuccess ? (unsigned *)p : nullptr; }
+#endif
 static const VariantOps ops = { PX_VARIANT_NAME,
 #ifdef PX_FE32
     true,
 #else
     false,
 #endif
-    PX_WINDOW, PX_LB_BLOCKS, PX_COMPACT != 0, v_set_scalar, v_init, v_alloc, v_free, v_mine, v_test, v_fetest };
+    PX_WINDOW, PX_LB_BLOCKS, PX_COMPACT != 0, v_set_scalar, v_init, v_alloc, v_free, v_mine, v_test, v_fetest,
+#if PX_XONLY
+    v_abort_ptr
+#else
+    nullptr
+#endif
+    };
 #undef PX_INV_BATCH
 #undef PX_PREFETCH
 #undef PX_FE26
@@ -3487,6 +3592,10 @@ static const VariantOps ops = { PX_VARIANT_NAME,
 #undef PX_NOBRANCH
 #undef PX_PREP_BATCH
 #undef PX_LB_LADDER
+#undef PX_LAD_TPB
+#undef PX_LAD_SHX
+#undef PX_LAD_ORDER
+#undef PX_LAD_MINB
 #undef PX_MONT_A
 #undef PX_MONT_A24
 #undef PX_SCALAR_THREADS

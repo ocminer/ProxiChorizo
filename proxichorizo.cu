@@ -90,6 +90,7 @@ struct VariantOps {
     void (*mine)(int blocks, int threads, const JobDev *job, uint64_t nonce_base, uint64_t stride, int iters, Hit *hits, unsigned *nhits, void *scratch);
     int (*test)(const JobDev *d_job, uint64_t nonce, uint8_t beta[64], uint8_t h[32], uint8_t cg[32]);
     int (*fetest)(uint32_t seed, int n, uint8_t dump[128]);
+    unsigned *(*abort_ptr)();          // device job-change abort flag (x-only pipeline), nullptr when the variant has none
 };
 
 // PX_LEAN: development builds compile only the shipped variants (minutes instead of ~7 per arch); PX_DEV_AMPERE narrows
@@ -168,6 +169,7 @@ namespace v_fe32_w4_lb2_c {
 #undef PX_COMPACT
 
 #endif // PX_LEAN
+#ifndef PX_DEV_PRO
 #ifndef PX_DEV_AMPERE
 #define PX_FE32 1
 #define PX_WINDOW 5
@@ -295,6 +297,7 @@ namespace v_fe32x_wnaf_s32_c {
 #undef PX_VARIANT_NAME
 #undef PX_LB_THREADS
 
+#endif // !PX_DEV_PRO
 // 1.0.5 (2026-11): x-only Montgomery ladder for the scalar multiplication (no table, no local memory, exact
 // y-recovery), hash-to-curve without the square root (Legendre symbol by packed divsteps; the root is taken
 // only for the point that is kept, and every reported hit is recomputed exactly on the GPU before it is
@@ -339,6 +342,773 @@ namespace v_fe32x_mlsp_c {
 #undef PX_VARIANT_NAME
 #undef PX_LB_THREADS
 #undef PX_LB_MULT_BLOCKS
+#ifdef PX_DEV_PRO_EXP
+// development (RTX PRO 6000 work): ladder launch shape / occupancy experiments
+#ifdef PXV_fe32x_mlsp_t64_c
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_WINDOW 5
+#define PX_LB_BLOCKS 2
+#define PX_COMPACT 1
+#define PX_SPLIT_FINISH 32
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 4
+#define PX_JAC_B1 1
+#define PX_JAC_STEPS 30
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_ADDFOLD_ALU 1
+#define PX_ROW0C 1
+#define PX_SMALLMUL_WIDE 1
+#define PX_LB_FIN 2
+#define PX_SMALLADD 1
+#define PX_SHA_PRE 1
+#define PX_LAD_TPB 64
+#define PX_LAD_MINB 9
+#define PX_VARIANT_NAME "fe32x_mlsp_t64_c"
+namespace v_fe32x_mlsp_t64_c {
+#include "proxichorizo_device.cuh"
+}
+#undef PX_FE32
+#undef PX_COMBA
+#undef PX_WINDOW
+#undef PX_LB_BLOCKS
+#undef PX_COMPACT
+#undef PX_SPLIT_FINISH
+#undef PX_VARIANT_NAME
+#undef PX_LB_THREADS
+#undef PX_LB_MULT_BLOCKS
+#endif
+#ifdef PXV_fe32x_mlsp_t32_c
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_WINDOW 5
+#define PX_LB_BLOCKS 2
+#define PX_COMPACT 1
+#define PX_SPLIT_FINISH 32
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 4
+#define PX_JAC_B1 1
+#define PX_JAC_STEPS 30
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_ADDFOLD_ALU 1
+#define PX_ROW0C 1
+#define PX_SMALLMUL_WIDE 1
+#define PX_LB_FIN 2
+#define PX_SMALLADD 1
+#define PX_SHA_PRE 1
+#define PX_LAD_TPB 32
+#define PX_LAD_MINB 18
+#define PX_VARIANT_NAME "fe32x_mlsp_t32_c"
+namespace v_fe32x_mlsp_t32_c {
+#include "proxichorizo_device.cuh"
+}
+#undef PX_FE32
+#undef PX_COMBA
+#undef PX_WINDOW
+#undef PX_LB_BLOCKS
+#undef PX_COMPACT
+#undef PX_SPLIT_FINISH
+#undef PX_VARIANT_NAME
+#undef PX_LB_THREADS
+#undef PX_LB_MULT_BLOCKS
+#endif
+#ifdef PXV_fe32x_mlsp_sx_c
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_WINDOW 5
+#define PX_LB_BLOCKS 2
+#define PX_COMPACT 1
+#define PX_SPLIT_FINISH 32
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 4
+#define PX_JAC_B1 1
+#define PX_JAC_STEPS 30
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_ADDFOLD_ALU 1
+#define PX_ROW0C 1
+#define PX_SMALLMUL_WIDE 1
+#define PX_LB_FIN 2
+#define PX_SMALLADD 1
+#define PX_SHA_PRE 1
+#define PX_LAD_SHX 256
+#define PX_VARIANT_NAME "fe32x_mlsp_sx_c"
+namespace v_fe32x_mlsp_sx_c {
+#include "proxichorizo_device.cuh"
+}
+#undef PX_FE32
+#undef PX_COMBA
+#undef PX_WINDOW
+#undef PX_LB_BLOCKS
+#undef PX_COMPACT
+#undef PX_SPLIT_FINISH
+#undef PX_VARIANT_NAME
+#undef PX_LB_THREADS
+#undef PX_LB_MULT_BLOCKS
+#endif
+#ifdef PXV_fe32x_mlsp_sx64_c
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_WINDOW 5
+#define PX_LB_BLOCKS 2
+#define PX_COMPACT 1
+#define PX_SPLIT_FINISH 32
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 4
+#define PX_JAC_B1 1
+#define PX_JAC_STEPS 30
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_ADDFOLD_ALU 1
+#define PX_ROW0C 1
+#define PX_SMALLMUL_WIDE 1
+#define PX_LB_FIN 2
+#define PX_SMALLADD 1
+#define PX_SHA_PRE 1
+#define PX_LAD_TPB 64
+#define PX_LAD_MINB 9
+#define PX_LAD_SHX 64
+#define PX_VARIANT_NAME "fe32x_mlsp_sx64_c"
+namespace v_fe32x_mlsp_sx64_c {
+#include "proxichorizo_device.cuh"
+}
+#undef PX_FE32
+#undef PX_COMBA
+#undef PX_WINDOW
+#undef PX_LB_BLOCKS
+#undef PX_COMPACT
+#undef PX_SPLIT_FINISH
+#undef PX_VARIANT_NAME
+#undef PX_LB_THREADS
+#undef PX_LB_MULT_BLOCKS
+#endif
+#ifdef PXV_fe32x_mlsp_o1_c
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_WINDOW 5
+#define PX_LB_BLOCKS 2
+#define PX_COMPACT 1
+#define PX_SPLIT_FINISH 32
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 4
+#define PX_JAC_B1 1
+#define PX_JAC_STEPS 30
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_ADDFOLD_ALU 1
+#define PX_ROW0C 1
+#define PX_SMALLMUL_WIDE 1
+#define PX_LB_FIN 2
+#define PX_SMALLADD 1
+#define PX_SHA_PRE 1
+#define PX_LAD_ORDER 1
+#define PX_VARIANT_NAME "fe32x_mlsp_o1_c"
+namespace v_fe32x_mlsp_o1_c {
+#include "proxichorizo_device.cuh"
+}
+#undef PX_FE32
+#undef PX_COMBA
+#undef PX_WINDOW
+#undef PX_LB_BLOCKS
+#undef PX_COMPACT
+#undef PX_SPLIT_FINISH
+#undef PX_VARIANT_NAME
+#undef PX_LB_THREADS
+#undef PX_LB_MULT_BLOCKS
+#endif
+#ifdef PXV_fe32x_mlsp_o2_c
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_WINDOW 5
+#define PX_LB_BLOCKS 2
+#define PX_COMPACT 1
+#define PX_SPLIT_FINISH 32
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 4
+#define PX_JAC_B1 1
+#define PX_JAC_STEPS 30
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_ADDFOLD_ALU 1
+#define PX_ROW0C 1
+#define PX_SMALLMUL_WIDE 1
+#define PX_LB_FIN 2
+#define PX_SMALLADD 1
+#define PX_SHA_PRE 1
+#define PX_LAD_ORDER 2
+#define PX_VARIANT_NAME "fe32x_mlsp_o2_c"
+namespace v_fe32x_mlsp_o2_c {
+#include "proxichorizo_device.cuh"
+}
+#undef PX_FE32
+#undef PX_COMBA
+#undef PX_WINDOW
+#undef PX_LB_BLOCKS
+#undef PX_COMPACT
+#undef PX_SPLIT_FINISH
+#undef PX_VARIANT_NAME
+#undef PX_LB_THREADS
+#undef PX_LB_MULT_BLOCKS
+#endif
+#ifdef PXV_fe32x_mlsp_o3_c
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_WINDOW 5
+#define PX_LB_BLOCKS 2
+#define PX_COMPACT 1
+#define PX_SPLIT_FINISH 32
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 4
+#define PX_JAC_B1 1
+#define PX_JAC_STEPS 30
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_ADDFOLD_ALU 1
+#define PX_ROW0C 1
+#define PX_SMALLMUL_WIDE 1
+#define PX_LB_FIN 2
+#define PX_SMALLADD 1
+#define PX_SHA_PRE 1
+#define PX_LAD_ORDER 3
+#define PX_VARIANT_NAME "fe32x_mlsp_o3_c"
+namespace v_fe32x_mlsp_o3_c {
+#include "proxichorizo_device.cuh"
+}
+#undef PX_FE32
+#undef PX_COMBA
+#undef PX_WINDOW
+#undef PX_LB_BLOCKS
+#undef PX_COMPACT
+#undef PX_SPLIT_FINISH
+#undef PX_VARIANT_NAME
+#undef PX_LB_THREADS
+#undef PX_LB_MULT_BLOCKS
+#endif
+#ifdef PXV_fe32x_mlsp_sxo1_c
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_WINDOW 5
+#define PX_LB_BLOCKS 2
+#define PX_COMPACT 1
+#define PX_SPLIT_FINISH 32
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 4
+#define PX_JAC_B1 1
+#define PX_JAC_STEPS 30
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_ADDFOLD_ALU 1
+#define PX_ROW0C 1
+#define PX_SMALLMUL_WIDE 1
+#define PX_LB_FIN 2
+#define PX_SMALLADD 1
+#define PX_SHA_PRE 1
+#define PX_LAD_ORDER 1
+#define PX_LAD_SHX 256
+#define PX_VARIANT_NAME "fe32x_mlsp_sxo1_c"
+namespace v_fe32x_mlsp_sxo1_c {
+#include "proxichorizo_device.cuh"
+}
+#undef PX_FE32
+#undef PX_COMBA
+#undef PX_WINDOW
+#undef PX_LB_BLOCKS
+#undef PX_COMPACT
+#undef PX_SPLIT_FINISH
+#undef PX_VARIANT_NAME
+#undef PX_LB_THREADS
+#undef PX_LB_MULT_BLOCKS
+#endif
+#ifdef PXV_fe32x_mlsp_sxo2_c
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_WINDOW 5
+#define PX_LB_BLOCKS 2
+#define PX_COMPACT 1
+#define PX_SPLIT_FINISH 32
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 4
+#define PX_JAC_B1 1
+#define PX_JAC_STEPS 30
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_ADDFOLD_ALU 1
+#define PX_ROW0C 1
+#define PX_SMALLMUL_WIDE 1
+#define PX_LB_FIN 2
+#define PX_SMALLADD 1
+#define PX_SHA_PRE 1
+#define PX_LAD_ORDER 2
+#define PX_LAD_SHX 256
+#define PX_VARIANT_NAME "fe32x_mlsp_sxo2_c"
+namespace v_fe32x_mlsp_sxo2_c {
+#include "proxichorizo_device.cuh"
+}
+#undef PX_FE32
+#undef PX_COMBA
+#undef PX_WINDOW
+#undef PX_LB_BLOCKS
+#undef PX_COMPACT
+#undef PX_SPLIT_FINISH
+#undef PX_VARIANT_NAME
+#undef PX_LB_THREADS
+#undef PX_LB_MULT_BLOCKS
+#endif
+#ifdef PXV_fe32x_mlsp_sxo3_c
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_WINDOW 5
+#define PX_LB_BLOCKS 2
+#define PX_COMPACT 1
+#define PX_SPLIT_FINISH 32
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 4
+#define PX_JAC_B1 1
+#define PX_JAC_STEPS 30
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_ADDFOLD_ALU 1
+#define PX_ROW0C 1
+#define PX_SMALLMUL_WIDE 1
+#define PX_LB_FIN 2
+#define PX_SMALLADD 1
+#define PX_SHA_PRE 1
+#define PX_LAD_ORDER 3
+#define PX_LAD_SHX 256
+#define PX_VARIANT_NAME "fe32x_mlsp_sxo3_c"
+namespace v_fe32x_mlsp_sxo3_c {
+#include "proxichorizo_device.cuh"
+}
+#undef PX_FE32
+#undef PX_COMBA
+#undef PX_WINDOW
+#undef PX_LB_BLOCKS
+#undef PX_COMPACT
+#undef PX_SPLIT_FINISH
+#undef PX_VARIANT_NAME
+#undef PX_LB_THREADS
+#undef PX_LB_MULT_BLOCKS
+#endif
+#ifdef PXV_fe32x_mlsp_fss_c
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_WINDOW 5
+#define PX_LB_BLOCKS 2
+#define PX_COMPACT 1
+#define PX_SPLIT_FINISH 32
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 4
+#define PX_JAC_B1 1
+#define PX_JAC_STEPS 30
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_ADDFOLD_ALU 1
+#define PX_ROW0C 1
+#define PX_SMALLMUL_WIDE 1
+#define PX_LB_FIN 2
+#define PX_SMALLADD 1
+#define PX_SHA_PRE 1
+#define PX_LAD_FSS 1
+#define PX_VARIANT_NAME "fe32x_mlsp_fss_c"
+namespace v_fe32x_mlsp_fss_c {
+#include "proxichorizo_device.cuh"
+}
+#undef PX_FE32
+#undef PX_COMBA
+#undef PX_WINDOW
+#undef PX_LB_BLOCKS
+#undef PX_COMPACT
+#undef PX_SPLIT_FINISH
+#undef PX_VARIANT_NAME
+#undef PX_LB_THREADS
+#undef PX_LB_MULT_BLOCKS
+#endif
+#ifdef PXV_fe32x_mlsp_fsm_c
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_WINDOW 5
+#define PX_LB_BLOCKS 2
+#define PX_COMPACT 1
+#define PX_SPLIT_FINISH 32
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 4
+#define PX_JAC_B1 1
+#define PX_JAC_STEPS 30
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_ADDFOLD_ALU 1
+#define PX_ROW0C 1
+#define PX_SMALLMUL_WIDE 1
+#define PX_LB_FIN 2
+#define PX_SMALLADD 1
+#define PX_SHA_PRE 1
+#define PX_LAD_FSM 1
+#define PX_VARIANT_NAME "fe32x_mlsp_fsm_c"
+namespace v_fe32x_mlsp_fsm_c {
+#include "proxichorizo_device.cuh"
+}
+#undef PX_FE32
+#undef PX_COMBA
+#undef PX_WINDOW
+#undef PX_LB_BLOCKS
+#undef PX_COMPACT
+#undef PX_SPLIT_FINISH
+#undef PX_VARIANT_NAME
+#undef PX_LB_THREADS
+#undef PX_LB_MULT_BLOCKS
+#endif
+#ifdef PXV_fe32x_mlsp_fsb_c
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_WINDOW 5
+#define PX_LB_BLOCKS 2
+#define PX_COMPACT 1
+#define PX_SPLIT_FINISH 32
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 4
+#define PX_JAC_B1 1
+#define PX_JAC_STEPS 30
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_ADDFOLD_ALU 1
+#define PX_ROW0C 1
+#define PX_SMALLMUL_WIDE 1
+#define PX_LB_FIN 2
+#define PX_SMALLADD 1
+#define PX_SHA_PRE 1
+#define PX_LAD_FSS 1
+#define PX_LAD_FSM 1
+#define PX_VARIANT_NAME "fe32x_mlsp_fsb_c"
+namespace v_fe32x_mlsp_fsb_c {
+#include "proxichorizo_device.cuh"
+}
+#undef PX_FE32
+#undef PX_COMBA
+#undef PX_WINDOW
+#undef PX_LB_BLOCKS
+#undef PX_COMPACT
+#undef PX_SPLIT_FINISH
+#undef PX_VARIANT_NAME
+#undef PX_LB_THREADS
+#undef PX_LB_MULT_BLOCKS
+#endif
+#ifdef PXV_fe32x_mlsp_o4_c
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_WINDOW 5
+#define PX_LB_BLOCKS 2
+#define PX_COMPACT 1
+#define PX_SPLIT_FINISH 32
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 4
+#define PX_JAC_B1 1
+#define PX_JAC_STEPS 30
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_ADDFOLD_ALU 1
+#define PX_ROW0C 1
+#define PX_SMALLMUL_WIDE 1
+#define PX_LB_FIN 2
+#define PX_SMALLADD 1
+#define PX_SHA_PRE 1
+#define PX_LAD_ORDER 4
+#define PX_VARIANT_NAME "fe32x_mlsp_o4_c"
+namespace v_fe32x_mlsp_o4_c {
+#include "proxichorizo_device.cuh"
+}
+#undef PX_FE32
+#undef PX_COMBA
+#undef PX_WINDOW
+#undef PX_LB_BLOCKS
+#undef PX_COMPACT
+#undef PX_SPLIT_FINISH
+#undef PX_VARIANT_NAME
+#undef PX_LB_THREADS
+#undef PX_LB_MULT_BLOCKS
+#endif
+#ifdef PXV_fe32x_mlsp_o6_c
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_WINDOW 5
+#define PX_LB_BLOCKS 2
+#define PX_COMPACT 1
+#define PX_SPLIT_FINISH 32
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 4
+#define PX_JAC_B1 1
+#define PX_JAC_STEPS 30
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_ADDFOLD_ALU 1
+#define PX_ROW0C 1
+#define PX_SMALLMUL_WIDE 1
+#define PX_LB_FIN 2
+#define PX_SMALLADD 1
+#define PX_SHA_PRE 1
+#define PX_LAD_ORDER 6
+#define PX_VARIANT_NAME "fe32x_mlsp_o6_c"
+namespace v_fe32x_mlsp_o6_c {
+#include "proxichorizo_device.cuh"
+}
+#undef PX_FE32
+#undef PX_COMBA
+#undef PX_WINDOW
+#undef PX_LB_BLOCKS
+#undef PX_COMPACT
+#undef PX_SPLIT_FINISH
+#undef PX_VARIANT_NAME
+#undef PX_LB_THREADS
+#undef PX_LB_MULT_BLOCKS
+#endif
+#ifdef PXV_fe32x_mlsp_o7_c
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_WINDOW 5
+#define PX_LB_BLOCKS 2
+#define PX_COMPACT 1
+#define PX_SPLIT_FINISH 32
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 4
+#define PX_JAC_B1 1
+#define PX_JAC_STEPS 30
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_ADDFOLD_ALU 1
+#define PX_ROW0C 1
+#define PX_SMALLMUL_WIDE 1
+#define PX_LB_FIN 2
+#define PX_SMALLADD 1
+#define PX_SHA_PRE 1
+#define PX_LAD_ORDER 7
+#define PX_VARIANT_NAME "fe32x_mlsp_o7_c"
+namespace v_fe32x_mlsp_o7_c {
+#include "proxichorizo_device.cuh"
+}
+#undef PX_FE32
+#undef PX_COMBA
+#undef PX_WINDOW
+#undef PX_LB_BLOCKS
+#undef PX_COMPACT
+#undef PX_SPLIT_FINISH
+#undef PX_VARIANT_NAME
+#undef PX_LB_THREADS
+#undef PX_LB_MULT_BLOCKS
+#endif
+#ifdef PXV_fe32x_mlsp_o8_c
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_WINDOW 5
+#define PX_LB_BLOCKS 2
+#define PX_COMPACT 1
+#define PX_SPLIT_FINISH 32
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 4
+#define PX_JAC_B1 1
+#define PX_JAC_STEPS 30
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_ADDFOLD_ALU 1
+#define PX_ROW0C 1
+#define PX_SMALLMUL_WIDE 1
+#define PX_LB_FIN 2
+#define PX_SMALLADD 1
+#define PX_SHA_PRE 1
+#define PX_LAD_ORDER 8
+#define PX_VARIANT_NAME "fe32x_mlsp_o8_c"
+namespace v_fe32x_mlsp_o8_c {
+#include "proxichorizo_device.cuh"
+}
+#undef PX_FE32
+#undef PX_COMBA
+#undef PX_WINDOW
+#undef PX_LB_BLOCKS
+#undef PX_COMPACT
+#undef PX_SPLIT_FINISH
+#undef PX_VARIANT_NAME
+#undef PX_LB_THREADS
+#undef PX_LB_MULT_BLOCKS
+#endif
+#ifdef PXV_fe32x_mlsp_o9_c
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_WINDOW 5
+#define PX_LB_BLOCKS 2
+#define PX_COMPACT 1
+#define PX_SPLIT_FINISH 32
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 4
+#define PX_JAC_B1 1
+#define PX_JAC_STEPS 30
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#define PX_ADDFOLD_ALU 1
+#define PX_ROW0C 1
+#define PX_SMALLMUL_WIDE 1
+#define PX_LB_FIN 2
+#define PX_SMALLADD 1
+#define PX_SHA_PRE 1
+#define PX_LAD_ORDER 9
+#define PX_VARIANT_NAME "fe32x_mlsp_o9_c"
+namespace v_fe32x_mlsp_o9_c {
+#include "proxichorizo_device.cuh"
+}
+#undef PX_FE32
+#undef PX_COMBA
+#undef PX_WINDOW
+#undef PX_LB_BLOCKS
+#undef PX_COMPACT
+#undef PX_SPLIT_FINISH
+#undef PX_VARIANT_NAME
+#undef PX_LB_THREADS
+#undef PX_LB_MULT_BLOCKS
+#endif
+#endif // PX_DEV_PRO_EXP
 
 // development-only ladder variants (-DPX_DEV_LADDER, with PX_LEAN); not in release builds
 #ifdef PX_DEV_LADDER
@@ -1943,7 +2713,11 @@ namespace v_fe32_w4_linear_split8_c {
 
 #endif // PX_LEAN
 #ifdef PX_LEAN
-#ifdef PX_DEV_LADDER
+#if defined(PX_DEV_PRO) && !defined(PX_DEV_PRO_EXP)
+static const VariantOps *VARIANTS[] = { &v_fe32x_mlsp_c::ops };
+#elif defined(PX_DEV_PRO)
+static const VariantOps *VARIANTS[] = { &v_fe32x_mlsp_c::ops, PX_DEV_PRO_LIST };
+#elif defined(PX_DEV_LADDER)
 #ifdef PX_DEV_LADDER_ALL
 static const VariantOps *VARIANTS[] = { &v_fe32x_wnaf_s32_c::ops, &v_fe32x_mlad_c::ops, &v_fe32x_mladx_c::ops, &v_fe32x_mladxn_c::ops, &v_fe32x_mladxs2_c::ops, &v_fe32x_mladxs4_c::ops, &v_fe32x_mladxc2_c::ops, &v_fe32x_mladxc4_c::ops };
 #elif defined(PX_DEV_R4S)
@@ -3106,6 +3880,17 @@ static void gpu_worker(Shared &sh, GpuCfg cfg) {
     void *scratch = cfg.ops->alloc(stride * (size_t)cfg.iters);
     cudaEvent_t ev0, ev1; CUDA_CHECK(cudaEventCreate(&ev0)); CUDA_CHECK(cudaEventCreate(&ev1));
     float last_ms = 0;   // kernel time of the previous launch: how long the next wait can sleep
+    // job-change abort (x-only pipeline): when the pool replaces the job during a launch, the rest of that launch can
+    // only produce stale shares, so the worker raises the variant's device flag from a side stream and the kernels'
+    // remaining blocks exit at once; the new job starts within a few milliseconds instead of after the whole launch
+    unsigned *d_abort = (cfg.ops->abort_ptr && !getenv("PX_NO_ABORT")) ? cfg.ops->abort_ptr() : nullptr;
+    unsigned *h_abort = nullptr; cudaStream_t abort_st = nullptr;
+    if (d_abort) {
+        CUDA_CHECK(cudaMallocHost(&h_abort, sizeof(unsigned))); *h_abort = 1u;
+        CUDA_CHECK(cudaStreamCreateWithFlags(&abort_st, cudaStreamNonBlocking));
+        CUDA_CHECK(cudaMemset(d_abort, 0, sizeof(unsigned)));
+    }
+    auto job_replaced = [&](uint64_t id) { std::lock_guard<std::mutex> l(sh.mu); return sh.job.id != id || sh.job.stale; };
     // test hook: PX_TEST_FAIL_GPU=<device>:<seconds> makes this worker issue one invalid CUDA call
     // after that many seconds, to exercise the dead-GPU path without real hardware trouble
     double failAfter = -1; auto t_start = std::chrono::steady_clock::now();
@@ -3144,17 +3929,47 @@ static void gpu_worker(Shared &sh, GpuCfg cfg) {
         // wait for the launch without burning a CPU core: cudaDeviceSynchronize spin-waits for the whole launch
         // (~100 ms), and a blocking-sync wait costs ~0.5 % hashrate in wake-up latency. So sleep until shortly
         // before the launch is expected to end (the previous launch's time), then poll the event briefly.
-        if (last_ms > 4.0f) std::this_thread::sleep_for(std::chrono::microseconds((int64_t)((last_ms - 2.5f) * 1000.0f)));
-        for (;;) {
+        bool aborted = false;
+        auto abort_if_replaced = [&]() {
+            if (d_abort && !aborted && job_replaced(j.id)) {
+                if (cudaMemcpyAsync(d_abort, h_abort, sizeof(unsigned), cudaMemcpyHostToDevice, abort_st) == cudaSuccess) aborted = true;
+            }
+        };
+        if (last_ms > 4.0f) {
+            // sleep in short steps when the launch can be aborted, so a job change is seen within ~2 ms
+            auto until = std::chrono::steady_clock::now() + std::chrono::microseconds((int64_t)((last_ms - 2.5f) * 1000.0f));
+            if (!d_abort) std::this_thread::sleep_until(until);
+            else while (!aborted) {
+                auto now = std::chrono::steady_clock::now();
+                if (now >= until) break;
+                std::this_thread::sleep_for(std::min<std::chrono::steady_clock::duration>(until - now, std::chrono::milliseconds(2)));
+                abort_if_replaced();
+            }
+        }
+        for (int spins = 0;; spins++) {
             cudaError_t q = cudaEventQuery(ev1);
             if (q == cudaSuccess) break;
             if (q != cudaErrorNotReady) { GPU_TRY(q); }
+            if ((spins & 255) == 0) abort_if_replaced();
             std::this_thread::yield();
         }
         if (!fail.empty()) break;
         float ms = 0; GPU_TRY(cudaEventElapsedTime(&ms, ev0, ev1));
-        last_ms = ms;
         uint64_t done = stride * cfg.iters;
+        if (aborted) {
+            // the flag write has landed (stream synchronised) before it is cleared for the next launch; count only
+            // the share of the launch that ran, at the speed of the last complete launch
+            GPU_TRY(cudaStreamSynchronize(abort_st));
+            GPU_TRY(cudaMemset(d_abort, 0, sizeof(unsigned)));
+            if (last_ms > 0) done = (uint64_t)((double)done * std::min(1.0, (double)ms / last_ms)); else done = 0;
+            if (sh.con.verbose) logln("GPU #" + std::to_string(cfg.dev) + ": job replaced, launch stopped after " + std::to_string((int)ms) + " ms");
+            nonce += stride * cfg.iters;
+            sh.attempts += done;
+            { std::lock_guard<std::mutex> l(sh.mu); auto &g = sh.gpus[cfg.ordinal]; g.win_attempts += done; g.win_kernel_ms += ms; g.win_launches++; }
+            continue;
+        }
+        last_ms = ms;
+        if (sh.con.verbose && job_replaced(j.id)) logln("GPU #" + std::to_string(cfg.dev) + ": job replaced during a complete launch of " + std::to_string((int)ms) + " ms, results stale");
         nonce += done;
         sh.attempts += done;
         { std::lock_guard<std::mutex> l(sh.mu); auto &g = sh.gpus[cfg.ordinal]; g.win_attempts += done; g.win_kernel_ms += ms; g.win_launches++; }
@@ -3171,6 +3986,8 @@ static void gpu_worker(Shared &sh, GpuCfg cfg) {
             }
         }
     }
+    if (abort_st) cudaStreamDestroy(abort_st);
+    if (h_abort) cudaFreeHost(h_abort);
     if (!fail.empty()) gpu_failed(sh, cfg.ordinal, "CUDA error: " + fail);
 }
 
