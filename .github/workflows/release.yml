@@ -58,7 +58,7 @@ jobs:
         run: |
           git config --global --add safe.directory "$PWD"
           nvcc --version | tail -2
-          nvcc -O3 -std=c++17 $ARCHS -Xcompiler -static-libstdc++ -Xcompiler -static-libgcc -o proxichorizo proxichorizo.cu -lpthread -ldl
+          nvcc -O3 -std=c++17 --threads 2 $ARCHS -Xcompiler -static-libstdc++ -Xcompiler -static-libgcc -o proxichorizo proxichorizo.cu -lpthread -ldl
           objdump -T proxichorizo | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
       - name: build the OpenCL miner (AMD)
         run: |
@@ -70,6 +70,7 @@ jobs:
           g++ -std=c++17 -O2 tests/platform_profiles.cpp -o /tmp/test-platform-profiles
           /tmp/test-platform-profiles
           make -C opencl test-profiles CL_INC=/usr/include CL_LIB=/usr/lib/x86_64-linux-gnu
+          python3 tests/opencl_arithmetic.py
           python3 scripts/test-launchers.py
           ./proxichorizo --help
           ./opencl/proxichorizo-cl --help
@@ -105,7 +106,16 @@ jobs:
         with: { arch: x64 }
       - name: build
         shell: cmd
-        run: nvcc -O3 -std=c++17 %ARCHS% -Xcompiler /MT -o proxichorizo.exe proxichorizo.cu
+        run: nvcc -O3 -std=c++17 --threads 2 %ARCHS% -Xcompiler /MT -o proxichorizo.exe proxichorizo.cu
+      - name: CPU profile checks and executable startup
+        shell: cmd
+        run: |
+          cl /nologo /EHsc /std:c++17 /O2 tests/platform_profiles.cpp /Fe:test-platform-profiles.exe
+          if errorlevel 1 exit /b 1
+          test-platform-profiles.exe
+          if errorlevel 1 exit /b 1
+          proxichorizo.exe --help
+          if errorlevel 1 exit /b 1
       - name: OpenSSL 3 for the package (stratum+ssl)
         shell: pwsh
         run: |

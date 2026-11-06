@@ -51,7 +51,7 @@ struct Hit { uint64_t nonce; uint8_t beta[64]; };
 // ---- devices -------------------------------------------------------------------
 struct ClDev {
     cl_platform_id plat; cl_device_id id; cl_context ctx; cl_command_queue q;
-    std::string name, board, platname; cl_uint cus; int bus = 0; size_t maxwg = 256;
+    std::string name, board, platname, tuning_id, driver; cl_uint cus; int bus = 0; size_t maxwg = 256;
 };
 static std::vector<ClDev> g_devs;
 static thread_local std::map<cl_command_queue, std::vector<cl_event>> mining_events;
@@ -118,6 +118,16 @@ static void enumerate_devices() {
             clGetDeviceInfo(d, CL_DEVICE_MAX_WORK_GROUP_SIZE, sizeof c.maxwg, &c.maxwg, nullptr);
             struct { cl_uint type; char unused[17]; char bus, device, function; } topo; memset(&topo, 0, sizeof topo);
             if (clGetDeviceInfo(d, 0x4037 /*CL_DEVICE_TOPOLOGY_AMD*/, sizeof topo, &topo, nullptr) == CL_SUCCESS) c.bus = (unsigned char)topo.bus;
+            char driver[256] = {0};
+            clGetDeviceInfo(d, CL_DRIVER_VERSION, sizeof driver, driver, nullptr); c.driver = driver;
+            unsigned char uuid[16] = {0};
+            if (clGetDeviceInfo(d, 0x106a /*CL_DEVICE_UUID_KHR*/, sizeof uuid, uuid, nullptr) == CL_SUCCESS) {
+                c.tuning_id = "uuid" + hexs(uuid, sizeof uuid);
+            } else if (topo.type == 1) {
+                char host[256] = {0}; gethostname(host, sizeof host - 1);
+                c.tuning_id = std::string(host) + ":pci:" + std::to_string(c.bus) + ":" +
+                    std::to_string((unsigned char)topo.device) + ":" + std::to_string((unsigned char)topo.function);
+            }
             cl_int err; c.ctx = clCreateContext(nullptr, 1, &d, nullptr, nullptr, &err); CL_CHECK(err);
             c.q = clCreateCommandQueue(c.ctx, d, 0, &err); CL_CHECK(err);
             g_devs.push_back(c);
@@ -127,9 +137,11 @@ static void enumerate_devices() {
 static std::string dev_label(const ClDev &d) { return d.board.empty() ? d.name : d.board + " (" + d.name + ")"; }
 
 // ---- variants: one kernel source, several build configurations --------------------
-struct Variant { const char *name; int fe, window, compact, wg; int split = 0; int fast = 0; };
+struct Variant { const char *name; int fe, window, compact, wg; int split = 0; int fast = 0; int cofactor = 0; int karatsuba = 0; };
 static const Variant VARIANTS[] = {
     { "fe29_mlsp_c", 29, 5, 1, 256, 16, 1 },
+    { "fe29_mlsp_cf3_c", 29, 5, 1, 256, 16, 1, 3 },
+    { "fe29_mlsp_kara_c", 29, 5, 1, 256, 16, 1, 0, 1 },
     { "fe29_wnaf_c", 29, 5, 1, 256 },
     { "fe29_wnaf_split8_c", 29, 5, 1, 256, 8 },
     { "fe29_w4_c",   29, 4, 1, 256 },
@@ -142,8 +154,8 @@ static const Variant VARIANTS[] = {
 };
 static const int NVARIANTS = (int)(sizeof VARIANTS / sizeof VARIANTS[0]);
 static const Variant *variantByName(const std::string &n) { for (int i = 0; i < NVARIANTS; i++) if (n == VARIANTS[i].name) return &VARIANTS[i]; return nullptr; }
-// measured: benchmarked on that family. An unmeasured family is tuned on first
-// start (the two candidate layouts at two iteration counts) and the choice
+// measured: benchmarked on this model. An unmeasured model is tuned on first
+// start using the current and earlier kernels with appropriate launch sizes; the choice
 // cached in proxichorizo-autotune.cache, as the CUDA miner does.
 struct Platform {
     const char *prefix; const char *variant; int iters; bool measured; const char *note;
@@ -152,13 +164,13 @@ struct Platform {
     const char *board_match = nullptr;
 };
 static const Platform PLATFORMS[] = {
-    { "gfx1100", "fe29_mlsp_c", 1, true, "RX 7900 XTX: measured model profile", 128, 48, "7900 XTX" },
-    { "gfx1102", "fe29_mlsp_c", 1, true, "RX 7600 XT: measured model profile", 128, 16, "7600 XT" },
+    { "gfx1100", "fe29_mlsp_cf3_c", 1, true, "RX 7900 XTX: measured model profile", 128, 48, "7900 XTX" },
+    { "gfx1102", "fe29_mlsp_kara_c", 1, true, "RX 7600 XT: measured model profile", 128, 16, "7600 XT" },
     { "gfx906",  "fe29_mlsp_c", 1, true, "MI50: measured 60-CU profile", 128, 60, "MI50" },
-    { "gfx11", "fe29_wnaf_c", 8, true,  "RDNA3: 9x29 limbs straight into v_mad_u64_u32, wNAF, compacted pipeline (10.5 MH/s on an RX 7900 XTX)" },
+    { "gfx11", "fe29_wnaf_c", 8, false, "RDNA3 model not measured here, tuned on first start" },
     { "gfx12", "fe29_wnaf_c", 8, false, "RDNA4: not measured here, tuned on first start" },
     { "gfx10", "fe29_wnaf_c", 8, false, "RDNA2/1: not measured here, tuned on first start" },
-    { "gfx9",  "fe29_wnaf_c", 8, true,  "Vega/CDNA (4.5 MH/s on an MI50)" },
+    { "gfx9",  "fe29_wnaf_c", 8, false, "Vega/CDNA model not measured here, tuned on first start" },
     { "",      "fe29_wnaf_c", 8, false, "unknown family: tuned on first start" },
 };
 static const Platform &platformFor(const ClDev &d) {
@@ -193,6 +205,8 @@ static Prog *get_prog(ClDev &dev, const Variant *v) {
     pr->p = clCreateProgramWithSource(dev.ctx, 1, &src, &len, &err); CL_CHECK(err);
     std::string opts = "-DPX_FE=" + std::to_string(v->fe) + " -DPX_WINDOW=" + std::to_string(v->window) + " -DPX_COMPACT=" + std::to_string(v->compact) + " -DPX_WG=" + std::to_string(v->wg) + " " + g_extra_build;
     if (v->fast) opts += " -DPX_XONLY=1 -DPX_JACOBI=1 -DPX_SHA_MID=1 -DPX_LADDER=1 -DPX_EDWARDS_OPT=1";
+    if (v->cofactor) opts += " -DPX_LAD_ENDPOINT=1 -DPX_LAD_COFACTOR=" + std::to_string(v->cofactor);
+    if (v->karatsuba) opts += " -DPX_FE29_KARA=1";
     if (v->split) opts += " -DPX_SPLIT_FINISH=" + std::to_string(v->split);
     auto t0 = std::chrono::steady_clock::now();
     err = clBuildProgram(pr->p, 1, &dev.id, opts.c_str(), nullptr, nullptr);
@@ -255,7 +269,8 @@ static void set_scalar(Prog *pr, const uint8_t *scalar) {
         shr1();
     }
     if(pr->v->fast) {
-        uint8_t merged[32];v_merged_scalar(scalar,merged);
+        uint8_t merged[32];
+        if(pr->v->cofactor)v_xonly_scalar(scalar,merged);else v_merged_scalar(scalar,merged);
         int top=0;for(int b=255;b>=0;b--)if((merged[b>>3]>>(b&7))&1){top=b;break;}
         size_t off=3*pr->fe_size+300;
         CL_CHECK(clEnqueueWriteBuffer(pr->dev->q,pr->consts,CL_TRUE,off,32,merged,0,nullptr,nullptr));
@@ -564,29 +579,37 @@ static GpuCfg autotune(int dev, const uint8_t scalar[32], const uint8_t pk[32], 
     const Platform &pl = platformFor(d);
     GpuCfg best{dev, fixedGroups, pl.iters, variantByName(pl.variant)};
     double bestRate = 0;
-    const int itersAll[] = { 2, 4, 8 }, itersQuick[] = { 8, 4 };
-    const int *iters_list = quick ? itersQuick : itersAll; const int niters = quick ? 2 : 3;
     fprintf(stderr, "autotune GPU %d %s, %.0fs per trial:\n", dev, dev_label(d).c_str(), seconds);
     for (int v = 0; v < NVARIANTS; v++) {
-        if (quick && strcmp(VARIANTS[v].name, "fe29_wnaf_c") != 0 && strcmp(VARIANTS[v].name, "fe32_wnaf_c") != 0) continue;
+        if (quick && !VARIANTS[v].split && strcmp(VARIANTS[v].name, "fe29_wnaf_c") != 0 && strcmp(VARIANTS[v].name, "fe32_wnaf_c") != 0) continue;
         Prog *pr = get_prog(d, &VARIANTS[v]);
         uint8_t pk2[32];
         if (!prog_validated(pr)) { fprintf(stderr, "  %-12s: fails the test vectors here, skipped\n", VARIANTS[v].name); continue; }
         if (prog_init(pr, scalar, pk2) != 1 || memcmp(pk2, pk, 32) != 0) { fprintf(stderr, "  %-12s: init failed, skipped\n", VARIANTS[v].name); continue; }
-        for (int ii = 0; ii < niters; ii++) {
-            int it = iters_list[ii];
-            double r = run_bench(pr, pk, fixedGroups, it, seconds, false);
-            fprintf(stderr, "  %-12s x%d: %.3f MH/s%s\n", VARIANTS[v].name, it, r, r > bestRate ? "  <- best so far" : "");
-            if (r > bestRate) { bestRate = r; best = GpuCfg{dev, fixedGroups, it, &VARIANTS[v]}; }
+        // The split/ladder kernels need wide one-iteration launches. The old
+        // search only tried 8 groups/CU with 2, 4 or 8 iterations and could
+        // never measure their production launch shape.
+        const int splitGeo[][2] = {{128,1},{256,1},{64,1}};
+        const int otherGeo[][2] = {{8,8},{8,4},{8,2},{64,1}};
+        const int (*geo)[2] = VARIANTS[v].split ? splitGeo : otherGeo;
+        int ngeo = VARIANTS[v].split ? 3 : quick ? 2 : 4;
+        for (int gi = 0; gi < ngeo; gi++) {
+            if (fixedGroups > 0 && VARIANTS[v].split && gi > 0) continue;
+            int groups = fixedGroups > 0 ? fixedGroups : (int)d.cus * geo[gi][0];
+            int it = geo[gi][1];
+            double r = run_bench(pr, pk, groups, it, seconds, false);
+            fprintf(stderr, "  %-18s %dx%dx%d: %.3f MH/s%s\n", VARIANTS[v].name, groups, VARIANTS[v].wg, it, r, r > bestRate ? "  <- best so far" : "");
+            if (r > bestRate) { bestRate = r; best = GpuCfg{dev, groups, it, &VARIANTS[v]}; }
         }
     }
-    fprintf(stderr, "autotune GPU %d: %s x%d (%.3f MH/s)\n", dev, best.v->name, best.iters, bestRate);
+    fprintf(stderr, "autotune GPU %d: %s %dx%dx%d (%.3f MH/s)\n", dev, best.v->name, best.groups, best.v->wg, best.iters, bestRate);
     return best;
 }
 // tuning cache shared in format with the CUDA miner: "<name>|<family>|<version>|<variant> <groups> <wg> <iters>"
 static const char *TUNE_CACHE = "proxichorizo-autotune.cache";
-static std::string tuneKey(const ClDev &d) { return dev_label(d) + "|" + d.name + "|" PX_VERSION "|"; }
+static std::string tuneKey(const ClDev &d) { return dev_label(d) + "|" + d.name + "|cu" + std::to_string(d.cus) + "|" + d.tuning_id + "|driver" + d.driver + "|" PX_VERSION "|"; }
 static bool loadTuned(const ClDev &d, int dev, GpuCfg &cfg) {
+    if (d.tuning_id.empty()) return false;
     std::ifstream in(TUNE_CACHE);
     std::string line, key = tuneKey(d);
     while (std::getline(in, line)) {
@@ -602,6 +625,7 @@ static bool loadTuned(const ClDev &d, int dev, GpuCfg &cfg) {
     return false;
 }
 static void saveTuned(const ClDev &d, const GpuCfg &cfg) {
+    if (d.tuning_id.empty()) { logln("no persistent GPU identity: tuning result is not cached"); return; }
     std::ofstream out(TUNE_CACHE, std::ios::app);
     if (!out) { logln(std::string("cannot write ") + TUNE_CACHE + ": the result is not kept for the next start"); return; }
     out << tuneKey(d) << cfg.v->name << ' ' << cfg.groups << ' ' << cfg.v->wg << ' ' << cfg.iters << '\n';
@@ -810,7 +834,7 @@ int main(int argc, char **argv) {
                 cfg = tuned; if (cfg.groups <= 0) cfg.groups = (int)d.cus * 8; cfg.ordinal = (int)cfgs.size(); prog_init(get_prog(d, cfg.v), scalar, pk2);
                 fprintf(stderr, "GPU %d %s: %s x%d — tuned on this card earlier (%s)\n", dv, dev_label(d).c_str(), cfg.v->name, cfg.iters, TUNE_CACHE);
             } else {
-                fprintf(stderr, "GPU %d %s: %s; this build has no measurements for this family, measuring the two candidate layouts now (once; kept in %s)\n", dv, dev_label(d).c_str(), pl.note, TUNE_CACHE);
+                fprintf(stderr, "GPU %d %s: %s; this build has no measurements for this model, measuring candidate kernels and launch sizes now (once; kept in %s)\n", dv, dev_label(d).c_str(), pl.note, TUNE_CACHE);
                 cfg = autotune(dv, scalar, pk, 3, groups, true); cfg.ordinal = (int)cfgs.size(); prog_init(get_prog(d, cfg.v), scalar, pk2);
                 saveTuned(d, cfg);
             }

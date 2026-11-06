@@ -105,11 +105,45 @@ static void fe_mul(fe *h, const fe *f, const fe *g) {
     u64 c[17];
     for (int k = 0; k < 17; k++) c[k] = 0;
     for (int k = 0; k < 9; k++) PX29_ASSERT(f->v[k] < (1u << 30) && g->v[k] < (1u << 30), "fe_mul: operand limb >= 2^30");
+#if PX_FE29_KARA
+    // Three polynomial blocks of three limbs: six 3x3 products instead of
+    // nine. Each summed limb is <2^31, so even its central coefficient
+    // (three products) is <3*2^62 and fits uint64. Cross terms are positive.
+    u64 diagonal[3][5];
+    #pragma unroll
+    for(int a=0;a<3;a++) {
+        #pragma unroll
+        for(int k=0;k<5;k++)diagonal[a][k]=0;
+        #pragma unroll
+        for(int i=0;i<3;i++) {
+            #pragma unroll
+            for(int j=0;j<3;j++)diagonal[a][i+j]+=(u64)f->v[3*a+i]*g->v[3*a+j];
+        }
+        #pragma unroll
+        for(int k=0;k<5;k++)c[6*a+k]+=diagonal[a][k];
+    }
+    #pragma unroll
+    for(int a=0;a<3;a++) {
+        #pragma unroll
+        for(int b=a+1;b<3;b++) {
+            u64 cross[5]={0,0,0,0,0};
+            #pragma unroll
+            for(int i=0;i<3;i++) {
+                u32 x=f->v[3*a+i]+f->v[3*b+i];
+                #pragma unroll
+                for(int j=0;j<3;j++)cross[i+j]+=(u64)x*(g->v[3*a+j]+g->v[3*b+j]);
+            }
+            #pragma unroll
+            for(int k=0;k<5;k++)c[3*(a+b)+k]+=cross[k]-diagonal[a][k]-diagonal[b][k];
+        }
+    }
+#else
     #pragma unroll
     for (int i = 0; i < 9; i++) {
         #pragma unroll
         for (int j = 0; j < 9; j++) c[i + j] += (u64)f->v[i] * g->v[j];
     }
+#endif
     fe29_finish(h, c);
 }
 static void fe_sq(fe *h, const fe *f) {
@@ -1001,6 +1035,24 @@ static inline void ladder_step(fe *x2,fe *z2,fe *x3,fe *z3,const fe *x1) {
     u64 tail=(u64)C.v[0]+carry*1216u;C.v[0]=(u32)tail&M29;C.v[1]+=(u32)(tail>>29);
     fe_mul(z2,&E,&C);
 }
+#if PX_LAD_ENDPOINT || PX_LAD_COFACTOR
+static inline void ladder_double(fe *x,fe *z) {
+    fe A,B,AA,BB,E,C;
+    ladder_add(&A,x,z);fe_sub(&B,x,z);fe_sq(&AA,&A);fe_sq(&BB,&B);
+    fe_mul(x,&AA,&BB);fe_sub(&E,&AA,&BB);
+    u64 carry=0;
+    for(int i=0;i<9;i++){u64 t=(u64)E.v[i]*121665u+AA.v[i]+carry;C.v[i]=(u32)t&M29;carry=t>>29;}
+    u64 tail=(u64)C.v[0]+carry*1216u;C.v[0]=(u32)tail&M29;C.v[1]+=(u32)(tail>>29);
+    fe_mul(z,&E,&C);
+}
+static inline void ladder_diffadd(fe *x2,fe *z2,const fe *x3,const fe *z3,const fe *xp) {
+    fe A,B,C,D,DA,CB;
+    ladder_add(&A,x2,z2);fe_sub(&B,x2,z2);ladder_add(&C,x3,z3);fe_sub(&D,x3,z3);
+    fe_mul(&DA,&D,&A);fe_mul(&CB,&C,&B);
+    ladder_add(x2,&DA,&CB);fe_sq(x2,x2);
+    fe_sub(z2,&DA,&CB);fe_sq(z2,z2);fe_mul(z2,z2,xp);
+}
+#endif
 __kernel __attribute__((reqd_work_group_size(PX_WG,1,1)))
 void prep_kernel(__global const uint *cnt,__global HPoint *pts,__global const Consts *K) {
     uint n=cnt[0],total=get_global_size(0);
@@ -1036,10 +1088,30 @@ void ladder_kernel(__global const HPoint *pts,__global const uint *cnt,__global 
         out[i].nonce=pts[i].nonce;out[i].valid=0;out[i].Z=one;
         if(fe_iszero(&xP))continue;
         fe x2,z2,x3,z3;fe_1(&x2);fe_0(&z2);x3=xP;fe_1(&z3);
+#if PX_LAD_ENDPOINT
+        int low=0;
+        while(low<K->ladder_top&&!((K->ladder_scalar[low>>3]>>(low&7))&1))++low;
+        if((K->ladder_scalar[K->ladder_top>>3]>>(K->ladder_top&7))&1) {
+            x2=xP;fe_1(&z2);
+            if(K->ladder_top>low) {
+                x3=xP;fe_1(&z3);ladder_double(&x3,&z3);
+                for(int b=K->ladder_top-1;b>low;--b) {
+                    if((K->ladder_scalar[b>>3]>>(b&7))&1)ladder_step(&x3,&z3,&x2,&z2,&xP);
+                    else ladder_step(&x2,&z2,&x3,&z3,&xP);
+                }
+                ladder_diffadd(&x2,&z2,&x3,&z3,&xP);
+            }
+            for(int b=0;b<low;++b)ladder_double(&x2,&z2);
+        }
+#else
         for(int b=K->ladder_top;b>=0;b--) {
             if((K->ladder_scalar[b>>3]>>(b&7))&1)ladder_step(&x3,&z3,&x2,&z2,&xP);
             else ladder_step(&x2,&z2,&x3,&z3,&xP);
         }
+#endif
+#if PX_LAD_COFACTOR
+        for(int d=0;d<PX_LAD_COFACTOR;d++)ladder_double(&x2,&z2);
+#endif
         if(fe_iszero(&z2))continue; // cofactor-cleared identity
         // Edwards y=(u-1)/(u+1); its missing x sign is resolved only for
         // potential shares. A separate buffer keeps filtering race-free.

@@ -19,7 +19,7 @@
 #include <map>
 #include <cmath>
 #include <cerrno>
-#define PX_VERSION "1.0.6"
+#define PX_VERSION "1.0.7"
 #include <signal.h>
 // sockets: POSIX or Winsock behind four helpers
 #ifdef _WIN32
@@ -4281,11 +4281,11 @@ static GpuCfg autotune(int dev, const uint8_t scalar[32], const uint8_t pk[32], 
     GpuCfg best{dev, fixedBlocks > 0 ? fixedBlocks : prop.multiProcessorCount * pl.blocksPerSM, pl.threads, pl.iters, variantByName(pl.variant)};
     double bestRate = 0;
     // threads, nonces per thread, blocks per multiprocessor (ignored under --blocks)
-    const int geoAll[][3] = { {256, 4, 8}, {256, 2, 8}, {128, 4, 8}, {256, 1, 64}, {256, 1, 128}, {256, 2, 64} };
-    // quick: the kernels that win somewhere (1.0.5 ladder, 1.0.2, 0.5.10 wide-chain, 0.5.8 comba, wNAF, 4-bit table), at the two launch shapes that do
-    const int geoQuick[][3] = { {256, 1, 128}, {256, 4, 8} };
+    const int geoAll[][3] = { {256, 1, 256}, {256, 4, 8}, {256, 2, 8}, {128, 4, 8}, {256, 1, 64}, {256, 1, 128}, {256, 2, 64} };
+    // quick: the kernels that win somewhere (1.0.5 ladder, 1.0.2, 0.5.10 wide-chain, 0.5.8 comba, wNAF, 4-bit table), at the launch shapes that do
+    const int geoQuick[][3] = { {256, 1, 256}, {256, 1, 128}, {256, 4, 8} };
     const int (*geo)[3] = quick ? geoQuick : geoAll;
-    const int ngeo = quick ? 2 : 6;
+    const int ngeo = quick ? sizeof(geoQuick)/sizeof(geoQuick[0]) : sizeof(geoAll)/sizeof(geoAll[0]);
     fprintf(stderr, "autotune GPU %d %s (sm_%d%d), %.0fs per trial:\n", dev, prop.name, prop.major, prop.minor, seconds);
     for (int v = 0; v < NVARIANTS; v++) {
         if (quick && strcmp(VARIANTS[v]->name, "fe32x_mlsp_c") != 0 && strcmp(VARIANTS[v]->name, "fe32x_wnaf_s32_c") != 0 && strcmp(VARIANTS[v]->name, "fe32w_wnaf_s16_c") != 0 && strcmp(VARIANTS[v]->name, "fe32c_wnaf_s16_c") != 0 && strcmp(VARIANTS[v]->name, "fe32_wnaf_lb2_c") != 0 && strcmp(VARIANTS[v]->name, "fe32_w4_lb2_c") != 0) continue;
@@ -4304,13 +4304,20 @@ static GpuCfg autotune(int dev, const uint8_t scalar[32], const uint8_t pk[32], 
 }
 
 // Tuning cache for generations this build has no measurements for: one line per
-// card and build, "<name>|sm<xy>|<version>|<variant> <blocks> <threads> <iters>",
+// physical GPU, SM count, CUDA driver API and build, followed by the variant and launch shape,
 // in proxichorizo-autotune.cache next to where the miner runs. A new release
 // re-measures (its defaults may have moved); --autotune / --variant / --blocks
 // bypass it.
 static const char *TUNE_CACHE = "proxichorizo-autotune.cache";
 static std::string tuneKey(const cudaDeviceProp &prop) {
-    return std::string(prop.name) + "|sm" + std::to_string(prop.major) + std::to_string(prop.minor) + "|" PX_VERSION "|";
+    // Same-model boards can have different power/clocks, and MIG partitions can
+    // have different SM counts. Do not reuse another physical card's result.
+    int driver = 0; cudaDriverGetVersion(&driver);
+    std::string id;
+    static const char hex[] = "0123456789abcdef";
+    for (unsigned char c : prop.uuid.bytes) { id += hex[c >> 4]; id += hex[c & 15]; }
+    return std::string(prop.name) + "|sm" + std::to_string(prop.major) + std::to_string(prop.minor) +
+        "|sms" + std::to_string(prop.multiProcessorCount) + "|uuid" + id + "|driver" + std::to_string(driver) + "|" PX_VERSION "|";
 }
 static bool loadTuned(const cudaDeviceProp &prop, int dev, GpuCfg &cfg) {
     std::ifstream in(TUNE_CACHE);
@@ -4603,7 +4610,7 @@ int main(int argc, char **argv) {
                 cfg = tuned; cfg.ordinal = (int)cfgs.size(); cfg.ops->init(scalar, pk2);
                 fprintf(stderr, "GPU %d %s (sm_%d%d): %s, %dx%dx%d — tuned on this card earlier (%s)\n", d, prop.name, prop.major, prop.minor, cfg.ops->name, cfg.blocks, cfg.threads, cfg.iters, TUNE_CACHE);
             } else {
-                fprintf(stderr, "GPU %d %s (sm_%d%d): %s; this build has no measurements for this generation, measuring the candidate kernels now (~20 s, once; kept in %s)\n", d, prop.name, prop.major, prop.minor, pl.note, TUNE_CACHE);
+                fprintf(stderr, "GPU %d %s (sm_%d%d): %s; this build has no measurements for this model, measuring candidate kernels and launch sizes now (once; kept in %s)\n", d, prop.name, prop.major, prop.minor, pl.note, TUNE_CACHE);
                 cfg = autotune(d, scalar, pk, 3, 0, true); cfg.ordinal = (int)cfgs.size(); cfg.ops->init(scalar, pk2);
                 saveTuned(prop, cfg);
             }

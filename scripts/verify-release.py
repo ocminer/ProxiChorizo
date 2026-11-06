@@ -20,6 +20,7 @@ def text(data):
 def check_notices(files, version, release_notes=True):
     names = ["LICENSE", "NOTICE", "README.md", "USAGE.md", "vectors.json",
              "PLATFORMS.md", "benchmarks/amd-20261106.csv", "benchmarks/amd-1.0.6.csv", "benchmarks/nvidia-1.0.6.csv"]
+    names += [p.relative_to(ROOT).as_posix() for p in sorted((ROOT / "benchmarks").glob("*.csv")) if p.relative_to(ROOT).as_posix() not in names]
     if release_notes:
         names += ["RELEASE-v" + version + ".md"]
     for name in names:

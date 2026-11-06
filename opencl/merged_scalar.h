@@ -21,3 +21,16 @@ static inline void v_merged_scalar(const uint8_t *scalar, uint8_t out[32]) {
     }
     memcpy(out, t, 32);
 }
+
+// Montgomery u and Edwards y are unchanged by negating a point. Use the
+// shorter representative of 8*x modulo L, then perform three final doublings.
+// Those doublings also remove torsion, preserving 64*x over the full group.
+static inline void v_xonly_scalar(const uint8_t *scalar,uint8_t out[32]) {
+    static const uint8_t L[32]={0xed,0xd3,0xf5,0x5c,0x1a,0x63,0x12,0x58,0xd6,0x9c,0xf7,0xa2,0xde,0xf9,0xde,0x14,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0x10};
+    uint8_t merged[32],negative[32];v_merged_scalar(scalar,merged);
+    unsigned nonzero=0,borrow=0;
+    for(int i=0;i<32;i++){out[i]=(merged[i]>>3)|(i<31?(unsigned)merged[i+1]<<5:0);nonzero|=out[i];}
+    if(!nonzero)return;
+    for(int i=0;i<32;i++){int d=(int)L[i]-out[i]-borrow;negative[i]=(uint8_t)d;borrow=d<0;}
+    for(int i=31;i>=0;i--)if(negative[i]!=out[i]){if(negative[i]<out[i])memcpy(out,negative,32);break;}
+}

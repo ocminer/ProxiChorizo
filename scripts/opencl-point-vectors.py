@@ -7,12 +7,17 @@ P=2**255-19;L=2**252+27742317777372353535851937790883648493;D=(-121665*pow(12166
 def add(p,q):
  x,y=p;a,b=q;t=D*x*a*y*b%P
  return ((x*b+y*a)*pow(1+t,P-2,P)%P,(y*b+x*a)*pow(1-t,P-2,P)%P)
+def extended_add(p,q):
+ X,Y,Z,T=p;U,V,W,S=q
+ A=(Y-X)*(V-U)%P;B=(Y+X)*(V+U)%P;C=2*D*T*S%P;dd=2*Z*W%P
+ E=(B-A)%P;F=(dd-C)%P;G=(dd+C)%P;H=(B+A)%P
+ return E*F%P,G*H%P,F*G%P,E*H%P
 def mul(p,s):
- q=(0,1)
+ x,y=p;b=(x,y,1,x*y%P);q=(0,1,1,0)
  while s:
-  if s&1:q=add(q,p)
-  p=add(p,p);s>>=1
- return q
+  if s&1:q=extended_add(q,b)
+  b=extended_add(b,b);s>>=1
+ x,y,z,_=q;iz=pow(z,P-2,P);return x*iz%P,y*iz%P
 def decode(s):
  z=int.from_bytes(s,'little');y=(z&((1<<255)-1))%P;sign=z>>255;v=(D*y*y+1)%P;x2=(y*y-1)*pow(v,P-2,P)%P;x=pow(x2,(P+3)//8,P)
  if x*x%P!=x2:x=x*I%P
@@ -41,15 +46,22 @@ for multiple in [1,2,3,4,6,7]:
  x0=((m//8)*pow(8,-1,L))%L
  choices=[x0+k*L for k in range(8) if 2**254<=x0+k*L<2**255 and (x0+k*L)%8==0]
  keys.append(choices[0] if choices else x0)
+if "--extended" in sys.argv[2:]:
+ keys += [0,1,2,3,4,7,8,16,32,64,2**255,2**256-1]
+ for k in [1,2,4,8]:keys += [k*L-1,k*L,k*L+1]
+ keys += [int.from_bytes(hashlib.sha256(('extra scalar '+str(i)).encode()).digest(),'little') for i in range(12)]
+ keys=list(dict.fromkeys(keys))
 out=[]
 for scalar in keys:
  for p in raw:
-  q=mul(p,8);valid=q!=(0,1)
-  if valid:
+  expected=mul(p,64*scalar);valid=expected!=(0,1)
+  # Cross-check the independent complete-group oracle with libsodium where
+  # its scalar API is defined (nonzero subgroup scalar, bit255 clear).
+  q=mul(p,8)
+  if q!=(0,1) and scalar%L and scalar<2**255:
    cg=crypto_scalarmult_ed25519_noclamp(bytes.fromhex(h(scalar)),encode(q))
    for _ in range(3):cg=crypto_core_ed25519_add(cg,cg)
-   expected=decode(cg);assert expected is not None
-  else:expected=(0,1)
+   assert decode(cg)==expected
   out.append(' '.join([h(scalar),h(p[0]),h(p[1]),h(expected[0]),h(expected[1]),str(int(valid))]))
 Path(sys.argv[1]).write_text('\n'.join(out)+'\n')
-print('Generated',len(out),'independent points;',len(T),'torsion elements; ten scalars including subgroup-adjacent prefixes, including Q=-P.')
+print('Generated',len(out),'independent points;',len(T),'torsion elements;',len(keys),'scalars; subgroup boundaries, including Q=-P.')

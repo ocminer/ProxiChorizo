@@ -27,7 +27,7 @@ __kernel void point_dump(__global const ProjectivePoint *pts,__global u8 *out,__
         Row r;std::vector<uint8_t>b;if(!unhex(x+y,b)||b.size()!=64)return 2;std::copy(b.begin(),b.end(),r.raw.begin());
         if(!unhex(ex+ey,b)||b.size()!=64)return 2;std::copy(b.begin(),b.end(),r.expected.begin());r.valid=valid;groups[sc].push_back(r);
     }
-    if(groups.size()!=10)return 2;Prog*pr=get_prog(g_devs[dev],v);ClDev&d=*pr->dev;cl_int e;int tested=0;
+    if(groups.empty())return 2;Prog*pr=get_prog(g_devs[dev],v);ClDev&d=*pr->dev;cl_int e;int tested=0;
     cl_kernel load=clCreateKernel(pr->p,"point_load",&e);CL_CHECK(e);cl_kernel dump=clCreateKernel(pr->p,"point_dump",&e);CL_CHECK(e);
     for(const auto &group:groups) {
         std::vector<uint8_t>scalar;unhex(group.first,scalar);uint8_t pk[32];if(prog_init(pr,scalar.data(),pk)!=1)return 3;
@@ -60,5 +60,5 @@ __kernel void point_dump(__global const ProjectivePoint *pts,__global u8 *out,__
             scratch_free(s);clReleaseMemObject(input);clReleaseMemObject(output);clReleaseMemObject(flags);
         }
     }
-    printf("PASS %s: %d independent point outputs, ten scalars/all torsion/partial batches/Q=-P\n",v->name,tested);
+    printf("PASS %s: %d independent point outputs, all supplied scalars/all torsion/partial batches/Q=-P\n",v->name,tested);
 }
