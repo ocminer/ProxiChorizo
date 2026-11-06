@@ -372,6 +372,28 @@ namespace v_fe32x_mladxn_c {
 namespace v_fe32x_mladxm_c {
 #include "proxichorizo_device.cuh"
 }
+#ifdef PX_DEV_W
+#define PX_FE32 1
+#define PX_COMBA 1
+#define PX_WIDECHAIN 1
+#define PX_MERGE8 1
+#define PX_SQRT_DEC 1
+#define PX_H2C_MID 1
+#define PX_LADDER 1
+#define PX_XONLY 1
+#define PX_LADDER_NB 1
+#define PX_JAC_MASK 1
+#define PX_SMALLMUL_WIDE 1
+#define PX_LB_H2C 2
+#define PX_ADD_NOT 1
+#define PX_DBL6 1
+#define PX_TBL_CACHED 1
+#undef PX_VARIANT_NAME
+#define PX_VARIANT_NAME "fe32x_mlw_c"
+namespace v_fe32x_mlw_c {
+#include "proxichorizo_device.cuh"
+}
+#endif
 #if defined(PX_DEV_R) || defined(PX_DEV_R2)
 #define PX_FE32 1
 #define PX_COMBA 1
@@ -1069,6 +1091,8 @@ namespace v_fe32_w4_linear_split8_c {
 #ifdef PX_DEV_LADDER
 #ifdef PX_DEV_LADDER_ALL
 static const VariantOps *VARIANTS[] = { &v_fe32x_wnaf_s32_c::ops, &v_fe32x_mlad_c::ops, &v_fe32x_mladx_c::ops, &v_fe32x_mladxn_c::ops, &v_fe32x_mladxs2_c::ops, &v_fe32x_mladxs4_c::ops, &v_fe32x_mladxc2_c::ops, &v_fe32x_mladxc4_c::ops };
+#elif defined(PX_DEV_W)
+static const VariantOps *VARIANTS[] = { &v_fe32x_wnaf_s32_c::ops, &v_fe32x_mladxm_c::ops, &v_fe32x_mlw_c::ops };
 #elif defined(PX_DEV_R)
 static const VariantOps *VARIANTS[] = { &v_fe32x_wnaf_s32_c::ops, &v_fe32x_mladxm_c::ops, &v_fe32x_mlt_c::ops, &v_fe32x_mlr_c::ops };
 #elif defined(PX_DEV_R2)
