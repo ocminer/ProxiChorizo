@@ -1151,7 +1151,7 @@ namespace v_fe32x_mlsa_c {
 #include "proxichorizo_device.cuh"
 }
 #endif
-#ifdef PX_DEV_R4R
+#if defined(PX_DEV_R4R) || defined(PX_DEV_R4S)
 #define PX_FE32 1
 #define PX_COMBA 1
 #define PX_WIDECHAIN 1
@@ -1925,6 +1925,8 @@ namespace v_fe32_w4_linear_split8_c {
 #ifdef PX_DEV_LADDER
 #ifdef PX_DEV_LADDER_ALL
 static const VariantOps *VARIANTS[] = { &v_fe32x_wnaf_s32_c::ops, &v_fe32x_mlad_c::ops, &v_fe32x_mladx_c::ops, &v_fe32x_mladxn_c::ops, &v_fe32x_mladxs2_c::ops, &v_fe32x_mladxs4_c::ops, &v_fe32x_mladxc2_c::ops, &v_fe32x_mladxc4_c::ops };
+#elif defined(PX_DEV_R4S)
+static const VariantOps *VARIANTS[] = { &v_fe32x_wnaf_s32_c::ops, &v_fe32x_mladxm_c::ops, &v_fe32x_mlsp_c::ops };
 #elif defined(PX_DEV_R4R)
 static const VariantOps *VARIANTS[] = { &v_fe32x_wnaf_s32_c::ops, &v_fe32x_mlsa_c::ops, &v_fe32x_mlsp_c::ops };
 #elif defined(PX_DEV_R4Q)
