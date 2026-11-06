@@ -31,12 +31,16 @@ int main() {
     for(int i=0;i<20;i++) {
         assert(&platformFor(8,0,"NVIDIA A100-SXM4-80GB")==&a);
         assert(&platformFor(9,0,"NVIDIA H100 80GB HBM3")==&h);
-        assert(std::strcmp(platformFor(8,0,"NVIDIA CMP 170HX").variant,"fe32x_wnaf_s32_c")==0);
+        assert(std::strcmp(platformFor(8,0,"NVIDIA CMP 170HX").variant,"fe32x_mlsp_c")==0);
     }
     // 0.5.10: every consumer/CMP generation defaults to the wide-chain variant, datacenter rows are unchanged
-    assert(std::strcmp(platformFor(12,0,"NVIDIA GeForce RTX 5090").variant,"fe32x_wnaf_s32_c")==0);
-    assert(std::strcmp(platformFor(8,6,"NVIDIA GeForce RTX 3070").variant,"fe32x_wnaf_s32_c")==0);
-    assert(std::strcmp(platformFor(12,0,"NVIDIA GeForce RTX 5080").variant,"fe32x_wnaf_s32_c")==0);
+    // 1.0.5: measured Blackwell, GA10x and CMP 170HX default to the ladder kernel; Ada, Turing, Hopper and unknown keep theirs
+    assert(std::strcmp(platformFor(12,0,"NVIDIA GeForce RTX 5090").variant,"fe32x_mlsp_c")==0);
+    assert(platformFor(12,0,"NVIDIA GeForce RTX 5090").blocksPerSM==256);
+    assert(std::strcmp(platformFor(8,6,"NVIDIA GeForce RTX 3070").variant,"fe32x_mlsp_c")==0);
+    assert(std::strcmp(platformFor(12,0,"NVIDIA GeForce RTX 5080").variant,"fe32x_mlsp_c")==0);
+    assert(std::strcmp(platformFor(7,5,"NVIDIA Tesla T4").variant,"fe32x_wnaf_s32_c")==0);
+    assert(std::strcmp(platformFor(13,0,"unmeasured future GPU").variant,"fe32x_wnaf_s32_c")==0);
     assert(platformFor(8,9,"NVIDIA GeForce RTX 4090").measured==true);
     assert(std::strcmp(platformFor(8,9,"NVIDIA GeForce RTX 4070 Ti SUPER").variant,"fe32x_wnaf_s32_c")==0);
     puts("PASS model-specific datacenter selection and unchanged legacy/MIG profiles");

@@ -65,7 +65,7 @@ distribution); the Windows archive brings its own. The pool's certificate is che
   token, password = the seed of your key file. Worker name = the rig name.
 * **MMPOS / SMOS:** the same tarball, launchers `mmpos-run.sh` / `smos-run.sh`; pool URL as
   above, user = token, password = key seed (see [USAGE.md](USAGE.md)).
-* **Docker (NVIDIA):** `ocminersupr/proxichorizo:1.0.4` with `TOKEN`, `KEY_FILE` (or `SEED`)
+* **Docker (NVIDIA):** `ocminersupr/proxichorizo:1.0.5` with `TOKEN`, `KEY_FILE` (or `SEED`)
   and optionally `POOL_URL` (default `stratum+tcp://proxi.suprnova.cc:3355`); see `docker/README.md`.
 
 ### Is it working?
@@ -102,7 +102,7 @@ Writing your own miner or proxy for the pool? The stratum protocol (messages, no
 share rule, error codes, a worked example) is specified in **[STRATUM-SPEC.md](STRATUM-SPEC.md)**.
 
 **Older versions:** ProxiChorizo 0.5.x speaks the pool's old HTTP protocol (port 8100),
-which stays open for a while and will then be switched off. Update to 1.0.4.
+which stays open for a while and will then be switched off. Update to 1.0.5.
 
 ## Which kernel runs on which card
 

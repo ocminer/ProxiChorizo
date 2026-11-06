@@ -4,11 +4,11 @@
 
 struct Platform { int major, minor; const char *variant; int threads, iters, blocksPerSM; bool measured; const char *note; };
 static const Platform PLATFORMS[] = {
-    { 12, -1, "fe32x_wnaf_s32_c", 256, 1, 128, true,  "Blackwell (RTX 50xx, RTX PRO 6000): round-12 point-level savings on the wide-multiply chains (69 MH/s on a 5090 at 600 W, 37 on a 5080)" },
+    { 12, -1, "fe32x_mlsp_c",     256, 1, 256, true,  "Blackwell (RTX 50xx, RTX PRO 6000): 1.0.5 ladder kernel, 256 blocks per SM (RTX 5090 / RTX 5080 measured)" },
     {  9, -1, "fe32_w4_lb2_c",    256, 1, 128, true,  "Hopper (H100): the 4-bit table beats wNAF here (21.2 vs 19.3 MH/s on an H100 SXM), large launches; 0.5.8/0.5.10 kernels not measured on Hopper" },
     {  8,  9, "fe32x_wnaf_s32_c", 256, 1, 128, true,  "Ada (RTX 40xx): round-12 kernel (28.4 MH/s on an RTX 4070 Ti SUPER at 285 W)" },
-    {  8,  6, "fe32x_wnaf_s32_c", 256, 1, 128, true,  "Ampere GA10x (RTX 30xx): round-12 point-level savings on the wide-multiply chains (13.7 MH/s on a 3070)" },
-    {  8,  0, "fe32x_wnaf_s32_c", 256, 1, 128, true,  "Ampere GA100 (CMP 170HX): round-12 kernel (15.7 MH/s at 250 W)" },
+    {  8,  6, "fe32x_mlsp_c",     256, 1, 256, true,  "Ampere GA10x (RTX 30xx): 1.0.5 ladder kernel, 256 blocks per SM (RTX 3070 measured)" },
+    {  8,  0, "fe32x_mlsp_c",     256, 1, 256, true,  "Ampere GA100 (CMP 170HX): 1.0.5 ladder kernel (CMP 170HX measured; A100 keeps its datacenter profile)" },
     {  7,  5, "fe32x_wnaf_s32_c", 256, 1, 128, false, "Turing: not measured here, tuned on first start" },
     { -1, -1, "fe32x_wnaf_s32_c", 256, 1, 128, false, "unknown generation: tuned on first start" },
 };
