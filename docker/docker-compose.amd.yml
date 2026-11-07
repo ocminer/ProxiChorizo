@@ -1,6 +1,6 @@
 services:
   miner:
-    image: ocminersupr/proxichorizo:1.0.7-amd
+    image: ocminersupr/proxichorizo:1.0.8-amd
     restart: unless-stopped
     devices:
       - /dev/kfd
