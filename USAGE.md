@@ -154,6 +154,13 @@ docker run -d --name proxichorizo --gpus all --restart unless-stopped -p 4078:40
 `POOL_URL` defaults to `stratum+tcp://proxi.suprnova.cc:3355`; `KEY_FILE` (a mounted key) replaces `SEED`;
 arguments after the image name go straight to the miner. Statistics at `http://localhost:4078/`.
 
+AMD GPUs use the `-amd` image (OpenCL miner + ROCm OpenCL runtime; the host needs only the amdgpu driver):
+```bash
+docker run -d --name proxichorizo --device /dev/kfd --device /dev/dri --group-add video --group-add render \
+  --restart unless-stopped -p 4078:4078 \
+  -e TOKEN=YOUR_TOKEN -e SEED=FIRST_64_HEX_OF_private_key -e WORKER=docker1 ocminersupr/proxichorizo:amd
+```
+
 ## 5b. AMD GPUs (OpenCL)
 
 Build `opencl/proxichorizo-cl` (see README) on a machine with an OpenCL driver (ROCm, or the

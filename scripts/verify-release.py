@@ -94,6 +94,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--version", required=True)
     parser.add_argument("--directory", type=pathlib.Path)
+    parser.add_argument("--binary", default="proxichorizo", help="miner binary expected in --directory")
     parser.add_argument("archives", type=pathlib.Path, nargs="*")
     args = parser.parse_args()
     assert args.directory or args.archives, "nothing to verify"
@@ -102,7 +103,7 @@ def main():
         files = {p.relative_to(args.directory).as_posix(): p.read_bytes()
                  for p in args.directory.rglob("*") if p.is_file()}
         check_notices(files, args.version, release_notes=False)
-        assert files["proxichorizo"].startswith(b"\x7fELF")
+        assert files[args.binary].startswith(b"\x7fELF")
         print("verified container contents and notices against source", commit)
     for archive in args.archives:
         verify_archive(archive, args.version, commit)

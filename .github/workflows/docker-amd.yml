@@ -1,0 +1,72 @@
+name: docker-amd
+# Builds the AMD container (docker/Dockerfile.amd: OpenCL miner + ROCm OpenCL runtime), verifies its contents
+# and pushes ocminersupr/proxichorizo:<version>-amd and :amd (mirrored on ghcr.io). Trigger: a tag v<version>
+# (with the release), a push to main that changes the AMD image files (republishes the current PX_VERSION),
+# or workflow_dispatch with publish=true.
+on:
+  push:
+    tags: ['v*']
+    branches: [main]
+    paths: ['docker/Dockerfile.amd', 'docker/entrypoint.sh', '.github/workflows/docker-amd.yml']
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: push the verified image (the source's PX_VERSION must have a release)
+        type: boolean
+        default: false
+permissions:
+  contents: read
+  packages: write
+jobs:
+  docker-amd:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          SRC=$(grep -oP '#define PX_VERSION "\K[^"]+' proxichorizo.cu)
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then VER=${GITHUB_REF#refs/tags/v}; else VER=$SRC; fi
+          [[ "$VER" == "$SRC" ]] || { echo "version $VER != PX_VERSION $SRC"; exit 1; }
+          echo "ver=$VER" >> "$GITHUB_OUTPUT"
+          # a branch push publishes only a released version (tag v<PX_VERSION> exists)
+          if git ls-remote --exit-code --tags origin "refs/tags/v$VER" >/dev/null; then echo "released=true" >> "$GITHUB_OUTPUT"; else echo "released=false" >> "$GITHUB_OUTPUT"; fi
+      - name: exposure check
+        run: scripts/check-secrets.sh --all
+      - name: registry
+        id: reg
+        env: { DH_USER: "${{ secrets.DOCKERHUB_USERNAME }}", VER: "${{ steps.v.outputs.ver }}", OWNER: "${{ github.repository_owner }}" }
+        run: |
+          TAGS="ghcr.io/$OWNER/proxichorizo:$VER-amd,ghcr.io/$OWNER/proxichorizo:amd"
+          if [[ -n "$DH_USER" ]]; then TAGS="ocminersupr/proxichorizo:$VER-amd,ocminersupr/proxichorizo:amd,$TAGS"; echo "dockerhub=true" >> "$GITHUB_OUTPUT"; else echo "dockerhub=false" >> "$GITHUB_OUTPUT"; fi
+          echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
+        with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+      - uses: docker/login-action@v3
+        if: steps.reg.outputs.dockerhub == 'true'
+        with: { username: "${{ secrets.DOCKERHUB_USERNAME }}", password: "${{ secrets.DOCKERHUB_TOKEN }}" }
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.amd
+          load: true
+          push: false
+          tags: ${{ steps.reg.outputs.tags }}
+      - name: verify actual container contents
+        env: { RELEASE_VERSION: "${{ steps.v.outputs.ver }}", IMAGE_TAGS: "${{ steps.reg.outputs.tags }}" }
+        run: |
+          IMAGE="${IMAGE_TAGS%%,*}"
+          CID=$(docker create --entrypoint /bin/true "$IMAGE")
+          trap 'docker rm -f "$CID" >/dev/null' EXIT
+          mkdir image-check
+          docker cp "$CID:/app/." image-check/
+          python3 scripts/verify-release.py --version "$RELEASE_VERSION" --directory image-check --binary proxichorizo-cl
+          docker run --rm "$IMAGE" --help > image-help.txt 2>&1
+          grep -F "ProxiChorizo $RELEASE_VERSION (OpenCL)" image-help.txt
+          docker run --rm --entrypoint /bin/sh "$IMAGE" -c 'ls /etc/OpenCL/vendors/ && ldd /app/proxichorizo-cl | grep -i opencl'
+          docker run --rm "$IMAGE" --check-pool stratum+ssl://proxi.suprnova.cc:3356
+      - name: publish verified container images
+        if: startsWith(github.ref, 'refs/tags/v') || (steps.v.outputs.released == 'true' && (github.event_name == 'push' || inputs.publish))
+        env: { IMAGE_TAGS: "${{ steps.reg.outputs.tags }}" }
+        run: |
+          IFS=',' read -ra TAGS <<< "$IMAGE_TAGS"
+          for TAG in "${TAGS[@]}"; do docker push "$TAG"; done

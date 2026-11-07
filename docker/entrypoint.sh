@@ -5,10 +5,12 @@
 #   SEED       first 64 hex chars of "private_key" in the pool's proxima.key          REQUIRED unless KEY_FILE
 #   KEY_FILE   path of a mounted unencrypted proxima.key (alternative to SEED)
 #   WORKER, DEVICES (e.g. 0,1), VARIANT, THREADS, ITERS, API_BIND (default 0.0.0.0:4078), EXTRA_ARGS
-# Any command-line arguments are passed straight to the miner instead (docker run … proxichorizo --help).
+#   PX_BIN     the miner binary: proxichorizo (CUDA image) or proxichorizo-cl (AMD image); set by the image
+# Any command-line arguments are passed straight to the miner instead (docker run … IMAGE --help).
 set -euo pipefail
 cd /app
-if [[ $# -gt 0 ]]; then exec ./proxichorizo "$@"; fi
+BIN="./${PX_BIN:-proxichorizo}"
+if [[ $# -gt 0 ]]; then exec "$BIN" "$@"; fi
 POOL_URL="${POOL_URL:-stratum+tcp://proxi.suprnova.cc:3355}"
 [[ -n "${TOKEN:-}" ]] || { echo "error: TOKEN is required (pool registration token)" >&2; exit 2; }
 [[ -n "${SEED:-}" || -n "${KEY_FILE:-}" ]] || { echo "error: SEED (64 hex) or KEY_FILE is required" >&2; exit 2; }
@@ -21,4 +23,4 @@ args=( --proxi "$POOL_URL" --token "$TOKEN" --name "${WORKER:-docker}" --api-bin
 [[ -n "${THREADS:-}"  ]] && args+=( --threads "$THREADS" )
 [[ -n "${ITERS:-}"    ]] && args+=( --iters "$ITERS" )
 [[ -n "${EXTRA_ARGS:-}" ]] && args+=( $EXTRA_ARGS )
-exec ./proxichorizo "${args[@]}"
+exec "$BIN" "${args[@]}"

@@ -67,6 +67,8 @@ distribution); the Windows archive brings its own. The pool's certificate is che
   above, user = token, password = key seed (see [USAGE.md](USAGE.md)).
 * **Docker (NVIDIA):** `ocminersupr/proxichorizo:1.0.7` with `TOKEN`, `KEY_FILE` (or `SEED`)
   and optionally `POOL_URL` (default `stratum+tcp://proxi.suprnova.cc:3355`); see `docker/README.md`.
+* **Docker (AMD):** `ocminersupr/proxichorizo:1.0.7-amd` (also `:amd`), the OpenCL miner with AMD's
+  ROCm OpenCL runtime inside; the host needs only the amdgpu driver (`--device /dev/kfd --device /dev/dri`).
 
 ### Is it working?
 
@@ -130,7 +132,7 @@ native SM90 code for H100.
 * `proxichorizo-<ver>.tar.gz` — Linux x86-64, built on glibc 2.31. One tarball serves plain Linux, **HiveOS** (`h-run.sh`), **MMPOS** (`mmpos-run.sh`) and **SMOS** (`smos-run.sh`) — pick the launcher for your OS and set the pool URL, your pool token and your key seed in the flight sheet.
 * `proxichorizo-hiveos.tar.gz` — the same package under the directory name HiveOS's custom-miner installer requires (miner name `proxichorizo`).
 * `proxichorizo-<ver>-windows-x86_64.zip` — native **Windows** x64, with the OpenSSL DLLs and `cacert.pem` for `stratum+ssl://`. Put the pool's `proxima.key` next to it, set your token in `start.cmd` and run it.
-* Docker: `ocminersupr/proxichorizo:<ver>` (`docker/README.md`).
+* Docker: `ocminersupr/proxichorizo:<ver>` for NVIDIA, `ocminersupr/proxichorizo:<ver>-amd` for AMD (`docker/README.md`).
 * `SHA256SUMS` and one `.sha256` per asset; every archive carries its own `SHA256SUMS.txt` and `BUILD-INFO.json`.
 
 ## Usage
