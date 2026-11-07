@@ -29,6 +29,8 @@
 #include <process.h>
 #include <io.h>
 #pragma comment(lib, "ws2_32.lib")
+#include <mmsystem.h>
+#pragma comment(lib, "winmm.lib")
 #define px_isatty(fd) _isatty(fd)
 #define px_fileno(f) _fileno(f)
 typedef SOCKET sock_t;
@@ -4055,13 +4057,20 @@ static void gpu_worker(Shared &sh, GpuCfg cfg) {
         cfg.ops->mine(cfg.blocks, cfg.threads, d_job, nonce, stride, cfg.iters, d_hits, d_n, scratch);
         GPU_TRY(cudaGetLastError());
         GPU_TRY(cudaEventRecord(ev1));
+        // submit the launch now: on Windows (WDDM) the driver batches queued work and only hands it to the GPU when the
+        // queue is flushed, so sleeping right after the launch left the GPU idle for the whole sleep (~50 % hashrate).
+        // A query flushes the batch; on Linux it is a cheap no-op.
+        { cudaError_t q0 = cudaEventQuery(ev1); if (q0 != cudaSuccess && q0 != cudaErrorNotReady) { GPU_TRY(q0); } }
         // wait for the launch without burning a CPU core: cudaDeviceSynchronize spin-waits for the whole launch
         // (~100 ms), and a blocking-sync wait costs ~0.5 % hashrate in wake-up latency. So sleep until shortly
         // before the launch is expected to end (the previous launch's time), then poll the event briefly.
         bool aborted = false;
         auto abort_if_replaced = [&]() {
             if (d_abort && !aborted && job_replaced(j.id)) {
-                if (cudaMemcpyAsync(d_abort, h_abort, sizeof(unsigned), cudaMemcpyHostToDevice, abort_st) == cudaSuccess) aborted = true;
+                if (cudaMemcpyAsync(d_abort, h_abort, sizeof(unsigned), cudaMemcpyHostToDevice, abort_st) == cudaSuccess) {
+                    aborted = true;
+                    (void)cudaStreamQuery(abort_st);   // flush the flag write to the GPU now (WDDM batches it otherwise)
+                }
             }
         };
         if (last_ms > 4.0f) {
@@ -4499,6 +4508,8 @@ int main(int argc, char **argv) {
     // chose an order; the runtime reads this before its first call
 #ifdef _WIN32
     if (!getenv("CUDA_DEVICE_ORDER")) _putenv_s("CUDA_DEVICE_ORDER", "PCI_BUS_ID");
+    // the default Windows timer tick is ~15.6 ms; the GPU workers sleep in ~2 ms steps while a launch runs
+    timeBeginPeriod(1);
 #else
     setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID", 0);
 #endif
