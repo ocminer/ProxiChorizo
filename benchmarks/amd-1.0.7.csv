@@ -1,0 +1,4 @@
+gpu,version,kernel,cap_w,mhs,watts,core_mhz,memory_mhz,baseline_version,baseline_mhs,delta_percent,method,clocks,live_accepted,live_invalid,live_stale,live_duplicate,live_cpu_percent_one_core,khs_per_w
+Radeon RX 7900 XTX,1.0.7,fe29_mlsp_cf3_c,303,13.6253385,302.5192307692308,2498.2692307692305,1249.0,1.0.6,13.529195000000001,0.7106372552099227,180s warm-up; four 60s A/B/B/A arms,automatic,1628,0,0,0,100.10024118367804,45.039578030640136
+Radeon RX 7600 XT,1.0.7,fe29_mlsp_kara_c,155,4.570931,154.5,2528.201923076923,1117.2307692307693,1.0.6,4.4612155,2.4593185422224106,60s warm-up; four 60s A/B/B/A arms,automatic,511,0,1,0,1.5973721428921241,29.585313915857604
+Instinct MI50,1.0.7,fe29_mlsp_c,150,6.901345,149.92307692307693,1493.6346153846155,678.8461538461538,,,,60s warm-up; one 60s final verification; no matched gain claim,automatic,749,0,4,0,1.160597750588806,46.03257311441765

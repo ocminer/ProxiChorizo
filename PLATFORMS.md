@@ -743,3 +743,56 @@ Radeon RX 7600 XT: 1.28% of one CPU core, 163.6 W average reported power, 93 °C
 Instinct MI50: 0.99% of one CPU core, 147.9 W average reported power, 76 °C maximum sampled junction temperature across the benchmark arms.
 
 The XTX ROCm runtime CPU-spin limitation and MI50 thermal limit described above still apply. NVIDIA measurements belong to their separately recorded qualification.
+
+
+## 1.0.7 model selection and tuning audit
+
+The measured RTX 5090, RTX 5080, RTX 5070 Ti, RTX 4070 Ti SUPER, RTX 3070,
+CMP 170HX and RTX PRO 6000 Blackwell profiles retain their established ladder
+kernel and 256-blocks-per-SM geometry. Exact model matches keep Ti, SUPER and
+laptop variants separate. Unmeasured Ampere/Ada/Blackwell models now measure the
+shortlist on first mining start; the 3060 and 3060 Ti are not represented as
+physically tested. A100/H100's earlier datacenter defaults are retained.
+
+The CUDA tuner had omitted 256 blocks per SM even though that is the selected
+ladder profile. Both the full and first-start searches now include it. NVIDIA
+cache keys include the GPU UUID, SM count, CUDA driver API version and release.
+
+The OpenCL first-start search had only tested the older FE29/FE32 layouts. Its
+full search also used 8 groups/CU and multiple iterations for split/ladder kernels,
+missing the launch shapes used by their measured defaults. The search now includes
+the split and ladder kernels and 64/128/256 groups/CU with one iteration, while retaining the
+older layouts. Each candidate passes the existing embedded-vector gate and is then
+reinitialized with the requested mining scalar before timing. Unmeasured RDNA3 and
+Vega/CDNA models tune independently of the measured XTX/RX7600XT/MI50. Their cache
+keys include device identity, CU count, OpenCL driver version and release.
+
+The measured AMD defaults remain 128 groups/CU: wider launches can improve a
+fixed-job benchmark while increasing the time spent finishing an obsolete job.
+RX 7600 XT selects `fe29_mlsp_kara_c`: three polynomial blocks of three 29-bit
+limbs use six 3x3 products (54 partial products), replacing nine products (81).
+For input limbs below 2^30, summed limbs are below 2^31 and all intermediate
+coefficients fit in 64 bits. The existing field reduction is retained.
+
+RX 7900 XTX selects `fe29_mlsp_cf3_c`: compute `t = 8*x mod L`, use the shorter
+of `t` and `L-t` in the x-only ladder, then double three times. Multiplication by
+8 clears the torsion component, and point negation preserves the Montgomery u /
+Edwards y coordinates used by the filter. Starting from P/2P skips the known
+leading bit; the final differential addition omits an unused doubling. Candidate
+shares still use the exact Edwards proof path.
+
+Both transformations passed independent full-group point fixtures including all
+8 torsion elements, zero, subgroup multiples and adjacent scalars, 256-bit boundary
+values, partial batches and Q=-P. The scalar reducer passed 100,051 independent
+integer cases; the field multiply passed 20,169 bounded-limb integer products.
+`tests/opencl_arithmetic.py` runs the integer oracles; `scripts/opencl-point-vectors.py FILE --extended` generates 46 scalar groups for the CPU/GPU point harnesses.
+
+MI50 retains `fe29_mlsp_c`: both new arithmetic variants measured slower there.
+NVIDIA device arithmetic is byte-identical to 1.0.6. All earlier selectable kernels
+remain available. Model-specific defaults avoid transferring a gain on one GPU to
+an architecture where it loses.
+
+The README and benchmark CSVs record the new matched published-1.0.1 versus
+published-1.0.6 regression audit separately from the 1.0.7 qualification. Clocks and
+power sweeps include actual driver readings, configured caps and efficiency; they
+are measurements of specific boards and settings, not universal overclock presets.

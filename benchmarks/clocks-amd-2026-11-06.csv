@@ -1,0 +1,22 @@
+version,gpu,trial,core_dpm_state,memory_dpm_state,cap_w,core_mhz,memory_mhz,mh_s,watts,kh_s_per_w,timed_seconds,method
+1.0.6,Radeon RX 7900 XTX,auto-a,automatic,automatic,303.0,2489.28,1249.0,13.560226,302.531,44.823,40,"coarse single-pass; state changes can alter both clock axes; original settings restored; manual DPM retained a lower core ceiling, later cleared by a scoped idle GPU reset"
+1.0.6,Radeon RX 7900 XTX,mem772,automatic,2,303.0,2352.91,772.0,12.78602,230.156,55.554,40,"coarse single-pass; state changes can alter both clock axes; original settings restored; manual DPM retained a lower core ceiling, later cleared by a scoped idle GPU reset"
+1.0.6,Radeon RX 7900 XTX,mem456,automatic,1,303.0,2353.25,456.0,12.712172,222.594,57.109,40,"coarse single-pass; state changes can alter both clock axes; original settings restored; manual DPM retained a lower core ceiling, later cleared by a scoped idle GPU reset"
+1.0.6,Radeon RX 7900 XTX,memmax,automatic,3,303.0,2352.38,1249.0,12.820432,253.875,50.499,40,"coarse single-pass; state changes can alter both clock axes; original settings restored; manual DPM retained a lower core ceiling, later cleared by a scoped idle GPU reset"
+1.0.6,Radeon RX 7900 XTX,core-mid,1,automatic,303.0,2352.5,1249.0,12.82079,254.781,50.321,40,"coarse single-pass; state changes can alter both clock axes; original settings restored; manual DPM retained a lower core ceiling, later cleared by a scoped idle GPU reset"
+1.0.6,Radeon RX 7900 XTX,core-high,2,automatic,303.0,2352.41,1249.0,12.820399,255.281,50.221,40,"coarse single-pass; state changes can alter both clock axes; original settings restored; manual DPM retained a lower core ceiling, later cleared by a scoped idle GPU reset"
+1.0.6,Radeon RX 7900 XTX,auto-b,automatic,automatic,303.0,2352.41,1249.0,12.819601,257.969,49.694,40,"coarse single-pass; state changes can alter both clock axes; original settings restored; manual DPM retained a lower core ceiling, later cleared by a scoped idle GPU reset; this row is before that reset"
+1.0.6,Radeon RX 7600 XT,auto-a,automatic,automatic,155.0,2530.56,1124.0,4.458845,155.219,28.726,40,coarse single-pass; state changes can alter both clock axes; original settings restored
+1.0.6,Radeon RX 7600 XT,mem772,automatic,2,155.0,2538.38,772.0,4.475299,155.031,28.867,40,coarse single-pass; state changes can alter both clock axes; original settings restored
+1.0.6,Radeon RX 7600 XT,mem456,automatic,1,155.0,2553.69,456.0,4.482091,155.219,28.876,40,coarse single-pass; state changes can alter both clock axes; original settings restored
+1.0.6,Radeon RX 7600 XT,memmax,automatic,3,155.0,2527.97,1124.0,4.468743,155.125,28.807,40,coarse single-pass; state changes can alter both clock axes; original settings restored
+1.0.6,Radeon RX 7600 XT,core-mid,1,automatic,155.0,2558.97,373.75,4.398539,152.188,28.902,40,coarse single-pass; state changes can alter both clock axes; original settings restored
+1.0.6,Radeon RX 7600 XT,core-high,2,automatic,155.0,2557.53,331.75,4.396352,152.375,28.852,40,coarse single-pass; state changes can alter both clock axes; original settings restored
+1.0.6,Radeon RX 7600 XT,auto-b,automatic,automatic,155.0,2531.56,1091.0,4.459656,154.812,28.807,40,coarse single-pass; state changes can alter both clock axes; original settings restored
+1.0.6,Instinct MI50,auto-a,automatic,automatic,150.0,1490.84,715.62,6.911051,148.25,46.618,40,coarse single-pass; state changes can alter both clock axes; original settings restored
+1.0.6,Instinct MI50,mem800,automatic,1,150.0,1495.25,800.0,6.919559,147.0,47.072,40,coarse single-pass; state changes can alter both clock axes; original settings restored
+1.0.6,Instinct MI50,mem1000,automatic,2,150.0,1475.94,1000.0,6.877061,149.094,46.126,40,coarse single-pass; state changes can alter both clock axes; original settings restored
+1.0.6,Instinct MI50,core1282,4,automatic,150.0,1282.0,370.31,5.924004,104.0,56.962,40,coarse single-pass; state changes can alter both clock axes; original settings restored
+1.0.6,Instinct MI50,core1485,6,automatic,150.0,1481.91,350.0,6.82568,149.125,45.772,40,coarse single-pass; state changes can alter both clock axes; original settings restored
+1.0.6,Instinct MI50,core1606,7,automatic,150.0,1500.12,390.62,6.889112,147.875,46.587,40,coarse single-pass; state changes can alter both clock axes; original settings restored
+1.0.6,Instinct MI50,auto-b,automatic,automatic,150.0,1497.72,687.5,6.90402,149.281,46.248,40,coarse single-pass; state changes can alter both clock axes; original settings restored

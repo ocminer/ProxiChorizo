@@ -1,0 +1,9 @@
+version,gpu,architecture,kernel,mh_s,cap_w,mean_w,mean_core_mhz,mean_memory_mhz,kh_s_per_w,benchmark_target,timed_seconds,clock_control,method
+1.0.7,RTX 5090,SM120,fe32x_mlsp_c,78.99,600.0,599.905,2684.72,13801.0,131.671,20,60,"automatic, original clocks restored",warmed final portable binary; NVIDIA device payload identical to 1.0.6; not an A/B gain claim
+1.0.7,RTX 5090,SM120,fe32x_mlsp_c,69.04,420.0,419.946,2427.27,13801.0,164.402,20,60,"automatic, original clocks restored",warmed final portable binary; NVIDIA device payload identical to 1.0.6; not an A/B gain claim
+1.0.7,RTX 5080,SM120,fe32x_mlsp_c,39.43,360.0,290.937,2797.15,14804.85,135.528,20,60,"automatic, original clocks restored",warmed final portable binary; NVIDIA device payload identical to 1.0.6; not an A/B gain claim
+1.0.7,RTX 5070 Ti,SM120,fe32x_mlsp_c,33.886,300.0,248.056,2782.0,13801.0,136.606,20,60,"automatic, original clocks restored",warmed final portable binary; NVIDIA device payload identical to 1.0.6; not an A/B gain claim
+1.0.7,RTX 4070 Ti SUPER,SM89,fe32x_mlsp_c,31.301,285.0,282.143,2777.94,10251.0,110.94,20,60,"automatic, original clocks restored",warmed final portable binary; NVIDIA device payload identical to 1.0.6; not an A/B gain claim
+1.0.7,RTX 3070,SM86,fe32x_mlsp_c,14.93,240.0,230.64,1905.0,6801.0,64.733,20,60,"automatic, original clocks restored",warmed final portable binary; NVIDIA device payload identical to 1.0.6; not an A/B gain claim
+1.0.7,RTX 3070 sample 2,SM86,fe32x_mlsp_c,14.774,220.0,217.853,1878.9,6801.0,67.816,20,60,"automatic, original clocks restored",warmed final portable binary; NVIDIA device payload identical to 1.0.6; not an A/B gain claim
+1.0.7,CMP 170HX,SM80,fe32x_mlsp_c,16.443,175.0,174.266,1330.2,1728.0,94.356,20,60,"automatic, original clocks restored",warmed final portable binary; NVIDIA device payload identical to 1.0.6; not an A/B gain claim

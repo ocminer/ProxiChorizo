@@ -65,7 +65,7 @@ distribution); the Windows archive brings its own. The pool's certificate is che
   token, password = the seed of your key file. Worker name = the rig name.
 * **MMPOS / SMOS:** the same tarball, launchers `mmpos-run.sh` / `smos-run.sh`; pool URL as
   above, user = token, password = key seed (see [USAGE.md](USAGE.md)).
-* **Docker (NVIDIA):** `ocminersupr/proxichorizo:1.0.6` with `TOKEN`, `KEY_FILE` (or `SEED`)
+* **Docker (NVIDIA):** `ocminersupr/proxichorizo:1.0.7` with `TOKEN`, `KEY_FILE` (or `SEED`)
   and optionally `POOL_URL` (default `stratum+tcp://proxi.suprnova.cc:3355`); see `docker/README.md`.
 
 ### Is it working?
@@ -102,23 +102,27 @@ Writing your own miner or proxy for the pool? The stratum protocol (messages, no
 share rule, error codes, a worked example) is specified in **[STRATUM-SPEC.md](STRATUM-SPEC.md)**.
 
 **Older versions:** ProxiChorizo 0.5.x speaks the pool's old HTTP protocol (port 8100),
-which stays open for a while and will then be switched off. Update to 1.0.6.
+which stays open for a while and will then be switched off. Update to 1.0.7.
 
 ## Which kernel runs on which card
 
-The platform table in `platform_profiles.h` (NVIDIA) and `opencl/proxichorizo_cl.cpp` (AMD) holds the
-measured default per GPU generation: Blackwell, Ada, Ampere GA10x, GA100 and RDNA3 / Vega were
-benchmarked (see PLATFORMS.md). A generation without measurements (Turing, RDNA2/4, anything
-unknown) is **tuned on the card itself at the first start**: the candidate kernels are measured
-for about 15 s and the winner is written to `proxichorizo-autotune.cache` next to the miner, keyed by
-card and miner version, so later starts (and every new release) use or refresh it. `--autotune`
-measures every kernel and shape, `--variant` / `--blocks` / `--iters` override everything; the
-start-up line `GPU n ...: <variant>, <blocks>x<threads>x<iters> — <reason>` says what was chosen and why.
+The platform table in `platform_profiles.h` (NVIDIA) and `opencl/proxichorizo_cl.cpp`
+(AMD) selects the measured kernel for each tested model. Models without measurements,
+including RTX 3060 / 3060 Ti, tune on the actual card at first mining start. This takes
+about a minute of timing plus compilation; OpenCL compilation can take several minutes.
+The winner is saved in `proxichorizo-autotune.cache`, separately for each physical GPU,
+processor count, driver API/runtime and miner release.
 
-A100 and H100 have separate measured profiles, selected automatically by model and compute
-capability for each GPU. The CMP 170HX runs the 1.0.5 kernel, the RTX PRO 6000 the Blackwell default;
-MIG partitions retain the generation defaults. The distribution build includes native SM90
-code for H100. See the datacenter measurements in `PLATFORMS.md` for the tested configurations.
+`--autotune` measures every kernel and launch shape; `--variant`, `--blocks` / `--groups`
+and `--iters` override the defaults. The startup line reports the selected kernel and
+launch shape. After changing power or clocks, run `--autotune` again to compare kernels
+under the new settings. The miner does not change power limits or clocks.
+
+A100 and H100 retain their separate measured profiles. The CMP 170HX, tested RTX 3070,
+4070 Ti SUPER, 5070 Ti, 5080, 5090 and RTX PRO 6000 models retain the NVIDIA ladder
+kernel. Other models and MIG partitions use the applicable fallback and tuning rules;
+see `PLATFORMS.md` for the configurations actually measured. The distribution includes
+native SM90 code for H100.
 
 ## Download
 [GitHub Releases](https://github.com/ocminer/ProxiChorizo/releases):
@@ -167,6 +171,122 @@ RTX 3070 ≈ 15 MH/s, RTX 4070 Ti SUPER ≈ 31.3 MH/s, CMP 170HX ≈ 17.0 MH/s, 
 
 ## Benchmarks
 
+### 1.0.7: select kernels by GPU model
+
+Measured GPU models retain their fastest qualified defaults. Other Ampere, Ada and
+Blackwell models compare candidate kernels on their own hardware at the first
+mining start. This includes the RTX 3060 and 3060 Ti: a 3070 measurement is no longer
+treated as a measurement of every SM86 card. The comparison includes the older
+release kernels and the current ladder kernel. Autotuning now also tests 256 blocks
+per SM, the launch size used by the measured ladder profiles.
+
+Automatic tuning results are kept per physical GPU, SM count, CUDA driver API version
+and miner version in `proxichorizo-autotune.cache` in the working directory. If you
+change clocks or power settings, remove that cache to repeat automatic tuning, or
+use `--autotune`. Explicit kernel and launch overrides still take precedence.
+Established A100/H100 profiles are retained. AMD's unmeasured models now also test
+the ladder and split kernels with their wide one-iteration launch shapes; the old
+AMD search omitted those candidates or measured them with unsuitable small launches.
+AMD cache entries include the device identity, CU count and OpenCL driver version.
+The measured AMD defaults retain their balance between fixed-job speed and job-change
+latency. No clock or power settings are applied by the miner.
+
+#### Final 1.0.7 AMD optimization measurements
+
+RX 7600 XT uses the new three-block Karatsuba field multiply. RX 7900 XTX uses
+an equivalent shorter scalar and three final cofactor doublings. Each change is
+selected only for the model where it won. MI50 retains its faster existing ladder.
+Full portable binaries are compared on the same GPU, cap, key and automatic clocks.
+
+| GPU | Cap | v1.0.6 MH/s | v1.0.7 MH/s | Change | v1.0.7 watts |
+|---|---:|---:|---:|---:|---:|
+| Radeon RX 7900 XTX | 303 W | 13.529 | 13.625 | +0.71% | 302.5 W |
+| Radeon RX 7600 XT | 155 W | 4.461 | 4.571 | +2.46% | 154.5 W |
+| Instinct MI50 | 150 W | — | 6.901 | Retained kernel | 149.9 W |
+
+XTX uses a 180-second warm-up and RX 7600 XT uses 60 seconds, each followed by
+four 60-second A/B/B/A arms. MI50 is a warmed 60-second final-build verification;
+its default device source is unchanged, and no new matched gain is claimed.
+All three cards passed the independent VRF vectors, randomized field tests,
+pipeline checks and 212,888 extended point outputs for each new kernel.
+[Exact measurements, clocks, watts and efficiency](benchmarks/amd-1.0.7.csv).
+
+Mining-mode checks against a local test pool returned 1,628 accepted shares on XTX,
+511 on RX 7600 XT and 749 on MI50, all independently
+verified with zero invalid or duplicate shares. Stale counts were
+0, 1 and 4, respectively; jobs changed during these checks.
+Measured miner CPU use was 100.10%, 1.60% and 1.16% of one core, respectively.
+The installed XTX ROCm runtime still uses about one CPU core; this limitation is unchanged.
+An interrupted 303 W XTX all-kernel tuning trial reached the conservative 95°C
+junction guard and is excluded; its isolated tuning/cache check passed at 272 W,
+peaking at 82°C. These short qualification runs do not establish long-term stability.
+
+#### Final 1.0.7 NVIDIA measurements
+
+The full portable 1.0.7 build uses the same CUDA device bytes as 1.0.6. These warmed
+60-second measurements verify the retained defaults; small differences between
+runs reflect boost, temperature and sampling, not a new NVIDIA arithmetic gain.
+Each card also passed the independent VRF vectors and randomized field tests.
+
+| GPU | Cap | MH/s | Actual watts | Core / memory MHz |
+|---|---:|---:|---:|---:|
+| RTX 5090 | 600 W | 78.990 | 599.9 | 2685 / 13801 |
+| RTX 5090 | 420 W | 69.040 | 419.9 | 2427 / 13801 |
+| RTX 5080 | 360 W | 39.430 | 290.9 | 2797 / 14805 |
+| RTX 5070 Ti | 300 W | 33.886 | 248.1 | 2782 / 13801 |
+| RTX 4070 Ti SUPER | 285 W | 31.301 | 282.1 | 2778 / 10251 |
+| RTX 3070 | 240 W | 14.930 | 230.6 | 1905 / 6801 |
+| RTX 3070 sample 2 | 220 W | 14.774 | 217.9 | 1879 / 6801 |
+| CMP 170HX | 175 W | 16.443 | 174.3 | 1330 / 1728 |
+
+[Full measurements and efficiency](benchmarks/nvidia-1.0.7.csv). The 175 W CMP
+setting was used for thermal headroom; it is distinct from the earlier 200 W
+regression audit below. A separate 600 W RTX 5090 mining-mode check against a local test pool returned
+2,267 independently verified accepted shares, zero invalid/stale/duplicate shares,
+and 2.35% miner CPU use measured as a fraction of one core.
+
+#### Regression audit against 1.0.1
+
+These are fresh measurements of the **published 1.0.1 and 1.0.6 Linux binaries**,
+not gains introduced by 1.0.7. Each row uses a warm-up followed by A/B/B/A on the
+same physical GPU, unchanged power cap and automatic clocks. NVIDIA uses the same
+benchmark target (`k=20`) in both binaries. AMD uses the release benchmark defaults.
+The reported 3070 regression was not reproduced on either tested card. Physical
+3060 and 3060 Ti cards were unavailable, so their new model-selection behavior is
+covered by host tests and their actual speed must be measured on the user's card.
+
+| GPU | Cap | v1.0.1 MH/s | v1.0.6 MH/s | Change | v1.0.6 watts |
+|---|---:|---:|---:|---:|---:|
+| RTX 4070 Ti SUPER | 285 W | 27.367 | 31.280 | +14.3% | 282.7 W |
+| RTX 5090 | 600 W | 67.470 | 78.763 | +16.7% | 600.0 W |
+| RTX 5080 | 360 W | 35.606 | 39.433 | +10.7% | 292.5 W |
+| RTX 3070 | 240 W | 13.021 | 14.940 | +14.7% | 228.1 W |
+| RTX 5070 Ti | 300 W | 29.918 | 33.889 | +13.3% | 249.0 W |
+| RTX 5090 (420 W) | 420 W | 54.572 | 67.844 | +24.3% | 419.5 W |
+| Radeon RX 7600 XT | 165 W | 4.056 | 4.520 | +11.5% | 165.4 W |
+| Radeon RX 7900 XTX | 303 W | 12.163 | 13.520 | +11.2% | 302.6 W |
+| RTX 3070 (second card) | 220 W | 12.670 | 14.657 | +15.7% | 218.4 W |
+| CMP 170HX | 200 W | 14.762 | 16.947 | +14.8% | 199.4 W |
+| Instinct MI50 | 150 W | 5.764 | 6.901 | +19.7% | 148.6 W |
+
+At 810 MHz memory, the two 3070s measured 4.99 / 4.89 MH/s on 1.0.1 and
+12.44 / 12.47 MH/s on 1.0.6. Both versions were faster at normal memory clocks.
+The table's RX 7600 XT and CMP A/B/B/A arms completed successfully; separate later
+kernel trials hit conservative thermal guards and are excluded. These short runs
+do not establish long-duration stability. Watts are driver readings and can
+slightly exceed the configured cap. Full clocks, watts and efficiency are in the
+[comparison CSV](benchmarks/release-regression-2026-11-06.csv).
+
+A separate mining-mode A/B/B/A test on the 220 W RTX 3070 used jobs changing every
+0.5–2 seconds, 90 seconds after the first rate sample per arm, and a local test pool
+with an independent CPU share verifier. Version 1.0.1 returned 10,472 accepted / 22 stale shares; 1.0.6
+returned 12,061 accepted / 93 stale. Both had zero invalid or duplicate shares.
+These stochastic counts support the throughput improvement, but are not a precise
+hashrate estimate. Miner CPU use was 100.19% versus 1.88% of one CPU core. Benchmark
+mode intentionally waits differently and its CPU use should not be read as mining
+CPU use.
+
+
 `--bench` on our own cards with platform defaults and driver-reported power. 1.0.5 numbers are matched A/B/B/A runs
 (eight 60 s arms) of the 1.0.5 release build against the published 1.0.4 binary on the same card, power cap and clocks
 (RTX 4070 Ti SUPER: single-architecture builds of the 1.0.4 and 1.0.5 sources). Pool rates are a little lower (job
@@ -192,6 +312,34 @@ CUDA CPU use: from 1.0.4 on, each GPU's worker thread sleeps while its GPU works
 
 Earlier release-over-release gains on the same cards: 1.0.2 over 1.0.1 +3.0 to +5.5 % (1.0.3 and 1.0.4 run the 1.0.2
 kernels unchanged).
+
+### Clock and power observations
+
+These sweeps use the published 1.0.6 binary and `k=32` on NVIDIA. They are separate
+from the `k=20` regression table above. Core and memory columns show the **actual
+sampled clocks**, not the requested lock value. Automatic boost, cooling and board
+firmware affect the result. Coarse sweep rows are useful operating points, not a
+claim that every possible clock combination was tested.
+
+| GPU / setting | Cap | Core / memory MHz | MH/s | Measured W | kH/s/W |
+|---|---:|---:|---:|---:|---:|
+| RTX 5090, automatic, warmed | 600 W | about 2670 / 13801 | about 79.6 | 600 | 133 |
+| RTX 5090, requested core 2600 | 600 W | 2595 / 13801 | 77.76 | 549.5 | 142 |
+| RTX 5090, automatic, matched control | 420 W | 2350 / 13801 | 67.94 | 420 | 162 |
+| RTX 5090, memory 7001, matched | 420 W | 2412 / 7001 | 69.04 | 420 | 164 |
+| RTX 5080, automatic | 360 W | 2797 / 14801 | 39.95 | 295.0 | 135 |
+| RTX 5080, requested core 2600 | 360 W | 2595 / 14801 | 37.09 | 233.6 | 159 |
+| RTX 5070 Ti, automatic | 300 W | 2782 / 13801 | 34.30 | 251.6 | 136 |
+| RTX 5070 Ti, requested core 2600 | 300 W | 2595 / 13801 | 32.05 | 206.0 | 156 |
+| RTX 4070 Ti SUPER, automatic | 285 W | about 2776 / 10251 | 31.70 | 283.4 | 112 |
+| RTX 4070 Ti SUPER, core 2700 | 285 W | 2700 / 10251 | 30.87 | 248.0 | 124 |
+| RTX 3070, automatic | 240 W | 1920 / 6801 | 15.16 | 232.9 | 65 |
+| RTX 3070, core 1800 | 240 W | 1800 / 6801 | 14.29 | 182.7 | 78 |
+
+The 420 W 5090 memory change was confirmed by A/B/B/A: **+1.63%** at the same
+power. On the 5070 Ti, 7001 MHz memory reduced power but also reduced hashrate
+by 0.68%. At 810 MHz memory every tested NVIDIA model lost hashrate. No automatic
+memory lock is enabled by this release. [All NVIDIA sweep rows and exact readings](benchmarks/clocks-nvidia-2026-11-06.csv).
 
 ### NVIDIA 1.0.6 checks
 
@@ -238,6 +386,30 @@ Checking for new jobs during a launch costs about 1 to 1.5 % more of one CPU cor
 **Blackwell ladder order.** The reordered sm_120 ladder gives +0.38 % on an RTX PRO 6000
 (600 W cap, `--bench`, measured separately with a build that has the same ladder code)
 and about +0.2 % on the RTX 5090 (table above).
+
+### AMD clock and power sweep (published 1.0.6)
+
+These are coarse 40-second trials on the same boards used above, with actual driver
+clocks and power. Core and memory DPM controls can affect both axes; they are not
+isolated memory-bandwidth experiments. The installed RDNA3 interfaces did not expose
+fine-grained overdrive controls, and their middle/high core states reached similar
+actual clocks. No firmware or driver changes were made.
+
+| GPU / setting | Cap | Actual core / memory MHz | MH/s | Watts | kH/s/W |
+|---|---:|---:|---:|---:|---:|
+| Radeon RX 7900 XTX / automatic | 303 W | 2489 / 1249 | 13.560 | 302.5 | 44.8 |
+| Radeon RX 7900 XTX / memory state 456 MHz | 303 W | 2353 / 456 | 12.712 | 222.6 | 57.1 |
+| Radeon RX 7600 XT / automatic | 155 W | 2531 / 1124 | 4.459 | 155.2 | 28.7 |
+| Radeon RX 7600 XT / memory state 456 MHz | 155 W | 2554 / 456 | 4.482 | 155.2 | 28.9 |
+| Instinct MI50 / automatic | 150 W | 1491 / 716 | 6.911 | 148.2 | 46.6 |
+| Instinct MI50 / core 1282 MHz | 150 W | 1282 / 370 | 5.924 | 104.0 | 57.0 |
+
+MI50's 1282 MHz setting trades about 14% throughput for about 30% less GPU-reported
+power. RX 7600 XT differences are small and need longer matched testing before
+calling them gains. The XTX's manual-DPM trial reduced its core boost ceiling as
+well as memory speed; an idle device reset restored the original boost afterward.
+The miner applies none of these settings. See all trials and restoration caveats
+in the [AMD clock CSV](benchmarks/clocks-amd-2026-11-06.csv).
 
 ### AMD 1.0.6 benchmarks
 
