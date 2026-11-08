@@ -1,0 +1,7 @@
+gpu,backend,version,cap_w,ghs,watts,core_mhz,prefix_bytes,seconds,method
+RTX 5090,CUDA,2.0.0,575,17.323,575,2730,600,60,--hash-bench release-style Linux build (CUDA 12.9)
+RTX 5090,CUDA,2.0.0,450,16.131,450,2542,600,60,--hash-bench release-style Linux build (CUDA 12.9)
+RTX 5070 Ti,CUDA,2.0.0,300,7.282,230,2782,600,60,--hash-bench release-style Linux build (CUDA 12.9)
+Radeon RX 7900 XTX,OpenCL,2.0.0,303,6.33,280,2465,600,60,--hash-bench portable OpenCL build; steady 5 s readings
+Instinct MI50,OpenCL,2.0.0,225,2.813,220,1690,600,20,--hash-bench portable OpenCL pre-release build (same kernel source)
+Radeon RX 7600 XT,OpenCL,2.0.0,165,2.162,163,2531,600,20,--hash-bench portable OpenCL pre-release build (same kernel source)
