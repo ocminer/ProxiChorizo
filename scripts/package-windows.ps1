@@ -9,7 +9,7 @@ New-Item -ItemType Directory -Force $stage | Out-Null
 if (!(Test-Path $Exe)) { throw "executable missing: $Exe" }
 Copy-Item $Exe "$stage/proxichorizo.exe"
 Copy-Item windows/* $stage
-Copy-Item README.md, USAGE.md, LICENSE, NOTICE, PLATFORMS.md, vectors.json $stage
+Copy-Item README.md, USAGE.md, LICENSE, NOTICE, PLATFORMS.md, STRATUM-SPEC.md, vectors.json, vectors-txid-blake2b.json $stage
 Copy-Item -Recurse benchmarks (Join-Path $stage 'benchmarks')
 if (Test-Path "RELEASE-v$Version.md") { Copy-Item "RELEASE-v$Version.md" $stage }
 # stratum+ssl:// loads OpenSSL at run time: ship OpenSSL 3's two DLLs (from the runner's OpenSSL

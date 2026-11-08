@@ -12,7 +12,7 @@ D=dist/proxichorizo-$VER
 rm -rf "$D"; mkdir -p "$D"
 cp "$BIN" "$D/proxichorizo"; strip "$D/proxichorizo" 2>/dev/null || true
 [[ -n "$CLBIN" ]] && { cp "$CLBIN" "$D/proxichorizo-cl"; strip "$D/proxichorizo-cl" 2>/dev/null || true; }
-cp README.md USAGE.md LICENSE NOTICE PLATFORMS.md vectors.json "$D/"
+cp README.md USAGE.md LICENSE NOTICE PLATFORMS.md STRATUM-SPEC.md vectors.json vectors-txid-blake2b.json "$D/"
 cp -r benchmarks "$D/benchmarks"
 [[ -f RELEASE-v$VER.md ]] && cp "RELEASE-v$VER.md" "$D/"
 printf '{"version":"%s","source_commit":"%s","ci_run":"%s","platform":"linux-x86_64","glibc_min":"%s","cuda":"%s","architectures":[75,80,86,89,90,120],"opencl":%s}\n' \

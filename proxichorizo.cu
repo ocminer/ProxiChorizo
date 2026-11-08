@@ -3487,9 +3487,32 @@ static void install_job(Shared &sh, const std::string &body) {
         if (sh.job.id != 0) logln("no job (miner idle)");
         sh.job = Job(); return;
     }
-    std::string pkh, prefixh, beath; uint64_t k = 0, ttl = 0, slot = 0;
+    std::string pkh, prefixh, beath; uint64_t k = 0, ttl = 0, slot = 0, version = 1;
     json_str(body, "pubkey", pkh); json_str(body, "alpha_prefix", prefixh); json_str(body, "beat", beath);
-    json_u64(body, "k", k); json_u64(body, "ttl_ms", ttl); json_u64(body, "slot", slot);
+    json_u64(body, "k", k); json_u64(body, "ttl_ms", ttl); json_u64(body, "slot", slot); json_u64(body, "version", version);
+    if (version == 2) {
+        // seeker protocol version 2 (proxi node mine from library upgrade 6): the transit's ID preimage without the
+        // 8-byte nonce; no key. The beat is a work key: hash[24..31] || hash[6..23] (26 bytes), smaller is better.
+        std::string msgh; json_str(body, "message", msgh);
+        Job j; j.txid = true; j.id = id; j.jid = std::to_string(id); j.slot = slot; j.k = (int)k;
+        if (!unhex(msgh, j.hprefix) || j.hprefix.empty() || j.hprefix.size() > 65536) { logln("bad message in a version 2 job"); sh.job = Job(); return; }
+        j.en1 = sh.en1; j.nonce_base = (uint64_t)j.en1 << 48; j.has_base = true;
+        std::vector<uint8_t> b; memset(j.beat, 0xff, 64);
+        if (!beath.empty() && unhex(beath, b) && b.size() == 26) { j.has_beat = true; memcpy(j.beat, b.data(), 26); }
+        j.has_ttl = ttl > 0; j.clean = true;
+        j.deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(ttl);
+        bool changed = sh.job.id != id;
+        bool modeSwitch = sh.last_job_id != 0 && !sh.last_txid;
+        sh.job = j; sh.last_job_id = id; sh.last_job_k = k; sh.last_job_at = std::chrono::steady_clock::now(); sh.last_slot = slot; sh.last_txid = true;
+        if (modeSwitch) log_ok("switched to txid-blake2b hash work (library upgrade 6) at slot " + std::to_string(slot));
+        if (changed) logln("hash job " + j.jid + ": slot " + std::to_string(slot) + ", k=" + std::to_string(k) + ", " + std::to_string(j.hprefix.size()) + "-byte message, ttl " + std::to_string(ttl) + " ms");
+        return;
+    }
+    if (!sh.have_key) {
+        if (!sh.vrf_refused_logged) { log_warn("VRF job ignored: no --key-file given; this miner mines the hash jobs of library upgrade 6 (seeker protocol version 2) without a key"); sh.vrf_refused_logged = true; }
+        sh.job = Job(); return;
+    }
+    sh.last_txid = false;
     if (pkh != hexs(sh.pk, 32)) { logln("the miner mines under key " + pkh + " but this seeker holds " + hexs(sh.pk, 32) + " — refusing the job"); sh.job = Job(); return; }
     Job j; j.id = id; j.slot = slot; j.k = (int)k;
     // a pool hands every worker its own nonce range (top 16 bits); without one
@@ -3840,6 +3863,7 @@ static void stratum_submit_txid(Shared &sh, const Job &j, uint64_t n, const uint
 // the pool takes at most this many shares of one job from a connection (it answers the rest as accepted
 // without credit); past it only a share with more work than every earlier one of the job is sent
 #define TXID_JOB_CAP 256
+static void txid_submit_http(Shared &sh, const Job &j, uint64_t n, const uint8_t hash[32], int ordinal);
 // GPU hits of job j: each is hashed again on the CPU (the reference BLAKE2b) and only a share that the CPU
 // confirms is submitted, the best work first
 static void txid_found(Shared &sh, const Job &j, const txid::HitRec *hits, unsigned n, int ordinal) {
@@ -3871,8 +3895,31 @@ static void txid_found(Shared &sh, const Job &j, const txid::HitRec *hits, unsig
             sh.cap_n++; if (f.work > sh.cap_best) sh.cap_best = f.work;
         }
         if (sh.con.verbose) logln("GPU share of job " + j.jid + ": " + std::to_string(f.work) + " zero bits (k=" + std::to_string(j.k) + ")");
-        stratum_submit_txid(sh, j, f.n, f.h, f.work, ordinal);
+        if (sh.url.stratum) stratum_submit_txid(sh, j, f.n, f.h, f.work, ordinal);
+        else txid_submit_http(sh, j, f.n, f.h, ordinal);
     }
+}
+// a solution for proxi node mine (seeker protocol version 2): only one whose work key beats the job's beat
+static void txid_submit_http(Shared &sh, const Job &j, uint64_t n, const uint8_t hash[32], int ordinal) {
+    uint8_t key[26]; memcpy(key, hash + 24, 8); memcpy(key + 8, hash + 6, 18);
+    std::string tag;
+    {
+        std::lock_guard<std::mutex> l(sh.mu);
+        tag = (size_t)ordinal < sh.gpus.size() ? gpu_tag(sh.gpus[ordinal]) : "GPU";
+        if (sh.job.id != j.id || (sh.job.has_beat && memcmp(key, sh.job.beat, 26) >= 0)) return;
+    }
+    uint8_t nb[8]; for (int i = 0; i < 8; i++) nb[i] = (uint8_t)(n >> (56 - 8 * i));
+    std::string body = "{\"id\":" + std::to_string(j.id) + ",\"nonce\":\"" + hexs(nb, 8) + "\",\"beta\":\"" + hexs(hash, 32) + "\",\"attempts\":" + std::to_string(sh.attempts.exchange(0)) + ",\"seeker\":\"" + sh.name + "\"}";
+    HttpResp r = http_do(sh.url, "POST", "/seeker/result", body, sh.token, 10);
+    if (!r.err.empty()) { log_err(tag + ": job " + j.jid + ": cannot post the solution: " + r.err); return; }
+    if (r.status == 200) {
+        bool accepted = false; std::string beath; json_bool(r.body, "accepted", accepted); json_str(r.body, "beat", beath);
+        std::vector<uint8_t> b;
+        { std::lock_guard<std::mutex> l(sh.mu); if (sh.job.id == j.id && unhex(beath, b) && b.size() == 26 && (!sh.job.has_beat || memcmp(b.data(), sh.job.beat, 26) < 0)) { memcpy(sh.job.beat, b.data(), 26); sh.job.has_beat = true; } }
+        if (accepted) { sh.solutions++; log_ok(tag + ": job " + j.jid + " SOLVED with nonce 0x" + hexs(nb, 8) + " (" + std::to_string(txid::work_bits(hash)) + " zero bits), accepted; searching for a better one"); }
+        else logln(tag + ": job " + j.jid + ": valid but beaten");
+    } else if (r.status == 409) { std::lock_guard<std::mutex> l(sh.mu); if (sh.job.id == j.id) sh.job.stale = true; }
+    else log_err(tag + ": job " + j.jid + ": solution answered HTTP " + std::to_string(r.status) + " " + r.body.substr(0, 120));
 }
 // this GPU's part of the 2^48 extranonce2 space of every job: the space split evenly between the GPUs
 static void txid_range(Shared &sh, int ordinal, uint64_t &lo, uint64_t &hi) {
@@ -4851,7 +4898,7 @@ int main(int argc, char **argv) {
     bool have_key = (!selftest.empty() || fetest || verify || !keyGiven) ? false : load_seed(seedhex, keyfile, seed);
     if (keyGiven && !have_key && selftest.empty() && !fetest && !verify) return 1;
     // without a key a stratum pool can still be mined: hash jobs (library upgrade 6) need none, VRF jobs are refused
-    bool hashOnly = !have_key && !keyGiven && proxi.rfind("stratum+", 0) == 0;
+    bool hashOnly = !have_key && !keyGiven && !proxi.empty();
     if (!have_key && !hashOnly && selftest.empty() && !fetest && !verify && bench == 0 && autotuneSecs == 0) { usage(); return 1; }
     if (!have_key) {
         // bench/tests without a key: a fixed pseudo-random seed, so the scalar
@@ -4941,6 +4988,7 @@ int main(int argc, char **argv) {
     memcpy(sh.pk, pk, 32); memcpy(sh.scalar, scalar, 32);
     sh.gpus = gstats; sh.api_bind = apiBind; sh.con = con;
     sh.have_key = have_key; sh.txid_launch_ms = txidLaunchMs;
+    if (!sh.url.stratum) sh.en1 = (uint16_t)std::random_device{}();   // solo: a random top 16 bits of the 8-byte nonce
     print_banner(sh, "CUDA");
     if (!have_key) log_warn("no --key-file: mining txid-blake2b hash jobs only (library upgrade 6, from slot 197000); VRF jobs before it need the key");
     logln("ProxiChorizo " PX_VERSION ": " + (have_key ? "key " + hexs(pk, 32) : std::string("no key (hash jobs only)")) + ", " + (sh.url.stratum ? "stratum " : "job server ") + sh.url.host + ":" + std::to_string(sh.url.port) + ", " + std::to_string(devs.size()) + " GPU(s), " + (sh.url.stratum ? "user " + sh.user : "name " + sh.name));

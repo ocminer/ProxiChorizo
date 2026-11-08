@@ -2,7 +2,8 @@
 # Writes proxichorizo.conf from the flight sheet (sourced by h-run.sh).
 #   Pool URL  -> POOL_URL  (the pool: stratum+tcp://proxi.suprnova.cc:3355, or your own proxi node mine seeker address)
 #   Wallet    -> TOKEN     (the token the pool gave you at registration / mine.seeker.token)
-#   Pass      -> SEED      (first 64 hex characters of "private_key" in the pool's proxima.key)
+#   Pass      -> SEED      (first 64 hex characters of "private_key" in the pool's proxima.key; only for VRF jobs,
+#                           optional from library upgrade 6: hash jobs need no key)
 #   Extra config: KEY=VALUE lines (DEVICES, VARIANT, THREADS, ITERS, MINER_GROUPS, API_BIND, EXTRA_ARGS)
 [[ -z $CUSTOM_URL ]] && echo -e "${RED}CUSTOM_URL is empty${NOCOLOR}" && exit 1
 [[ -z $CUSTOM_TEMPLATE ]] && echo -e "${RED}CUSTOM_TEMPLATE (wallet = pool token) is empty${NOCOLOR}" && exit 1

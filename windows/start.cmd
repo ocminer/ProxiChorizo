@@ -1,6 +1,6 @@
 @echo off
 setlocal
-rem Enter your pool token below (proxima.key from the pool must be in this directory), then double-click this file.
+rem Enter your pool token below, then double-click this file. proxima.key from the pool in this directory is used for VRF jobs (until slot 196000); hash jobs (from slot 197000) need no key.
 set "TOKEN=YOUR_TOKEN"
 set "WORKER=windows"
 set "POOL=stratum+tcp://proxi.suprnova.cc:3355"

@@ -12,6 +12,16 @@ difficulty per connection, as on any NOMP-style pool. Solo mining against your o
 
 Built for and used by the Suprnova Proxima pool: https://proxi.suprnova.cc
 
+**2.0 — the new proof of work of library upgrade 6.** On 2026-11-10 Proxima replaces the VRF
+work: from slot 196000 (about 12:03 UTC) VRF jobs end and the ledger pauses mining, and from
+slot 197000 (about 14:54 UTC) the work is the mining transaction's own ID, a BLAKE2b-256 hash
+(RFC 7693) with an 8-byte nonce at its end ("txid-blake2b"). ProxiChorizo 2.0 mines **both**:
+VRF jobs until the switch, hash jobs after it, chosen per job by the pool, without a restart.
+Update to 2.0 before the switch; from slot 196000 the pool accepts only ProxiChorizo 2.0 or
+later. Hash work needs **no key file**: after the switch the miner can run with only the
+pool URL, worker and token. Hash rates are in GH/s (RTX 5090 ≈ 16.4 GH/s at 450 W); see
+[2.0 hash benchmarks](#20-hash-work-txid-blake2b).
+
 ## How to mine (quick start)
 
 **You need:** an NVIDIA GPU (Turing or newer, driver 550+) or an AMD GPU with OpenCL,
@@ -54,7 +64,8 @@ distribution); the Windows archive brings its own. The pool's certificate is che
   Without `-u` the miner uses `--name`.
 * `-p` / `--token`: your **token**. `--token-file FILE` (first line) or the environment
   variable `PROXI_TOKEN` keep it off the command line.
-* `--key-file proxima.key`: the key file from the registration (or `--seed-hex HEX`).
+* `--key-file proxima.key`: the key file from the registration (or `--seed-hex HEX`). It is needed for
+  VRF jobs only (until slot 196000); hash jobs (from slot 197000) need no key.
 * Two rigs may use the same worker name; every connection gets its own nonce range anyway.
   Distinct names show up as separate workers in your statistics.
 
@@ -65,9 +76,9 @@ distribution); the Windows archive brings its own. The pool's certificate is che
   token, password = the seed of your key file. Worker name = the rig name.
 * **MMPOS / SMOS:** the same tarball, launchers `mmpos-run.sh` / `smos-run.sh`; pool URL as
   above, user = token, password = key seed (see [USAGE.md](USAGE.md)).
-* **Docker (NVIDIA):** `ocminersupr/proxichorizo:1.0.7` with `TOKEN`, `KEY_FILE` (or `SEED`)
+* **Docker (NVIDIA):** `ocminersupr/proxichorizo:2.0.0` with `TOKEN`, `KEY_FILE` (or `SEED`)
   and optionally `POOL_URL` (default `stratum+tcp://proxi.suprnova.cc:3355`); see `docker/README.md`.
-* **Docker (AMD):** `ocminersupr/proxichorizo:1.0.7-amd` (also `:amd`), the OpenCL miner with AMD's
+* **Docker (AMD):** `ocminersupr/proxichorizo:2.0.0-amd` (also `:amd`), the OpenCL miner with AMD's
   ROCm OpenCL runtime inside; the host needs only the amdgpu driver (`--device /dev/kfd --device /dev/dri`).
 
 ### Is it working?
@@ -172,6 +183,18 @@ Reference points (the same binary, platform defaults): RTX 5090 ≈ 78.6 MH/s (6
 RTX 3070 ≈ 15 MH/s, RTX 4070 Ti SUPER ≈ 31.3 MH/s, CMP 170HX ≈ 17.0 MH/s, one CPU core of the reference Rust seeker ≈ 37 kH/s.
 
 ## Benchmarks
+
+### 2.0: hash work (txid-blake2b)
+
+The hash search of library upgrade 6: per job the miner hashes every 128-byte block before
+the nonce once; a GPU then needs one BLAKE2b compression per attempt (two when the nonce
+crosses a block boundary) and tests only the output word that holds the work. Every share is
+hashed again on the CPU before it is sent, and every GPU passes the upgrade-6 test vectors
+and a CPU comparison of all 32 nonce positions at start (`--hash-selftest`). Measured with
+`--hash-bench` (600-byte prefix, the size of a Proxima mining transaction):
+
+HASHBENCH_TABLE
+
 
 ### 1.0.7: select kernels by GPU model
 

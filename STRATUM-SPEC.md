@@ -1,6 +1,6 @@
 # ProxiChorizo pool Stratum protocol — specification
 
-Version 1 (2026-11-05). This describes the wire protocol that ProxiChorizo ≥ 1.0.0 speaks
+Version 2 (2026-11-09; version 1 2026-11-05). This describes the wire protocol that ProxiChorizo ≥ 1.0.0 speaks
 with a Proxima (PROX) mining pool, so that other miners, proxies and tools can interoperate.
 It describes only what a client sees on the connection.
 
@@ -268,3 +268,87 @@ implementation step by step.
 The reference client is `proxichorizo.cu` (functions `stratum_client`, `stratum_notify` and
 `stratum_submit`). `scripts/independent-vectors.py` is an independent Python implementation
 of §5.3.
+
+## 9. Hash work: txid-blake2b (Proxima library upgrade 6)
+
+From **slot 197000** (library upgrade 6, 2026-11-10) Proxima's proof of work is the mining
+transaction's own **transaction ID**, and the pool sends hash jobs instead of VRF jobs. VRF work
+ends at slot 196000; between slot 196000 and 197000 the ledger pauses mining (§9.5). The
+connection, login, difficulty, extranonce sizes, the 256-shares-per-job cap and the error codes
+of §2–§7 are unchanged. ProxiChorizo ≥ 2.0.0 mines both kinds and switches per job.
+
+### 9.1 Job type
+
+`params[1]` of `mining.notify` tells the kind of job:
+
+* a 64-hex-character public key: a VRF job (§4);
+* the literal string `txid-blake2b`: a hash job.
+
+A client MUST NOT treat an unknown `params[1]` as a VRF job.
+
+### 9.2 Hash job
+
+```
+<- {"id":null,"method":"mining.notify","params":["<job id>","txid-blake2b","<prefix hex>",<prefix_len>,<slot>,<ttl ms>,<clean_jobs>]}
+```
+
+| # | field | meaning |
+|---|---|---|
+| 0 | job id | string; submitted back exactly as sent |
+| 1 | `"txid-blake2b"` | the job type |
+| 2 | prefix | hex: the transaction-ID preimage without its last 8 bytes (about 600 bytes) |
+| 3 | prefix_len | number: the prefix length in bytes (a check of field 2) |
+| 4 | slot | number: the ledger slot of the job |
+| 5 | ttl | number: milliseconds the job stays valid; a client SHOULD NOT search a job past it |
+| 6 | clean_jobs | bool: `true` = earlier jobs are void (their shares are stale) |
+
+`mining.set_difficulty` carries 2^k as for VRF jobs and applies from the next job. Hash
+difficulties are much higher (k ≈ 24–44).
+
+### 9.3 Message, hash and share rule
+
+```
+nonce   = extranonce1 (2 bytes) || extranonce2 (6 bytes)          8 bytes, in this order
+message = prefix || nonce
+hash    = BLAKE2b-256(message)        RFC 7693: unkeyed, 32-byte digest, no salt or personalisation
+work    = trailing zero bits of uint64_big_endian(hash[24..31])
+share   : work >= k
+```
+
+The extranonce2 space is 2^48 per job and connection. A client MUST NOT submit the same
+extranonce2 twice for one job (`22`); how it splits the space between its GPUs is its own
+choice.
+
+Efficient search (informative): the nonce is the last 8 bytes of the message, so the state
+after every full 128-byte block before the block holding the first nonce byte is the same for
+all attempts and is computed once per job. An attempt then costs one BLAKE2b compression (with
+the final flag and counter = message length), or two when the nonce starts in the last 7 bytes
+of a block (`prefix_len % 128` in 121..127). Only output word 3 (hash bytes 24..31) is needed
+to test a share.
+
+### 9.4 Submit
+
+```
+-> {"id":<n>,"method":"mining.submit","params":["<address>.<worker>","<job id>","<extranonce2: 12 hex>","<hash: 64 hex>"]}
+```
+
+The fourth parameter (the hash) is optional for the pool, which recomputes every share; it
+helps to find a mismatch. Answers and error codes as in §7 (`23` = work below k).
+
+### 9.5 The pause and the version gate
+
+* Between slot 196000 and 197000 (about three hours) the pool sends no jobs. It sends
+  `client.show_message` with `mining paused by the ledger until slot 197000` at the pause and
+  to clients that connect during it. A client SHOULD keep its connection, idle its GPUs and not
+  reconnect in a loop.
+* From slot 196000 the pool refuses `mining.authorize` from clients whose user agent is below
+  `ProxiChorizo/2.0.0` (pre-releases `2.0.0-rc.N` are accepted). The user agent is the first
+  parameter of `mining.subscribe` and MUST stay `ProxiChorizo/<semver>`.
+
+### 9.6 Test vectors
+
+`vectors-txid-blake2b.json`: message lengths 120, 127, 128, 129, 136, 255, 256, 608 and 640
+(before, at and after block boundaries), prefix `prefix[i] = (i*7+3) & 0xff`, extranonce1
+`0102`, extranonce2 `030405060708`, with the expected hash, its work and the first
+extranonce2 counting up from 0 with at least 12 zero bits. `--hash-selftest` checks a GPU
+against them; `tests/txid/` has the CPU test with a Python `hashlib` cross-check.

@@ -89,6 +89,9 @@ The wire protocol between miner and pool is documented in [STRATUM-SPEC.md](STRA
 
 ## 2. Solo mining — your own node and `proxi node mine`
 
+> **2.0:** solo mining through `proxi node mine` covers the VRF work (until slot 196000) only.
+> The hash work of library upgrade 6 (from slot 197000) is mined through stratum pools.
+
 Solo, the reference miner `proxi node mine` builds, proves and submits the transits with
 your wallet key and ProxiChorizo only does the nonce search for it (the "external nonce
 seeker" protocol of Proxima). You need a synced Proxima access node and the `proxi` wallet
@@ -183,7 +186,8 @@ about half of that). `--iters 8` is the best launch geometry on every AMD card m
 --check-pool URL     connect to a stratum pool, subscribe, print the answer and exit
 --token T            the account token from the pool registration (stratum password; -p, --pass) / mine.seeker.token
 --token-file FILE    read the token from a file instead (keeps it off the command line); PROXI_TOKEN in the environment works too
---key-file FILE      unencrypted proxima.key (or --seed-hex HEX, or env NONCE_SEEKER_SEED)
+--key-file FILE      unencrypted proxima.key (or --seed-hex HEX, or env NONCE_SEEKER_SEED); VRF jobs only:
+                     with a stratum pool the miner runs without a key and then mines the hash jobs only
 --name NAME          worker name shown by the pool (default proxichorizo-<pid>)
 -d 0,1,2,3           GPUs to use (default: all of them, one process, numbered in PCI bus order like nvidia-smi;
                      --gpus and --devices are the same option)
@@ -198,6 +202,9 @@ about half of that). `--iters 8` is the best launch geometry on every AMD card m
 --variant NAME       force one kernel variant (--list-variants); default: per-GPU-generation table
 --threads N --iters N --blocks N   launch geometry (defaults from the table)
 --bench [SECS]       measure the hashrate and exit      --selftest vectors.json   verify the math
+--hash-selftest      check the txid-blake2b kernels on every GPU (upgrade-6 vectors, all 32 nonce positions vs the CPU)
+--hash-bench [SECS]  measure the txid-blake2b hash rate (GH/s) and exit; --hash-prefix-len N (default 600)
+--hash-launch-ms N   target length of one hash launch (default 40)
 ```
 
 The stats API (`--api-bind`) answers `GET /` with JSON: `hashrate` (H/s), `uptime`, `shares`
@@ -205,6 +212,9 @@ The stats API (`--api-bind`) answers `GET /` with JSON: `hashrate` (H/s), `uptim
 and one `gpus[]` entry per GPU with `id`, `cuda_device`, `name`, `bus_id`, `bus_number`,
 `hashrate`, `temp`, `mem_temp`, `fan`, `power`, `clock`, `status` (`mining`, `paused`, `dead`),
 `paused`, `reason`, `accepted`, `rejected`, `stale`. Fields are only ever added, never removed.
+2.0 adds `algo` (`vrf` or `txid-blake2b`, the kind of the last job), `paused` (the ledger pause of
+library upgrade 6) and `invalid` (GPU results that failed the CPU check and were not sent).
+`hashrate` stays in H/s for both kinds of work (hash work: about 10^10 H/s per GPU).
 
 Typical rates: RTX 5090 ≈ 29 MH/s, RTX 5080 ≈ 21 MH/s, RTX 3070 ≈ 7.4 MH/s, CMP 170HX ≈ 7 MH/s. The
 work is pure integer ALU; memory, PCIe link width and risers do not matter.

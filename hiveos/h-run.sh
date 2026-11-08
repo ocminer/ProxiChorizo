@@ -5,7 +5,8 @@ cd "$(dirname "$0")" || exit 1
 [[ -f $CUSTOM_CONFIG_FILENAME ]] && . "$CUSTOM_CONFIG_FILENAME"
 [[ -z $POOL_URL ]] && echo "POOL_URL missing — set the pool (stratum+tcp://proxi.suprnova.cc:3355) in the flight sheet" && exit 1
 [[ -z $TOKEN    ]] && echo "TOKEN missing — set your pool token as the wallet template" && exit 1
-[[ -z $SEED && -z $KEY_FILE ]] && echo "SEED missing — set the key seed (64 hex) as the pass, or KEY_FILE=/path/proxima.key" && exit 1
+# the key (SEED or KEY_FILE) is needed for VRF jobs only; hash jobs (txid-blake2b, from slot 197000) need none
+[[ -z $SEED && -z $KEY_FILE ]] && echo "no SEED/KEY_FILE: mining hash jobs only (txid-blake2b, Proxima library upgrade 6); VRF jobs need the key seed as the pass"
 [[ $POOL_URL == *://* ]] || POOL_URL="http://$POOL_URL"
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 # binary: the CUDA miner with an NVIDIA driver, the OpenCL miner (AMD) otherwise or with MINER=cl

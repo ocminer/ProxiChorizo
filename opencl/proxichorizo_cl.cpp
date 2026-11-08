@@ -1019,7 +1019,7 @@ int main(int argc, char **argv) {
     memcpy(sh.pk, pk, 32); memcpy(sh.scalar, scalar, 32);
     sh.gpus = gstats; sh.api_bind = apiBind; sh.con = con;
     sh.have_key = keyGiven; sh.txid_launch_ms = txidLaunchMs;
-    if (!keyGiven && !sh.url.stratum) { fprintf(stderr, "the HTTP job server of `proxi node mine` sends VRF jobs, which need --key-file\n"); return 1; }
+    if (!sh.url.stratum) sh.en1 = (uint16_t)std::random_device{}();   // solo: a random top 16 bits of the 8-byte nonce
     print_banner(sh, "OpenCL");
     if (!keyGiven) log_warn("no --key-file: mining txid-blake2b hash jobs only (library upgrade 6, from slot 197000); VRF jobs before it need the key");
     logln("ProxiChorizo " PX_VERSION " (OpenCL): key " + hexs(pk, 32) + ", " + (sh.url.stratum ? "stratum " : "job server ") + sh.url.host + ":" + std::to_string(sh.url.port) + ", " + std::to_string(devs.size()) + " GPU(s), " + (sh.url.stratum ? "user " + sh.user : "name " + sh.name));
