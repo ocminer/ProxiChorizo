@@ -326,6 +326,17 @@ template <class Search> static inline int selfcheck(Search search, std::string &
         }
         if (first != x.first_en2) { snprintf(b, sizeof b, "vector %d (length %d): first extranonce2 with >= 12 zero bits %llx, expected %llx", v, x.prefix_len + 8, (unsigned long long)first, x.first_en2); why = b; return 1; }
     }
+    for (int v = 0; v < NNODE_VECTORS; v++) {
+        const NodeVector &x = NODE_VECTORS[v];
+        std::vector<uint8_t> prefix((size_t)x.prefix_len); for (int i = 0; i < x.prefix_len; i++) prefix[i] = (uint8_t)i;
+        const uint64_t N = 0x0102030405060708ULL;
+        uint8_t ref[32]; hash_nonce(prefix, N, ref);
+        static const char *hx = "0123456789abcdef"; std::string rh; for (int i = 0; i < 32; i++) { rh += hx[ref[i] >> 4]; rh += hx[ref[i] & 15]; }
+        if (rh != x.hash) { snprintf(b, sizeof b, "node vector %d (length %d): CPU reference hash mismatch", v, x.prefix_len + 8); why = b; return 1; }
+        Params p; prepare(prefix.data(), x.prefix_len, 0, p);
+        std::vector<HitRec> h = search(p, N, 1);
+        if (h.size() != 1 || h[0].n != N || h[0].h3 != load64le(ref + 24)) { snprintf(b, sizeof b, "node vector %d (length %d): GPU hash word differs", v, x.prefix_len + 8); why = b; return 1; }
+    }
     uint64_t seed = 0x9E3779B97F4A7C15ULL;
     for (int plen = 256; plen < 384; plen++) {
         std::vector<uint8_t> prefix((size_t)plen);
@@ -341,7 +352,7 @@ template <class Search> static inline int selfcheck(Search search, std::string &
         for (size_t i = 0; same && i < got.size(); i++) same = got[i].n == want[i].n && got[i].h3 == want[i].h3;
         if (!same) { snprintf(b, sizeof b, "kernel shape %d (message length %d): %zu GPU hits, %zu expected or different", s.kernel, plen + 8, got.size(), want.size()); why = b; return 1; }
     }
-    why = "9 upgrade-6 vectors and all 32 kernel shapes exact";
+    why = "9 pool + 11 node vectors and all 32 kernel shapes exact";
     return 0;
 }
 } // namespace txid

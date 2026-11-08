@@ -11,7 +11,8 @@ in vectors.json were generated with the Proxima node's own util/vrf package
 (https://github.com/lunfardo314/proxima, Apache-2.0); no Proxima code is distributed here.
 BLAKE2b-256 (RFC 7693) for the transaction-ID work of Proxima library upgrade 6 (2.0.0 and
 later) is implemented in this repository (txid_blake2b.h, txid_cuda.cuh, opencl/txid_blake2b.cl);
-the test vectors in vectors-txid-blake2b.json were generated with Python's hashlib.
+the test vectors in vectors-txid-blake2b.json were generated with Python's hashlib; the self-check also
+uses the hash values pinned in Proxima's mine_hash_vectors_test.go (v1.6.0), re-derived with hashlib.
 
 Binaries link the NVIDIA CUDA runtime statically under the CUDA Toolkit EULA
 (https://docs.nvidia.com/cuda/eula/); the NVIDIA driver on the host is required.

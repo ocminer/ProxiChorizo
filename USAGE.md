@@ -216,7 +216,8 @@ and one `gpus[]` entry per GPU with `id`, `cuda_device`, `name`, `bus_id`, `bus_
 library upgrade 6) and `invalid` (GPU results that failed the CPU check and were not sent).
 `hashrate` stays in H/s for both kinds of work (hash work: about 10^10 H/s per GPU).
 
-Typical rates: RTX 5090 ≈ 29 MH/s, RTX 5080 ≈ 21 MH/s, RTX 3070 ≈ 7.4 MH/s, CMP 170HX ≈ 7 MH/s. The
+Hash work (txid-blake2b, 2.0): RTX 5090 ≈ 16.4 GH/s at 450 W, RTX 5070 Ti ≈ 7.3 GH/s, RX 7900 XTX ≈ 6.3 GH/s,
+MI50 ≈ 2.8 GH/s, RX 7600 XT ≈ 2.2 GH/s (see README). VRF work (older figures): RTX 5090 ≈ 29 MH/s, RTX 5080 ≈ 21 MH/s, RTX 3070 ≈ 7.4 MH/s, CMP 170HX ≈ 7 MH/s. The
 work is pure integer ALU; memory, PCIe link width and risers do not matter.
 
 ## 6b. Kernel choice per card
