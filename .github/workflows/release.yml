@@ -58,7 +58,8 @@ jobs:
         run: |
           git config --global --add safe.directory "$PWD"
           nvcc --version | tail -2
-          nvcc -O3 -std=c++17 --threads 2 $ARCHS -Xcompiler -static-libstdc++ -Xcompiler -static-libgcc -o proxichorizo proxichorizo.cu -lpthread -ldl
+          # nvcc --threads can lose its device-link temp file (nvlink "Could not read file ...dlink.reg.c"): retry
+          for try in 1 2 3; do nvcc -O3 -std=c++17 --threads 2 $ARCHS -Xcompiler -static-libstdc++ -Xcompiler -static-libgcc -o proxichorizo proxichorizo.cu -lpthread -ldl && break; echo "nvcc attempt $try failed"; [ $try -lt 3 ] || exit 1; done
           objdump -T proxichorizo | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
       - name: build the OpenCL miner (AMD)
         run: |
@@ -94,7 +95,7 @@ jobs:
   windows:
     needs: version
     runs-on: windows-2022
-    timeout-minutes: 180
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
       - uses: Jimver/cuda-toolkit@v0.2.24
@@ -106,7 +107,9 @@ jobs:
         with: { arch: x64 }
       - name: build
         shell: cmd
-        run: nvcc -O3 -std=c++17 --threads 2 %ARCHS% -Xcompiler /MT -o proxichorizo.exe proxichorizo.cu
+        # nvcc --threads can lose its device-link temp file (nvlink "Could not read file ...dlink.reg.c"): retry
+        run: |
+          nvcc -O3 -std=c++17 --threads 2 %ARCHS% -Xcompiler /MT -o proxichorizo.exe proxichorizo.cu || nvcc -O3 -std=c++17 --threads 2 %ARCHS% -Xcompiler /MT -o proxichorizo.exe proxichorizo.cu || nvcc -O3 -std=c++17 --threads 1 %ARCHS% -Xcompiler /MT -o proxichorizo.exe proxichorizo.cu
       - name: CPU profile checks and executable startup
         shell: cmd
         run: |
