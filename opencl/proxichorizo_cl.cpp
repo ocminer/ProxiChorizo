@@ -28,6 +28,7 @@
 #include <ctime>
 #include <condition_variable>
 
+#include "../txid_blake2b.h"   // txid-blake2b work of library upgrade 6: CPU reference and per-job precomputation
 #include "host_common.inc"
 #include "kernel_blob.h"
 
@@ -420,6 +421,106 @@ static int prog_fetest(Prog *pr, uint32_t seed, int n, uint8_t dump[128]) {
 }
 static cl_mem make_job(ClDev &d, JobDev jd) { prepare_job(jd); cl_int err; cl_mem m = clCreateBuffer(d.ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof jd, (void *)&jd, &err); CL_CHECK(err); return m; }
 
+// ---- txid-blake2b (library upgrade 6): the hash search kernels of txid_blake2b.cl -------------------
+#define TX_WG 256
+struct TxProg { cl_program p = nullptr; cl_kernel k[32] = {}; ClDev *dev = nullptr; };
+static std::map<cl_device_id, TxProg *> g_txprogs;
+static TxProg *get_txprog(ClDev &dev) {
+    std::lock_guard<std::mutex> l(g_prog_mu);
+    auto it = g_txprogs.find(dev.id); if (it != g_txprogs.end()) return it->second;
+    TxProg *tp = new TxProg(); tp->dev = &dev;
+    const char *src = (const char *)TXID_CL_SRC; size_t len = TXID_CL_SRC_LEN; cl_int err;
+    tp->p = clCreateProgramWithSource(dev.ctx, 1, &src, &len, &err); CL_CHECK(err);
+    std::string opts = "-cl-std=CL1.2 -DTX_WG=" + std::to_string(TX_WG) + " -DTX_MAX_HITS=" + std::to_string(TXID_MAX_HITS) + " " + g_extra_build;
+    auto t0 = std::chrono::steady_clock::now();
+    err = clBuildProgram(tp->p, 1, &dev.id, opts.c_str(), nullptr, nullptr);
+    if (err != CL_SUCCESS) {
+        size_t ll = 0; clGetProgramBuildInfo(tp->p, dev.id, CL_PROGRAM_BUILD_LOG, 0, nullptr, &ll);
+        std::string log(ll, 0); clGetProgramBuildInfo(tp->p, dev.id, CL_PROGRAM_BUILD_LOG, ll, log.data(), nullptr);
+        fprintf(stderr, "[txid-blake2b] build failed on %s:\n%s\n", dev.name.c_str(), log.c_str()); exit(2);
+    }
+    for (int i = 0; i < 32; i++) { char nm[32]; snprintf(nm, sizeof nm, "txid_k%d", i); tp->k[i] = clCreateKernel(tp->p, nm, &err); CL_CHECK(err); }
+    logln("[txid-blake2b] built for " + dev.name + " in " + std::to_string((int)(std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() * 1000)) + " ms");
+    g_txprogs[dev.id] = tp;
+    return tp;
+}
+static cl_int tx_enqueue(TxProg *tp, cl_mem params, int kernel, uint64_t nbase, uint64_t count, cl_uint iters, cl_mem hits, cl_mem nhit, size_t groups) {
+    cl_kernel k = tp->k[kernel & 31]; cl_ulong nb = nbase, cn = count;
+    clSetKernelArg(k, 0, sizeof params, &params); clSetKernelArg(k, 1, sizeof nb, &nb); clSetKernelArg(k, 2, sizeof cn, &cn);
+    clSetKernelArg(k, 3, sizeof iters, &iters); clSetKernelArg(k, 4, sizeof hits, &hits); clSetKernelArg(k, 5, sizeof nhit, &nhit);
+    return enqueue_mining_kernel(tp->dev->q, k, groups * TX_WG, TX_WG);
+}
+// a synchronous search for the self-check
+struct ClTxSearch {
+    TxProg *tp; cl_mem params, hits, nhit;
+    explicit ClTxSearch(ClDev &d) : tp(get_txprog(d)) {
+        cl_int err;
+        params = clCreateBuffer(d.ctx, CL_MEM_READ_ONLY, sizeof(txid::Params), nullptr, &err); CL_CHECK(err);
+        hits = clCreateBuffer(d.ctx, CL_MEM_READ_WRITE, sizeof(txid::HitRec) * TXID_MAX_HITS, nullptr, &err); CL_CHECK(err);
+        nhit = clCreateBuffer(d.ctx, CL_MEM_READ_WRITE, 4, nullptr, &err); CL_CHECK(err);
+    }
+    ~ClTxSearch() { clReleaseMemObject(params); clReleaseMemObject(hits); clReleaseMemObject(nhit); }
+    std::vector<txid::HitRec> operator()(const txid::Params &p, uint64_t nbase, uint64_t count) {
+        std::vector<txid::HitRec> out; cl_command_queue q = tp->dev->q; cl_uint zero = 0;
+        CL_CHECK(clEnqueueWriteBuffer(q, params, CL_TRUE, 0, sizeof p, &p, 0, nullptr, nullptr));
+        CL_CHECK(clEnqueueWriteBuffer(q, nhit, CL_TRUE, 0, 4, &zero, 0, nullptr, nullptr));
+        cl_uint iters = 4; size_t groups = (size_t)((count + (uint64_t)TX_WG * iters - 1) / ((uint64_t)TX_WG * iters));
+        if (tx_enqueue(tp, params, (int)p.kernel, nbase, count, iters, hits, nhit, groups) != CL_SUCCESS || mining_wait(q) != CL_SUCCESS) { out.push_back(txid::HitRec{~0ULL, 0}); return out; }
+        cl_uint n = 0; CL_CHECK(clEnqueueReadBuffer(q, nhit, CL_TRUE, 0, 4, &n, 0, nullptr, nullptr));
+        n = std::min<cl_uint>(n, TXID_MAX_HITS); out.resize(n);
+        if (n) CL_CHECK(clEnqueueReadBuffer(q, hits, CL_TRUE, 0, sizeof(txid::HitRec) * n, out.data(), 0, nullptr, nullptr));
+        return out;
+    }
+};
+static int cl_txid_selfcheck(ClDev &d, std::string &why) { ClTxSearch s(d); return txid::selfcheck(std::ref(s), why); }
+// one GPU's hash search (as TxidWorker in the CUDA miner)
+struct ClTxidWorker {
+    Shared &sh; int ordinal; ClDev &d; TxProg *tp; size_t groups; cl_uint iters = 16;
+    txid::Params p; uint64_t job = 0; uint16_t en1 = 0; int k = -1; uint64_t cur = 0, lo = 0, hi = 0; bool exhausted = false, dirty = true;
+    std::map<std::pair<uint64_t, uint16_t>, uint64_t> cursors;
+    cl_mem params, d_hits, d_n; std::vector<txid::HitRec> hits;
+    ClTxidWorker(Shared &s, int ord, ClDev &dev) : sh(s), ordinal(ord), d(dev), tp(get_txprog(dev)), hits(TXID_MAX_HITS) {
+        groups = (size_t)dev.cus * 32; if (const char *e = getenv("PX_TXID_GROUPS")) groups = (size_t)atoi(e);
+        cl_int err;
+        params = clCreateBuffer(d.ctx, CL_MEM_READ_ONLY, sizeof(txid::Params), nullptr, &err); CL_CHECK(err);
+        d_hits = clCreateBuffer(d.ctx, CL_MEM_READ_WRITE, sizeof(txid::HitRec) * TXID_MAX_HITS, nullptr, &err); CL_CHECK(err);
+        d_n = clCreateBuffer(d.ctx, CL_MEM_READ_WRITE, 4, nullptr, &err); CL_CHECK(err);
+    }
+    void idle(int ms) { { std::lock_guard<std::mutex> l(sh.mu); sh.gpus[ordinal].win_idle_ms += ms; } std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }
+    void step(const Job &j) {
+        if (j.has_ttl && std::chrono::steady_clock::now() > j.deadline) { idle(10); return; }
+        if (j.id != job || j.en1 != en1) {
+            if (job) { cursors[{job, en1}] = cur; if (cursors.size() > 256) cursors.clear(); }
+            job = j.id; en1 = j.en1; k = j.k; exhausted = false; dirty = true;
+            txid::prepare(j.hprefix.data(), (int)j.hprefix.size(), k, p);
+            txid_range(sh, ordinal, lo, hi);
+            auto it = cursors.find({job, en1}); cur = it != cursors.end() ? it->second : lo;
+        } else if (j.k != k) { k = j.k; p.mask = txid::mask_for_k(k); dirty = true; }
+        if (cur >= hi) {
+            if (!exhausted) { exhausted = true; log_warn("GPU #" + std::to_string(sh.gpus[ordinal].dev) + ": searched its whole extranonce2 range of job " + j.jid + ", idle until the next job"); }
+            idle(10); return;
+        }
+        auto t0 = std::chrono::steady_clock::now();
+        cl_uint zero = 0;
+        if (dirty) { CL_CHECK(clEnqueueWriteBuffer(d.q, params, CL_FALSE, 0, sizeof p, &p, 0, nullptr, nullptr)); dirty = false; }
+        CL_CHECK(clEnqueueFillBuffer(d.q, d_n, &zero, 4, 0, 4, 0, nullptr, nullptr));
+        uint64_t per = (uint64_t)groups * TX_WG * iters, count = std::min<uint64_t>(per, hi - cur);
+        CL_CHECK(tx_enqueue(tp, params, (int)p.kernel, ((uint64_t)en1 << 48) | cur, count, iters, d_hits, d_n, groups));
+        CL_CHECK(mining_wait(d.q));
+        double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        cur += count;
+        if (count == per && ms > 0) { double want = (double)iters * sh.txid_launch_ms / ms; iters = (cl_uint)std::max(1.0, std::min(65536.0, iters * 0.5 + want * 0.5)); }
+        sh.attempts += count;
+        { std::lock_guard<std::mutex> l(sh.mu); auto &g = sh.gpus[ordinal]; g.win_attempts += count; g.win_kernel_ms += ms; g.win_launches++; g.hash = true; }
+        cl_uint n = 0; CL_CHECK(clEnqueueReadBuffer(d.q, d_n, CL_TRUE, 0, 4, &n, 0, nullptr, nullptr));
+        if (n) {
+            n = std::min<cl_uint>(n, TXID_MAX_HITS);
+            CL_CHECK(clEnqueueReadBuffer(d.q, d_hits, CL_TRUE, 0, sizeof(txid::HitRec) * n, hits.data(), 0, nullptr, nullptr));
+            txid_found(sh, j, hits.data(), n, ordinal);
+        }
+    }
+};
+
 // ---- the per-GPU worker ----------------------------------------------------------
 struct GpuCfg { int dev; int groups; int iters; const Variant *v; int ordinal = 0; };
 static void gpu_worker(Shared &sh, GpuCfg cfg) {
@@ -434,6 +535,7 @@ static void gpu_worker(Shared &sh, GpuCfg cfg) {
     uint64_t working = 0, nonce = 0;
     uint64_t stride = (uint64_t)cfg.groups * cfg.v->wg;
     Scratch *sc = scratch_alloc(pr, stride * (size_t)cfg.iters);
+    ClTxidWorker tw(sh, cfg.ordinal, d);
     logln("GPU " + std::to_string(cfg.dev) + " " + dev_label(d) + ": variant " + cfg.v->name + ", " + std::to_string(cfg.groups) + "x" + std::to_string(cfg.v->wg) + " work-items, " + std::to_string(cfg.iters) + " nonces/item/launch");
     while (!sh.stop) {
         if (!thermal_gate(sh, cfg.ordinal)) {
@@ -445,6 +547,7 @@ static void gpu_worker(Shared &sh, GpuCfg cfg) {
             { std::lock_guard<std::mutex> l(sh.mu); sh.gpus[cfg.ordinal].win_idle_ms += 10; }
             std::this_thread::sleep_for(std::chrono::milliseconds(10)); continue;
         }
+        if (j.txid) { tw.step(j); continue; }
         if (j.id != working) { working = j.id; nonce = j.has_base ? (j.nonce_base | ((uint64_t)(cfg.ordinal & 0xff) << 40)) : rng(); }
         auto k0 = std::chrono::steady_clock::now();
         JobDev jd; memset(&jd, 0, sizeof jd);
@@ -461,7 +564,7 @@ static void gpu_worker(Shared &sh, GpuCfg cfg) {
         uint64_t done = stride * cfg.iters;
         nonce += done;
         sh.attempts += done;
-        { std::lock_guard<std::mutex> l(sh.mu); auto &g = sh.gpus[cfg.ordinal]; g.win_attempts += done; g.win_kernel_ms += ms; g.win_launches++; }
+        { std::lock_guard<std::mutex> l(sh.mu); auto &g = sh.gpus[cfg.ordinal]; g.win_attempts += done; g.win_kernel_ms += ms; g.win_launches++; g.hash = false; }
         cl_uint n = 0; CL_CHECK(clEnqueueReadBuffer(d.q, d_n, CL_TRUE, 0, 4, &n, 0, nullptr, nullptr));
         if (n > 0) {
             if (n > MAX_HITS) n = MAX_HITS;
@@ -693,7 +796,11 @@ static void usage() {
         "  --verify-pipeline  complete compacted-pipeline output checks, including partial batches; exit\n"
         "  --verify           every variant over one nonce range at low difficulty must find identical hits; exit\n"
         "%s"
-        "  --bench [SECS]     measure the hashrate of the chosen variant and exit\n", CONSOLE_USAGE);
+        "  --bench [SECS]     measure the hashrate of the chosen variant and exit\n"
+        "txid-blake2b hash work (Proxima library upgrade 6, from slot 197000; needs no key, so --key-file is optional with a stratum pool):\n"
+        "  --hash-selftest    check the hash kernels on every selected GPU against the upgrade-6 vectors and the CPU, then exit\n"
+        "  --hash-bench [SECS] measure the hash rate (GH/s) on every selected GPU and exit (--hash-prefix-len N, default 600)\n"
+        "  --hash-launch-ms N target length of one hash launch (default 40)\n", CONSOLE_USAGE);
 }
 
 // -d 0,1,2,3 (also "all"): device indices, each once, within the device count
@@ -729,6 +836,7 @@ static void on_signal(int) {
 int main(int argc, char **argv) {
     std::string proxi, token, keyfile, seedhex, name, selftest, gpus, variant, apiBind, kernelFile, user, checkPool;
     int groups = 0, iters = 0; double bench = 0, autotuneSecs = 0; bool fetest = false, listVariants = false, listDevices = false, verify = false, verifyPipeline = false;
+    double txidBench = 0; bool txidSelftest = false; int txidPrefix = 600, txidLaunchMs = 40;
     ConsoleOpts con;
     sock_init();
     for (int i = 1; i < argc; i++) {
@@ -761,6 +869,10 @@ int main(int argc, char **argv) {
         else if (a == "--iters") { std::string s; next(s); iters = atoi(s.c_str()); }
         else if (a == "--bench") bench = optnum(20);
         else if (a == "--autotune") autotuneSecs = optnum(6);
+        else if (a == "--hash-bench") txidBench = optnum(20);
+        else if (a == "--hash-selftest") txidSelftest = true;
+        else if (a == "--hash-prefix-len") { std::string s; next(s); txidPrefix = atoi(s.c_str()); }
+        else if (a == "--hash-launch-ms") { std::string s; next(s); txidLaunchMs = std::max(5, std::min(1000, atoi(s.c_str()))); }
         else if (parse_console_opt(a, i, argc, argv, con)) {}
         else { fprintf(stderr, "unknown option %s\n\n", a.c_str()); usage(); return 1; }
     }
@@ -774,6 +886,49 @@ int main(int argc, char **argv) {
     if (listDevices) { for (size_t i = 0; i < g_devs.size(); i++) printf("%zu: %s, %u CUs, bus %d, platform %s\n", i, dev_label(g_devs[i]).c_str(), g_devs[i].cus, g_devs[i].bus, g_devs[i].platname.c_str()); return 0; }
     std::vector<int> devs;
     if (!parse_devices(gpus, (int)g_devs.size(), devs)) return 1;
+    // txid-blake2b (hash work, library upgrade 6): the self-check on every selected GPU, also before mining
+    auto hash_selfcheck = [&]() {
+        int rc = 0;
+        for (int dv : devs) {
+            std::string why; auto t0 = std::chrono::steady_clock::now(); int r = cl_txid_selfcheck(g_devs[dv], why);
+            fprintf(stderr, "GPU %d %s: txid-blake2b self-check %s: %s (%.1f s)\n", dv, dev_label(g_devs[dv]).c_str(), r ? "FAILED" : "passed", why.c_str(), std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+            rc |= r;
+        }
+        return rc;
+    };
+    if (txidSelftest) return hash_selfcheck();
+    if (txidBench > 0) {
+        if (hash_selfcheck()) return 1;
+        for (int dv : devs) {
+            ClDev &d = g_devs[dv]; TxProg *tp = get_txprog(d); cl_int err;
+            std::vector<uint8_t> prefix((size_t)std::max(0, txidPrefix)); for (size_t i = 0; i < prefix.size(); i++) prefix[i] = (uint8_t)(i * 31 + 7);
+            txid::Params p; txid::Shape shp = txid::prepare(prefix.data(), (int)prefix.size(), 40, p);
+            cl_mem params = clCreateBuffer(d.ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof p, &p, &err); CL_CHECK(err);
+            cl_mem hb = clCreateBuffer(d.ctx, CL_MEM_READ_WRITE, sizeof(txid::HitRec) * TXID_MAX_HITS, nullptr, &err); CL_CHECK(err);
+            cl_uint zero = 0; cl_mem nb = clCreateBuffer(d.ctx, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, 4, &zero, &err); CL_CHECK(err);
+            size_t grp = (size_t)d.cus * 32; if (const char *e = getenv("PX_TXID_GROUPS")) grp = (size_t)atoi(e);
+            cl_uint it = 8; uint64_t n = 0x0102000000000000ULL, total = 0, lastTotal = 0; int launches = 0;
+            auto t0 = std::chrono::steady_clock::now(), last = t0;
+            char bus[32]; snprintf(bus, sizeof bus, "0000:%02x:00.0", d.bus);
+            while (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < txidBench) {
+                uint64_t per = (uint64_t)grp * TX_WG * it; auto k0 = std::chrono::steady_clock::now();
+                CL_CHECK(tx_enqueue(tp, params, (int)p.kernel, n, per, it, hb, nb, grp)); CL_CHECK(mining_wait(d.q));
+                double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - k0).count();
+                n += per; total += per; launches++;
+                if (ms > 0) it = (cl_uint)std::max(1.0, std::min(65536.0, it * 0.5 + it * (double)txidLaunchMs / ms * 0.5));
+                auto now = std::chrono::steady_clock::now();
+                if (now - last >= std::chrono::seconds(5)) {
+                    fprintf(stderr, "GPU %d %s: %.3f GH/s, %s\n", dv, dev_label(d).c_str(), (total - lastTotal) / std::chrono::duration<double>(now - last).count() / 1e9, sensors_str(read_sensors(bus)).c_str());
+                    last = now; lastTotal = total;
+                }
+            }
+            double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+            fprintf(stderr, "GPU %d %s: txid-blake2b %d-byte prefix (kernel %d): %.3f GH/s over %.0f s (%d launches, %zux%dx%u)\n", dv, dev_label(d).c_str(), txidPrefix, shp.kernel, total / el / 1e9, el, launches, grp, TX_WG, it);
+            clReleaseMemObject(params); clReleaseMemObject(hb); clReleaseMemObject(nb);
+        }
+        return 0;
+    }
+
     const Variant *forced = nullptr;
     if (!variant.empty()) { forced = variantByName(variant); if (!forced) { fprintf(stderr, "unknown variant %s (--list-variants)\n", variant.c_str()); return 1; } }
 
@@ -856,13 +1011,17 @@ int main(int argc, char **argv) {
     if (bench > 0) { for (auto &c : cfgs) run_bench(get_prog(g_devs[c.dev], c.v), pk, c.groups, c.iters, bench, true); return 0; }
     if (proxi.empty()) { if (autotuneSecs > 0) return 0; usage(); return 1; }
 
+    if (hash_selfcheck()) { fprintf(stderr, "a GPU failed the txid-blake2b self-check: refusing to mine (hash shares would be wrong)\n"); return 2; }
     Shared sh;
     sh.base_url = proxi; if (!parse_url(proxi, sh.url)) return 1;
     sh.token = token; sh.name = name.empty() ? "proxichorizo-" + std::to_string(getpid()) : name;
     sh.user = user.empty() ? sh.name : user;
     memcpy(sh.pk, pk, 32); memcpy(sh.scalar, scalar, 32);
     sh.gpus = gstats; sh.api_bind = apiBind; sh.con = con;
+    sh.have_key = keyGiven; sh.txid_launch_ms = txidLaunchMs;
+    if (!keyGiven && !sh.url.stratum) { fprintf(stderr, "the HTTP job server of `proxi node mine` sends VRF jobs, which need --key-file\n"); return 1; }
     print_banner(sh, "OpenCL");
+    if (!keyGiven) log_warn("no --key-file: mining txid-blake2b hash jobs only (library upgrade 6, from slot 197000); VRF jobs before it need the key");
     logln("ProxiChorizo " PX_VERSION " (OpenCL): key " + hexs(pk, 32) + ", " + (sh.url.stratum ? "stratum " : "job server ") + sh.url.host + ":" + std::to_string(sh.url.port) + ", " + std::to_string(devs.size()) + " GPU(s), " + (sh.url.stratum ? "user " + sh.user : "name " + sh.name));
     for (auto &g : sh.gpus) if (read_sensors(g.bus).temp < 0) log_warn(gpu_tag(g) + ": no temperature sensor readable (hwmon), the thermal limit is not enforced on it");
     g_sh = &sh; signal(SIGINT, on_signal); signal(SIGTERM, on_signal);

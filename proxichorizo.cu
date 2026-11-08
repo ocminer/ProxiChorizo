@@ -1,6 +1,8 @@
 // ProxiChorizo - Copyright (c) 2026 suprnova.cc. ProxiChorizo License 1.0: free to run for mining;
 // reuse in commercial or closed-source miners needs written permission. See LICENSE.
 #include <cuda_runtime.h>
+#include <functional>
+#include "txid_cuda.cuh"   // txid-blake2b work of library upgrade 6: CPU reference, precomputation, CUDA kernels
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,7 +21,7 @@
 #include <map>
 #include <cmath>
 #include <cerrno>
-#define PX_VERSION "1.0.8"
+#define PX_VERSION "2.0.0-rc.1"
 #include <signal.h>
 // sockets: POSIX or Winsock behind four helpers
 #ifdef _WIN32
@@ -3322,6 +3324,13 @@ struct Job {
     uint8_t beat[64];
     std::chrono::steady_clock::time_point deadline;
     bool stale = false;
+    // txid-blake2b (library upgrade 6): a hash job. The message is hprefix || en1 (2 bytes) || en2 (6 bytes).
+    bool txid = false;
+    std::string jid;                   // the job id exactly as the pool sent it (submitted back as is)
+    std::vector<uint8_t> hprefix;      // the message prefix
+    uint16_t en1 = 0;                  // extranonce1 of the connection the job came on
+    bool clean = true;                 // clean_jobs: earlier jobs are void
+    bool has_ttl = false;
 };
 // ---- GPU sensors: temperature, fan, power ------------------------------------
 // Read where the driver offers them: NVML loaded at run time (NVIDIA, Linux and
@@ -3440,6 +3449,7 @@ struct Shared {
         uint64_t win_attempts = 0; double win_kernel_ms = 0, win_idle_ms = 0; int win_launches = 0;
         uint64_t accepted = 0, rejected = 0, stale = 0;
         bool paused = false, dead = false; std::string reason;
+        bool hash = false;                 // the last launch was a txid-blake2b search (rate shown in GH/s)
         std::chrono::steady_clock::time_point sens_at{}, paused_at{};
     };
     std::vector<GpuStat> gpus;
@@ -3455,8 +3465,17 @@ struct Shared {
     uint16_t en1 = 0;
     bool subscribed = false;
     uint64_t next_rpc = 100;
-    struct Pending { int ordinal; uint64_t job; };
+    struct Pending { int ordinal; uint64_t job; bool txid = false; int work = 0; };
     std::map<uint64_t, Pending> pending;
+    // dual mode (2.0): VRF jobs need the miner key; hash jobs (txid-blake2b) need none
+    bool have_key = true;
+    bool vrf_refused_logged = false;
+    std::atomic<bool> ledger_pause{false};   // the pool said mining is paused (upgrade 6: slots 196000..197000)
+    uint64_t last_slot = 0;                  // slot of the last job, for the pause message
+    bool last_txid = false;                  // the last job was a hash job
+    std::atomic<uint64_t> invalid{0};        // GPU results that failed the CPU check (never submitted)
+    uint64_t cap_job = 0; int cap_n = 0, cap_best = -1;   // per-job submit cap of the pool (256), see txid_found
+    int txid_launch_ms = 40;                 // target length of one hash launch
 };
 // console wording for one GPU: "GPU #3" by its device index (nvidia-smi order under PCI_BUS_ID)
 static std::string gpu_tag(const Shared::GpuStat &g) { return "GPU #" + std::to_string(g.dev); }
@@ -3538,6 +3557,7 @@ static std::string gpu_line(const Shared::GpuStat &g, double secs, bool verbose)
     char b[160]; std::string o = gpu_tag(g) + ": " + short_gpu_name(g.name) + " [" + short_bus(g.bus) + "] ";
     if (g.dead) return o + "DEAD (" + g.reason + ")";
     if (g.paused) { o += "PAUSED (" + g.reason + ", " + fmt_uptime((uint64_t)std::chrono::duration<double>(std::chrono::steady_clock::now() - g.paused_at).count()) + ") "; }
+    else if (g.hash) { snprintf(b, sizeof b, "%.3f GH/s, ", g.rate / 1e9); o += b; }
     else { snprintf(b, sizeof b, "%.2f MH/s, ", g.rate / 1e6); o += b; }
     o += sensors_str(g.sens);
     if (verbose && secs > 0) {
@@ -3554,7 +3574,7 @@ static void console(Shared &sh) {
         auto now = std::chrono::steady_clock::now();
         if (now - last < std::chrono::seconds(sh.con.logInterval)) continue;
         double secs = std::chrono::duration<double>(now - last).count(); last = now;
-        std::vector<Shared::GpuStat> snap; uint64_t id, k; int alive = 0;
+        std::vector<Shared::GpuStat> snap; uint64_t id, k; int alive = 0; bool txidJob = false; std::string jidStr;
         {
             std::lock_guard<std::mutex> l(sh.mu);
             for (auto &g : sh.gpus) {
@@ -3563,7 +3583,7 @@ static void console(Shared &sh) {
                 g.win_attempts = 0; g.win_kernel_ms = g.win_idle_ms = 0; g.win_launches = 0;
                 if (!g.dead) alive++;
             }
-            id = sh.job.id; k = sh.job.k;
+            id = sh.job.id; k = sh.job.k; txidJob = sh.job.txid; jidStr = sh.job.jid;
             // a pool retires its job for a few milliseconds at every round boundary: a snapshot
             // inside that gap is not "no job"; say so only after 10 s without one
             if (id == 0 && sh.last_job_id && now - sh.last_job_at < std::chrono::seconds(10)) { id = sh.last_job_id; k = sh.last_job_k; }
@@ -3578,14 +3598,18 @@ static void console(Shared &sh) {
             else logln(gpu_line(g, secs, sh.con.verbose));
         }
         char b[256];
-        snprintf(b, sizeof b, "Total: %.2f MH/s on %d/%zu GPUs", total / 1e6, alive, snap.size());
+        bool hash = false; for (auto &g : snap) hash = hash || g.hash;
+        if (hash) snprintf(b, sizeof b, "Total: %.3f GH/s on %d/%zu GPUs", total / 1e9, alive, snap.size());
+        else snprintf(b, sizeof b, "Total: %.2f MH/s on %d/%zu GPUs", total / 1e6, alive, snap.size());
         std::string line = b;
-        if (have_watts) { snprintf(b, sizeof b, ", %.0f W (%.3f MH/W)", watts, watts > 0 ? total / 1e6 / watts : 0.0); line += b; }
+        if (have_watts) { if (hash) snprintf(b, sizeof b, ", %.0f W (%.1f MH/J)", watts, watts > 0 ? total / 1e6 / watts : 0.0); else snprintf(b, sizeof b, ", %.0f W (%.3f MH/W)", watts, watts > 0 ? total / 1e6 / watts : 0.0); line += b; }
         snprintf(b, sizeof b, " | accepted %llu, rejected %llu, stale %llu",
                  (unsigned long long)sh.shares.load(), (unsigned long long)sh.rejected.load(), (unsigned long long)sh.stale.load());
         line += b;
         if (sh.solutions.load()) line += ", solutions " + std::to_string(sh.solutions.load());
-        line += id ? " | job " + std::to_string(id) + " k=" + std::to_string(k) : " | no job";
+        if (sh.invalid.load()) line += ", invalid " + std::to_string(sh.invalid.load());
+        if (id && txidJob) line += " | hash job " + jidStr + " k=" + std::to_string(k);
+        else line += id ? " | job " + std::to_string(id) + " k=" + std::to_string(k) : sh.ledger_pause ? " | mining paused by the ledger until slot 197000" : " | no job";
         line += " | uptime " + fmt_uptime(std::chrono::duration_cast<std::chrono::seconds>(now - sh.started).count());
         if (id == 0) log_warn(line); else logc(C_BOLD, line);
     }
@@ -3653,7 +3677,8 @@ static void print_banner(Shared &sh, const char *backend) {
     bannerln("      ProxiChorizo License 1.0: free to run for mining; commercial or closed-source reuse needs written permission");
     if (sh.url.stratum) bannerln(std::string("      pool:    ") + (sh.url.tls ? "stratum+ssl://" : "stratum+tcp://") + sh.url.host + ":" + std::to_string(sh.url.port) + "   user: " + sh.user);
     else bannerln("      pool:    http://" + sh.url.host + ":" + std::to_string(sh.url.port) + "   worker: " + sh.name);
-    bannerln("      key:     " + hexs(sh.pk, 32));
+    bannerln(sh.have_key ? "      key:     " + hexs(sh.pk, 32) + " (VRF jobs)" : std::string("      key:     none: txid-blake2b hash jobs only (library upgrade 6)"));
+    bannerln("      work:    VRF jobs until slot 196000, txid-blake2b hash jobs from slot 197000, switched per job");
     bannerln("      GPUs:    " + std::to_string(sh.gpus.size()) + " selected (GPU numbers follow the PCI bus order, as nvidia-smi lists them)");
     for (auto &g : sh.gpus) bannerln("      " + gpu_tag(g) + ": " + short_gpu_name(g.name) + " [" + short_bus(g.bus) + "] " + g.arch + ", " + g.variant + " " + g.geometry);
     char b[160];
@@ -3795,8 +3820,109 @@ static void stratum_share_answer(Shared &sh, const Shared::Pending &pd, const JV
     else log_err(tag + ": share REJECTED (" + std::to_string(code) + " " + why + ") of job " + std::to_string(pd.job) + t);
 }
 
+// ---- txid-blake2b shares (library upgrade 6) --------------------------------------------------------
+// a hash share: ["<user>","<job id>","<extranonce2: 12 hex>","<hash: 64 hex>"]
+static void stratum_submit_txid(Shared &sh, const Job &j, uint64_t n, const uint8_t hash[32], int work, int ordinal) {
+    std::string tag; { std::lock_guard<std::mutex> l(sh.mu); tag = (size_t)ordinal < sh.gpus.size() ? gpu_tag(sh.gpus[ordinal]) : "GPU"; }
+    uint64_t id;
+    {
+        std::lock_guard<std::mutex> l(sh.wmu);
+        if (sh.sfd == SOCK_INVALID || !sh.subscribed) { log_warn(tag + ": share of job " + j.jid + " dropped, not connected"); return; }
+        if (sh.en1 != j.en1 || (uint16_t)(n >> 48) != j.en1) { log_warn(tag + ": share of job " + j.jid + " dropped, it belongs to an earlier connection"); return; }
+        id = sh.next_rpc++;
+        Shared::Pending pd{ordinal, j.id}; pd.txid = true; pd.work = work;
+        sh.pending[id] = pd;
+    }
+    char e2[16]; snprintf(e2, sizeof e2, "%012llx", (unsigned long long)(n & 0xffffffffffffULL));
+    std::string line = "{\"id\":" + std::to_string(id) + ",\"method\":\"mining.submit\",\"params\":[" + jstr(sh.user) + "," + jstr(j.jid) + "," + jstr(e2) + "," + jstr(hexs(hash, 32)) + "]}";
+    if (!stratum_send(sh, line)) { std::lock_guard<std::mutex> l(sh.wmu); sh.pending.erase(id); log_warn(tag + ": share of job " + j.jid + " not sent, connection lost"); }
+}
+// the pool takes at most this many shares of one job from a connection (it answers the rest as accepted
+// without credit); past it only a share with more work than every earlier one of the job is sent
+#define TXID_JOB_CAP 256
+// GPU hits of job j: each is hashed again on the CPU (the reference BLAKE2b) and only a share that the CPU
+// confirms is submitted, the best work first
+static void txid_found(Shared &sh, const Job &j, const txid::HitRec *hits, unsigned n, int ordinal) {
+    struct Found { uint64_t n; int work; uint8_t h[32]; };
+    std::vector<Found> ok; ok.reserve(n);
+    std::vector<uint8_t> msg(j.hprefix); msg.resize(j.hprefix.size() + 8);
+    for (unsigned i = 0; i < n; i++) {
+        Found f; f.n = hits[i].n;
+        for (int b = 0; b < 8; b++) msg[j.hprefix.size() + b] = (uint8_t)(f.n >> (56 - 8 * b));
+        txid::blake2b256(msg.data(), msg.size(), f.h);
+        f.work = txid::work_bits(f.h);
+        if (f.work < j.k || txid::load64le(f.h + 24) != hits[i].h3 || (uint16_t)(f.n >> 48) != j.en1) {
+            uint64_t bad = ++sh.invalid;
+            char e2[16]; snprintf(e2, sizeof e2, "%012llx", (unsigned long long)(f.n & 0xffffffffffffULL));
+            if (bad <= 10 || bad % 1000 == 0) log_err("GPU result of job " + j.jid + " (extranonce2 " + e2 + ") failed the CPU check — not submitted (" + std::to_string(bad) + " so far)");
+            continue;
+        }
+        ok.push_back(f);
+    }
+    std::sort(ok.begin(), ok.end(), [](const Found &a, const Found &b) { return a.work > b.work; });
+    for (auto &f : ok) {
+        {
+            std::lock_guard<std::mutex> l(sh.mu);
+            const Job &cur = sh.job;
+            if (cur.id != j.id && (cur.id == 0 || cur.clean)) return;   // replaced (clean_jobs): the pool would answer stale
+            if (cur.id == j.id && cur.stale) return;
+            if (sh.cap_job != j.id) { sh.cap_job = j.id; sh.cap_n = 0; sh.cap_best = -1; }
+            if (sh.cap_n >= TXID_JOB_CAP && f.work <= sh.cap_best) continue;
+            sh.cap_n++; if (f.work > sh.cap_best) sh.cap_best = f.work;
+        }
+        if (sh.con.verbose) logln("GPU share of job " + j.jid + ": " + std::to_string(f.work) + " zero bits (k=" + std::to_string(j.k) + ")");
+        stratum_submit_txid(sh, j, f.n, f.h, f.work, ordinal);
+    }
+}
+// this GPU's part of the 2^48 extranonce2 space of every job: the space split evenly between the GPUs
+static void txid_range(Shared &sh, int ordinal, uint64_t &lo, uint64_t &hi) {
+    size_t g; { std::lock_guard<std::mutex> l(sh.mu); g = sh.gpus.size(); }
+    int b = 0; while (((size_t)1 << b) < g) b++;
+    uint64_t per = (1ULL << 48) >> b;
+    lo = per * (uint64_t)ordinal; hi = lo + per;
+}
+
 // mining.notify: the job, under the difficulty last set
+// a txid-blake2b job (library upgrade 6): ["<job id>","txid-blake2b","<prefix hex>",<prefix_len>,<slot>,<ttl ms>,<clean_jobs>]
+static void stratum_notify_txid(Shared &sh, const JV &params, int &cur_k, int &pending_k) {
+    const JV *jid = params.at(0), *pre = params.at(2), *plen = params.at(3), *slot = params.at(4), *ttl = params.at(5), *clean = params.at(6);
+    if (!jid || jid->t != JV::STR || jid->s.empty() || !pre || pre->t != JV::STR || !plen || plen->t != JV::NUM || !slot || slot->t != JV::NUM) { log_err("stratum: malformed txid-blake2b mining.notify"); return; }
+    if (pending_k >= 0) { cur_k = pending_k; pending_k = -1; }
+    if (cur_k <= 0) { log_err("stratum: mining.notify before mining.set_difficulty"); return; }
+    Job j; j.txid = true; j.jid = jid->s; j.slot = (uint64_t)slot->n; j.k = cur_k;
+    if (!unhex(pre->s, j.hprefix) || j.hprefix.empty() || j.hprefix.size() > 65536 || (double)j.hprefix.size() != plen->n) { log_err("stratum: txid-blake2b prefix is not " + std::to_string((long long)plen->n) + " bytes of hex"); return; }
+    // the job id as a number for the share bookkeeping: hex as the pool writes it, else a hash of the string
+    char *end = nullptr; uint64_t id = strtoull(j.jid.c_str(), &end, 16);
+    if (!end || *end || id == 0) { id = 1469598103934665603ULL; for (unsigned char c : j.jid) { id ^= c; id *= 1099511628211ULL; } id |= 1ULL << 63; }
+    j.id = id;
+    { std::lock_guard<std::mutex> l(sh.wmu); j.en1 = sh.en1; }
+    j.nonce_base = (uint64_t)j.en1 << 48; j.has_base = true;
+    j.has_beat = false; memset(j.beat, 0xff, 64);
+    j.clean = !clean || clean->t != JV::BOOL || clean->b;
+    j.has_ttl = ttl && ttl->t == JV::NUM && ttl->n > 0;
+    j.deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(j.has_ttl ? (int64_t)ttl->n : 0);
+    bool resumed = sh.ledger_pause.exchange(false);
+    std::lock_guard<std::mutex> l(sh.mu);
+    bool changed = sh.job.id != id;
+    bool modeSwitch = sh.last_job_id != 0 && !sh.last_txid;
+    sh.last_txid = true;
+    sh.job = j; sh.last_job_id = id; sh.last_job_k = (uint64_t)cur_k; sh.last_job_at = std::chrono::steady_clock::now(); sh.last_slot = j.slot;
+    if (resumed) log_ok("the pool sends work again: txid-blake2b hash jobs from slot " + std::to_string(j.slot));
+    if (modeSwitch) log_ok("switched to txid-blake2b hash work (library upgrade 6) at slot " + std::to_string(j.slot));
+    if (changed && sh.con.verbose) logln("hash job " + j.jid + ": slot " + std::to_string(j.slot) + ", k=" + std::to_string(cur_k) + ", " + std::to_string(j.hprefix.size()) + "-byte prefix, ttl " + std::to_string(j.has_ttl ? (int64_t)ttl->n : 0) + " ms" + (j.clean ? "" : ", not clean"));
+}
+
 static void stratum_notify(Shared &sh, const JV &params, int &cur_k, int &pending_k) {
+    { const JV *kind = params.at(1); if (kind && kind->t == JV::STR && kind->s == "txid-blake2b") { stratum_notify_txid(sh, params, cur_k, pending_k); return; }
+      if (kind && kind->t == JV::STR && kind->s.size() != 64) { log_err("stratum: unknown job type \"" + kind->s.substr(0, 40) + "\" — this miner knows VRF and txid-blake2b jobs; is there a newer ProxiChorizo?"); std::lock_guard<std::mutex> l(sh.mu); sh.job = Job(); return; } }
+    if (!sh.have_key) {
+        // VRF work needs the miner's key; after library upgrade 6 the pool sends hash jobs, which need none
+        if (pending_k >= 0) { cur_k = pending_k; pending_k = -1; }
+        std::lock_guard<std::mutex> l(sh.mu);
+        if (!sh.vrf_refused_logged) { log_warn("VRF job ignored: no --key-file given. VRF work ends at slot 196000 (library upgrade 6); this miner mines the hash jobs that follow (from slot 197000) without a key."); sh.vrf_refused_logged = true; }
+        sh.job = Job(); return;
+    }
+    sh.ledger_pause = false;
     const JV *jid = params.at(0), *pk = params.at(1), *slot = params.at(3), *alpha = params.at(4), *ttl = params.at(5);
     if (!jid || jid->t != JV::STR || !pk || !slot || !alpha || !ttl) { log_err("stratum: malformed mining.notify"); return; }
     if (pending_k >= 0) { cur_k = pending_k; pending_k = -1; }
@@ -3811,10 +3937,30 @@ static void stratum_notify(Shared &sh, const JV &params, int &cur_k, int &pendin
     j.deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds((int64_t)ttl->n);
     std::lock_guard<std::mutex> l(sh.mu);
     bool changed = sh.job.id != id;
-    sh.job = j; sh.last_job_id = id; sh.last_job_k = (uint64_t)cur_k; sh.last_job_at = std::chrono::steady_clock::now();
+    sh.job = j; sh.last_job_id = id; sh.last_job_k = (uint64_t)cur_k; sh.last_job_at = std::chrono::steady_clock::now(); sh.last_slot = j.slot; sh.last_txid = false;
     if (changed && sh.con.verbose) logln("job " + jid->s + ": slot " + std::to_string(j.slot) + ", k=" + std::to_string(cur_k) + ", ttl " + std::to_string((int64_t)ttl->n) + " ms");
 }
 
+// Library upgrade 6 pauses mining between slot 196000 (the end of VRF work) and slot 197000 (hash work):
+// the pool keeps the connection and sends no job. The miner idles its GPUs and keeps the connection.
+#define TXID_PAUSE_FROM 196000
+#define TXID_PAUSE_UNTIL 197000
+static void enter_ledger_pause(Shared &sh, const char *why) {
+    if (sh.ledger_pause.exchange(true)) return;
+    { std::lock_guard<std::mutex> l(sh.mu); sh.job = Job(); }
+    log_warn(std::string("mining paused by the ledger until slot 197000 (") + why + "); the GPUs idle, the connection stays open");
+}
+// a job that is not replaced: idle 60 s after its ttl (hash jobs stop at the ttl itself, in the worker)
+static void expire_job(Shared &sh) {
+    std::string msg;
+    {
+        std::lock_guard<std::mutex> l(sh.mu);
+        if (sh.job.id == 0 || std::chrono::steady_clock::now() < sh.job.deadline + std::chrono::seconds(60)) return;
+        msg = "job " + (sh.job.txid ? sh.job.jid : std::to_string(sh.job.id)) + " (slot " + std::to_string(sh.job.slot) + ") was not replaced 60 s after its ttl: idle until the pool sends work";
+        sh.job = Job();
+    }
+    log_warn(msg);
+}
 // the connection: subscribe, authorize, then jobs in and shares out until it breaks; reconnects with backoff
 static void stratum_client(Shared &sh) {
     int backoff = 1;
@@ -3827,6 +3973,20 @@ static void stratum_client(Shared &sh) {
             backoff = std::min(backoff * 2, 30); continue;
         }
         int one = 1; setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, (const char *)&one, sizeof one);
+        // the ledger pause of upgrade 6 is ~3 hours without a message: TCP keepalive probes find a dead connection
+        { int idle = 60, intvl = 15, cnt = 4; (void)idle; (void)intvl; (void)cnt;
+#if defined(TCP_KEEPIDLE)
+          setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, (const char *)&idle, sizeof idle);
+#elif defined(TCP_KEEPALIVE)
+          setsockopt(fd, IPPROTO_TCP, TCP_KEEPALIVE, (const char *)&idle, sizeof idle);
+#endif
+#if defined(TCP_KEEPINTVL)
+          setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, (const char *)&intvl, sizeof intvl);
+#endif
+#if defined(TCP_KEEPCNT)
+          setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, (const char *)&cnt, sizeof cnt);
+#endif
+        }
         void *ssl = nullptr;
         if (sh.url.tls) {
             ssl = tls::open(fd, sh.url.host, err);
@@ -3863,8 +4023,15 @@ static void stratum_client(Shared &sh) {
                 }
             } else { n = recv(fd, rb, (int)sizeof rb, 0); timedOut = n < 0 && sock_timed_out(); }
             if (timedOut) {
-                // a pool sends a job about every slot; three minutes of silence is a dead connection
-                if (std::chrono::steady_clock::now() - last_rx > std::chrono::minutes(3)) { log_warn("stratum: no message for 3 minutes"); break; }
+                expire_job(sh);
+                // a pool sends a job about every slot; three minutes of silence is a dead connection, except in
+                // the ledger pause of upgrade 6 (slots 196000..197000), when the pool sends nothing for hours
+                if (std::chrono::steady_clock::now() - last_rx > std::chrono::minutes(3)) {
+                    uint64_t slot; { std::lock_guard<std::mutex> l(sh.mu); slot = sh.last_slot; }
+                    if (sh.ledger_pause) continue;
+                    if (slot + 100 >= TXID_PAUSE_FROM && slot < TXID_PAUSE_UNTIL) { enter_ledger_pause(sh, "no job after the last VRF slot"); continue; }
+                    log_warn("stratum: no message for 3 minutes"); break;
+                }
                 continue;
             }
             if (n <= 0) { log_warn("stratum: connection closed by the pool"); break; }
@@ -3890,7 +4057,13 @@ static void stratum_client(Shared &sh) {
                         if (sh.con.verbose) logln("stratum: difficulty 2^" + std::to_string(pending_k) + " from the next job");
                     } else if (method->s == "mining.notify") stratum_notify(sh, pa, cur_k, pending_k);
                     else if (method->s == "client.reconnect") { log_warn("stratum: the pool asks to reconnect"); reconnect = true; break; }
-                    else if (method->s == "client.show_message") { if (const JV *m = pa.at(0)) logln("pool: " + m->s); }
+                    else if (method->s == "client.show_message") {
+                        if (const JV *m = pa.at(0)) {
+                            logln("pool: " + m->s);
+                            std::string low = m->s; for (auto &c : low) c = (char)tolower((unsigned char)c);
+                            if (low.find("paused") != std::string::npos) enter_ledger_pause(sh, "the pool says so");
+                        }
+                    }
                     continue;
                 }
                 uint64_t id = idv && idv->t == JV::NUM ? (uint64_t)idv->n : 0;
@@ -3992,6 +4165,65 @@ static void submit(Shared &sh, const Job &j, uint64_t nonce, const uint8_t beta[
 
 struct GpuCfg { int dev; int blocks; int threads; int iters; const VariantOps *ops; int ordinal = 0; };
 
+// One GPU's txid-blake2b search: per job the precomputation (txid::prepare), then launches over this GPU's
+// extranonce2 range, never repeating an extranonce2 within a job (the cursor survives a job's re-send).
+struct TxidWorker {
+    Shared &sh; int ordinal; unsigned grid; uint32_t iters = 64; float last_ms = 0;
+    txid::Params p; uint64_t job = 0; uint16_t en1 = 0; int k = -1; uint64_t cur = 0, lo = 0, hi = 0; bool exhausted = false;
+    std::map<std::pair<uint64_t, uint16_t>, uint64_t> cursors;
+    txid::HitRec *d_hits = nullptr; unsigned *d_n = nullptr; std::vector<txid::HitRec> hits; cudaEvent_t e0, e1;
+    TxidWorker(Shared &s, int ord, int sms) : sh(s), ordinal(ord), hits(TXID_MAX_HITS) {
+        grid = (unsigned)sms * 16;
+        if (const char *e = getenv("PX_TXID_GRID")) grid = (unsigned)atoi(e);
+        CUDA_CHECK(cudaMalloc(&d_hits, sizeof(txid::HitRec) * TXID_MAX_HITS)); CUDA_CHECK(cudaMalloc(&d_n, sizeof(unsigned)));
+        CUDA_CHECK(cudaEventCreate(&e0)); CUDA_CHECK(cudaEventCreate(&e1));
+    }
+    void idle(int ms) { { std::lock_guard<std::mutex> l(sh.mu); sh.gpus[ordinal].win_idle_ms += ms; } std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }
+    // one launch; false on a CUDA error (fail says which)
+    bool step(const Job &j, std::string &fail) {
+        if (j.has_ttl && std::chrono::steady_clock::now() > j.deadline) { idle(10); return true; }   // expired: no grinding past the ttl
+        if (j.id != job || j.en1 != en1) {
+            if (job) { cursors[{job, en1}] = cur; if (cursors.size() > 256) cursors.clear(); }
+            job = j.id; en1 = j.en1; k = j.k; exhausted = false;
+            txid::prepare(j.hprefix.data(), (int)j.hprefix.size(), k, p);
+            txid_range(sh, ordinal, lo, hi);
+            auto it = cursors.find({job, en1}); cur = it != cursors.end() ? it->second : lo;
+        } else if (j.k != k) { k = j.k; p.mask = txid::mask_for_k(k); }
+        if (cur >= hi) {
+            if (!exhausted) { exhausted = true; log_warn("GPU #" + std::to_string(sh.gpus[ordinal].dev) + ": searched its whole extranonce2 range of job " + j.jid + ", idle until the next job"); }
+            idle(10); return true;
+        }
+        uint64_t per = (uint64_t)grid * TXID_TPB * iters, count = std::min<uint64_t>(per, hi - cur);
+#define TX_TRY(x) if (cudaError_t e_ = (x)) { fail = std::string(cudaGetErrorString(e_)) + " in " #x; return false; }
+        TX_TRY(cudaMemsetAsync(d_n, 0, sizeof(unsigned)));
+        TX_TRY(cudaEventRecord(e0));
+        txid::launch(grid, TXID_TPB, 0, p, ((uint64_t)en1 << 48) | cur, count, iters, d_hits, d_n);
+        TX_TRY(cudaGetLastError());
+        TX_TRY(cudaEventRecord(e1));
+        { cudaError_t q0 = cudaEventQuery(e1); if (q0 != cudaSuccess && q0 != cudaErrorNotReady) { TX_TRY(q0); } }   // flush (WDDM)
+        // sleep through most of the launch, then poll: no CPU core spins
+        if (last_ms > 3.0f) std::this_thread::sleep_for(std::chrono::microseconds((int64_t)((last_ms - 1.5f) * 1000.0f)));
+        for (;;) { cudaError_t q = cudaEventQuery(e1); if (q == cudaSuccess) break; if (q != cudaErrorNotReady) { TX_TRY(q); } std::this_thread::sleep_for(std::chrono::microseconds(200)); }
+        float ms = 0; TX_TRY(cudaEventElapsedTime(&ms, e0, e1));
+        cur += count;
+        if (count == per && ms > 0) {
+            double want = (double)iters * sh.txid_launch_ms / ms;
+            iters = (uint32_t)std::max(4.0, std::min(65536.0, iters * 0.5 + want * 0.5));
+        }
+        last_ms = count == per ? ms : last_ms;
+        sh.attempts += count;
+        { std::lock_guard<std::mutex> l(sh.mu); auto &g = sh.gpus[ordinal]; g.win_attempts += count; g.win_kernel_ms += ms; g.win_launches++; g.hash = true; }
+        unsigned n = 0; TX_TRY(cudaMemcpy(&n, d_n, sizeof n, cudaMemcpyDeviceToHost));
+        if (n) {
+            n = std::min<unsigned>(n, TXID_MAX_HITS);
+            TX_TRY(cudaMemcpy(hits.data(), d_hits, sizeof(txid::HitRec) * n, cudaMemcpyDeviceToHost));
+            txid_found(sh, j, hits.data(), n, ordinal);
+        }
+#undef TX_TRY
+        return true;
+    }
+};
+
 // A CUDA failure inside the mining loop ends this worker only (gpu_failed marks the
 // GPU dead, the other workers keep going); set-up failures before the loop still abort.
 #define GPU_TRY(x) if (cudaError_t e_ = (x)) { fail = std::string(cudaGetErrorString(e_)) + " in " #x; break; }
@@ -4027,12 +4259,16 @@ static void gpu_worker(Shared &sh, GpuCfg cfg) {
     double failAfter = -1; auto t_start = std::chrono::steady_clock::now();
     if (const char *e = getenv("PX_TEST_FAIL_GPU")) { int d = -1; double s = 0; if (sscanf(e, "%d:%lf", &d, &s) == 2 && d == cfg.dev) failAfter = s; }
     std::string fail;
+    // txid-blake2b (hash jobs): launch geometry (TXID_TPB threads, SMs x 16 blocks, iterations adapted so a launch
+    // takes ~txid_launch_ms), this GPU's extranonce2 range and the per-job cursor in it
+    TxidWorker tw(sh, cfg.ordinal, prop.multiProcessorCount);
     while (!sh.stop) {
         if (!thermal_gate(sh, cfg.ordinal)) {
             { std::lock_guard<std::mutex> l(sh.mu); sh.gpus[cfg.ordinal].win_idle_ms += 1000; }
             std::this_thread::sleep_for(std::chrono::seconds(1)); continue;
         }
         Job j; { std::lock_guard<std::mutex> l(sh.mu); j = sh.job; }
+        if (j.id != 0 && !j.stale && j.txid) { if (!tw.step(j, fail)) break; continue; }
         // past its ttl a job is still the current one until the miner replaces it or
         // answers 409, so keep searching: an idle GPU earns nothing, a late solution
         // costs one refused post
@@ -4110,7 +4346,7 @@ static void gpu_worker(Shared &sh, GpuCfg cfg) {
         if (sh.con.verbose && job_replaced(j.id)) logln("GPU #" + std::to_string(cfg.dev) + ": job replaced during a complete launch of " + std::to_string((int)ms) + " ms, results stale");
         nonce += done;
         sh.attempts += done;
-        { std::lock_guard<std::mutex> l(sh.mu); auto &g = sh.gpus[cfg.ordinal]; g.win_attempts += done; g.win_kernel_ms += ms; g.win_launches++; }
+        { std::lock_guard<std::mutex> l(sh.mu); auto &g = sh.gpus[cfg.ordinal]; g.win_attempts += done; g.win_kernel_ms += ms; g.win_launches++; g.hash = false; }
         unsigned n = 0; GPU_TRY(cudaMemcpy(&n, d_n, sizeof n, cudaMemcpyDeviceToHost));
         if (n > 0) {
             if (n > MAX_HITS) n = MAX_HITS;
@@ -4169,7 +4405,7 @@ static std::string stats_json(Shared &sh, bool mmpos) {
     return "{\"miner\":\"ProxiChorizo\",\"version\":\"" PX_VERSION "\",\"uptime\":" + std::to_string(up) + ",\"hashrate\":" + t + ",\"power\":" + w +
            ",\"hashrate_units\":\"hs\",\"shares\":{\"accepted\":" + std::to_string(acc) + ",\"rejected\":" + std::to_string(rej) + ",\"stale\":" + std::to_string(stale) + "},\"solutions\":" +
            std::to_string(sh.solutions.load()) + ",\"job_server\":\"" + json_escape(sh.url.host) + ":" + std::to_string(sh.url.port) + "\",\"worker\":\"" +
-           json_escape(sh.name) + "\",\"job_k\":" + std::to_string(sh.job.k) + ",\"job_id\":" + std::to_string(sh.job.id) +
+           json_escape(sh.name) + "\",\"algo\":\"" + (sh.last_txid ? "txid-blake2b" : "vrf") + "\",\"paused\":" + (sh.ledger_pause ? "true" : "false") + ",\"invalid\":" + std::to_string(sh.invalid.load()) + ",\"job_k\":" + std::to_string(sh.job.k) + ",\"job_id\":" + std::to_string(sh.job.id) +
            ",\"gpus_active\":" + std::to_string(active) + ",\"max_temp\":" + std::to_string(sh.con.maxTemp) + ",\"max_mem_temp\":" + std::to_string(sh.con.maxMemTemp) +
            ",\"gpus\":[" + gpus + "]}";
 }
@@ -4468,7 +4704,11 @@ static void usage() {
         "  --selftest FILE    verify every variant against vectors.json (from vrfvec) and exit\n"
         "  --fetest           randomized field-arithmetic test of every variant and exit\n"
         "  --verify           every variant over one nonce range at low difficulty must find identical hits; exit\n"
-        "  --bench [SECS]     measure the hashrate of the chosen variant and exit\n", CONSOLE_USAGE);
+        "  --bench [SECS]     measure the hashrate of the chosen variant and exit\n"
+        "txid-blake2b hash work (Proxima library upgrade 6, from slot 197000; needs no key, so --key-file is optional with a stratum pool):\n"
+        "  --hash-selftest    check the hash kernels on every selected GPU against the upgrade-6 vectors and the CPU, then exit\n"
+        "  --hash-bench [SECS] measure the hash rate (GH/s) on every selected GPU and exit (--hash-prefix-len N, default 600)\n"
+        "  --hash-launch-ms N target length of one hash launch (default 40)\n", CONSOLE_USAGE);
 }
 
 // -d 0,1,2,3 (also "all"): device indices, each once, within the device count
@@ -4514,6 +4754,7 @@ int main(int argc, char **argv) {
     setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID", 0);
 #endif
     int blocks = 0, threads = 0, iters = 0; double bench = 0, autotuneSecs = 0; bool fetest = false, listVariants = false, verify = false;
+    double txidBench = 0; bool txidSelftest = false; int txidPrefix = 600, txidLaunchMs = 40;
     ConsoleOpts con;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
@@ -4542,6 +4783,10 @@ int main(int argc, char **argv) {
         else if (a == "--iters") { std::string s; next(s); iters = atoi(s.c_str()); }
         else if (a == "--bench") bench = optnum(20);
         else if (a == "--autotune") autotuneSecs = optnum(6);
+        else if (a == "--hash-bench") txidBench = optnum(20);
+        else if (a == "--hash-selftest") txidSelftest = true;
+        else if (a == "--hash-prefix-len") { std::string s; next(s); txidPrefix = atoi(s.c_str()); }
+        else if (a == "--hash-launch-ms") { std::string s; next(s); txidLaunchMs = std::max(5, std::min(1000, atoi(s.c_str()))); }
         else if (parse_console_opt(a, i, argc, argv, con)) {}
         else { fprintf(stderr, "unknown option %s\n\n", a.c_str()); usage(); return 1; }
     }
@@ -4557,12 +4802,57 @@ int main(int argc, char **argv) {
     if (ndev == 0) { fprintf(stderr, "no CUDA devices\n"); return 2; }
     std::vector<int> devs;
     if (!parse_devices(gpus, ndev, devs)) return 1;
+    // txid-blake2b (hash work, library upgrade 6): the self-check on every selected GPU, also before mining
+    auto hash_selfcheck = [&](bool quiet) {
+        int rc = 0;
+        for (int d : devs) {
+            CUDA_CHECK(cudaSetDevice(d)); cudaDeviceProp prop; CUDA_CHECK(cudaGetDeviceProperties(&prop, d));
+            std::string why; auto t0 = std::chrono::steady_clock::now(); int r = txid::cuda_selfcheck(why);
+            double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+            if (r || !quiet) fprintf(stderr, "GPU %d %s: txid-blake2b self-check %s: %s (%.1f s)\n", d, prop.name, r ? "FAILED" : "passed", why.c_str(), secs);
+            rc |= r;
+        }
+        return rc;
+    };
+    if (txidSelftest) return hash_selfcheck(false);
+    if (txidBench > 0) {
+        if (hash_selfcheck(false)) return 1;
+        for (int d : devs) {
+            CUDA_CHECK(cudaSetDevice(d)); cudaDeviceProp prop; CUDA_CHECK(cudaGetDeviceProperties(&prop, d));
+            std::vector<uint8_t> prefix((size_t)std::max(0, txidPrefix)); for (size_t i = 0; i < prefix.size(); i++) prefix[i] = (uint8_t)(i * 31 + 7);
+            txid::Params p; txid::Shape shp = txid::prepare(prefix.data(), (int)prefix.size(), 40, p);
+            txid::HitRec *dh; unsigned *dn; CUDA_CHECK(cudaMalloc(&dh, sizeof(txid::HitRec) * TXID_MAX_HITS)); CUDA_CHECK(cudaMalloc(&dn, 4)); CUDA_CHECK(cudaMemset(dn, 0, 4));
+            unsigned grid = prop.multiProcessorCount * 16; if (const char *e = getenv("PX_TXID_GRID")) grid = atoi(e);
+            uint32_t it = 64; uint64_t n = 0x0102000000000000ULL, total = 0; double kms = 0; int launches = 0;
+            cudaEvent_t e0, e1; cudaEventCreate(&e0); cudaEventCreate(&e1);
+            auto t0 = std::chrono::steady_clock::now(), last = t0; uint64_t lastTotal = 0;
+            while (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < txidBench) {
+                uint64_t per = (uint64_t)grid * TXID_TPB * it;
+                cudaEventRecord(e0); txid::launch(grid, TXID_TPB, 0, p, n, per, it, dh, dn); cudaEventRecord(e1); CUDA_CHECK(cudaEventSynchronize(e1));
+                float ms = 0; cudaEventElapsedTime(&ms, e0, e1); kms += ms; launches++; n += per; total += per;
+                if (ms > 0) it = (uint32_t)std::max(4.0, std::min(65536.0, it * 0.5 + it * (double)txidLaunchMs / ms * 0.5));
+                auto now = std::chrono::steady_clock::now();
+                if (now - last >= std::chrono::seconds(5)) {
+                    GpuSensors se; char bus[32] = "?"; cudaDeviceGetPCIBusId(bus, sizeof bus, d); se = read_sensors(bus);
+                    fprintf(stderr, "GPU %d %s: %.3f GH/s, %s\n", d, prop.name, (total - lastTotal) / std::chrono::duration<double>(now - last).count() / 1e9, sensors_str(se).c_str());
+                    last = now; lastTotal = total;
+                }
+            }
+            double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+            fprintf(stderr, "GPU %d %s: txid-blake2b %d-byte prefix (kernel %d): %.3f GH/s over %.0f s (%.3f GH/s kernel time, %d launches of %.1f ms, %ux%dx%u)\n",
+                    d, prop.name, txidPrefix, shp.kernel, total / el / 1e9, el, total / (kms / 1e3) / 1e9, launches, kms / launches, grid, TXID_TPB, it);
+            cudaFree(dh); cudaFree(dn);
+        }
+        return 0;
+    }
 
     uint8_t seed[32], scalar[32] = {0}, pk[32] = {0};
     bool keyGiven = !seedhex.empty() || !keyfile.empty() || getenv("NONCE_SEEKER_SEED") != nullptr;
     bool have_key = (!selftest.empty() || fetest || verify || !keyGiven) ? false : load_seed(seedhex, keyfile, seed);
     if (keyGiven && !have_key && selftest.empty() && !fetest && !verify) return 1;
-    if (!have_key && selftest.empty() && !fetest && !verify && bench == 0 && autotuneSecs == 0) { usage(); return 1; }
+    // without a key a stratum pool can still be mined: hash jobs (library upgrade 6) need none, VRF jobs are refused
+    bool hashOnly = !have_key && !keyGiven && proxi.rfind("stratum+", 0) == 0;
+    if (!have_key && !hashOnly && selftest.empty() && !fetest && !verify && bench == 0 && autotuneSecs == 0) { usage(); return 1; }
     if (!have_key) {
         // bench/tests without a key: a fixed pseudo-random seed, so the scalar
         // multiplication costs what a real key costs (an all-zero scalar skips every addition)
@@ -4615,7 +4905,7 @@ int main(int argc, char **argv) {
         if (ok != 1) { fprintf(stderr, "device %d: constant derivation failed on %s\n", d, cfg.ops->name); return 2; }
         if (d == devs[0]) memcpy(pk, pk2, 32); else if (memcmp(pk, pk2, 32) != 0) { fprintf(stderr, "device %d derives a different public key\n", d); return 2; }
         if (autotuneSecs > 0) { cfg = autotune(d, scalar, pk, autotuneSecs, blocks); if (threads > 0) cfg.threads = threads; if (iters > 0) cfg.iters = iters; cfg.ordinal = (int)cfgs.size(); cfg.ops->init(scalar, pk2); }
-        else if (!pl.measured && !forced && blocks <= 0 && threads <= 0 && iters <= 0 && bench <= 0) {
+        else if (!pl.measured && !forced && blocks <= 0 && threads <= 0 && iters <= 0 && bench <= 0 && !hashOnly) {
             GpuCfg tuned;
             if (loadTuned(prop, d, tuned)) {
                 cfg = tuned; cfg.ordinal = (int)cfgs.size(); cfg.ops->init(scalar, pk2);
@@ -4643,14 +4933,17 @@ int main(int argc, char **argv) {
     if (bench > 0) { for (auto &c : cfgs) run_bench(c.ops, pk, c.dev, c.blocks, c.threads, c.iters, bench, true); return 0; }
     if (proxi.empty()) { if (autotuneSecs > 0) return 0; usage(); return 1; }
 
+    if (hash_selfcheck(false)) { fprintf(stderr, "a GPU failed the txid-blake2b self-check: refusing to mine (hash shares would be wrong)\n"); return 2; }
     Shared sh;
     sh.base_url = proxi; if (!parse_url(proxi, sh.url)) return 1;
     sh.token = token; sh.name = name.empty() ? "proxichorizo-" + std::to_string(getpid()) : name;
     sh.user = user.empty() ? sh.name : user;
     memcpy(sh.pk, pk, 32); memcpy(sh.scalar, scalar, 32);
     sh.gpus = gstats; sh.api_bind = apiBind; sh.con = con;
+    sh.have_key = have_key; sh.txid_launch_ms = txidLaunchMs;
     print_banner(sh, "CUDA");
-    logln("ProxiChorizo " PX_VERSION ": key " + hexs(pk, 32) + ", " + (sh.url.stratum ? "stratum " : "job server ") + sh.url.host + ":" + std::to_string(sh.url.port) + ", " + std::to_string(devs.size()) + " GPU(s), " + (sh.url.stratum ? "user " + sh.user : "name " + sh.name));
+    if (!have_key) log_warn("no --key-file: mining txid-blake2b hash jobs only (library upgrade 6, from slot 197000); VRF jobs before it need the key");
+    logln("ProxiChorizo " PX_VERSION ": " + (have_key ? "key " + hexs(pk, 32) : std::string("no key (hash jobs only)")) + ", " + (sh.url.stratum ? "stratum " : "job server ") + sh.url.host + ":" + std::to_string(sh.url.port) + ", " + std::to_string(devs.size()) + " GPU(s), " + (sh.url.stratum ? "user " + sh.user : "name " + sh.name));
     for (auto &g : sh.gpus) if (read_sensors(g.bus).temp < 0) log_warn(gpu_tag(g) + ": no temperature sensor readable (NVML/hwmon), the thermal limit is not enforced on it");
     g_sh = &sh; signal(SIGINT, on_signal); signal(SIGTERM, on_signal);
     std::vector<std::thread> th;

@@ -1,0 +1,137 @@
+[
+ {
+  "prefix_len": 112,
+  "message_len": 120,
+  "prefix_rule": "prefix[i] = (i*7+3) & 0xff",
+  "extranonce1": "0102",
+  "extranonce2": "030405060708",
+  "hash": "179ad8f3e27dbb840cd3431294e9a2f73c7cfce68ffc04932e27abb51ba07cc1",
+  "work_u64_be": "2e27abb51ba07cc1",
+  "trailing_zeros": 0,
+  "first_en2_with_tz_ge_12": {
+   "extranonce2": "000000000350",
+   "hash": "a661435c637d9b28fc47b8b390e6ecec8ac5ca3c8c273842f89e22344ce16000",
+   "trailing_zeros": 13
+  }
+ },
+ {
+  "prefix_len": 119,
+  "message_len": 127,
+  "prefix_rule": "prefix[i] = (i*7+3) & 0xff",
+  "extranonce1": "0102",
+  "extranonce2": "030405060708",
+  "hash": "23a9821464e185ca4df71624cb7b434bc72cbcf630bedab34e9a25d59ecb91f6",
+  "work_u64_be": "4e9a25d59ecb91f6",
+  "trailing_zeros": 1,
+  "first_en2_with_tz_ge_12": {
+   "extranonce2": "0000000009c6",
+   "hash": "023a51c6679aabd48733188f458778a62cc4dd1e1d6b578c519bf3ef8f7c6000",
+   "trailing_zeros": 13
+  }
+ },
+ {
+  "prefix_len": 120,
+  "message_len": 128,
+  "prefix_rule": "prefix[i] = (i*7+3) & 0xff",
+  "extranonce1": "0102",
+  "extranonce2": "030405060708",
+  "hash": "4778e9ff057e689d7aee7144b9175e717c3d985f8233917541232fdb75a55023",
+  "work_u64_be": "41232fdb75a55023",
+  "trailing_zeros": 0,
+  "first_en2_with_tz_ge_12": {
+   "extranonce2": "000000000235",
+   "hash": "7057dd648a1775b3aa1909ecf3fbffc0af2ba2c1a8e21e69f4312fd2a9516000",
+   "trailing_zeros": 13
+  }
+ },
+ {
+  "prefix_len": 121,
+  "message_len": 129,
+  "prefix_rule": "prefix[i] = (i*7+3) & 0xff",
+  "extranonce1": "0102",
+  "extranonce2": "030405060708",
+  "hash": "5ec330b79c9c4ed06b0b6cf10576a894c58db00a01393750881f0102955e710f",
+  "work_u64_be": "881f0102955e710f",
+  "trailing_zeros": 0,
+  "first_en2_with_tz_ge_12": {
+   "extranonce2": "000000002de1",
+   "hash": "bce335dbccff946c0203c948825f4ba68861f56baf9d06a1f5efb67f16a20000",
+   "trailing_zeros": 17
+  }
+ },
+ {
+  "prefix_len": 128,
+  "message_len": 136,
+  "prefix_rule": "prefix[i] = (i*7+3) & 0xff",
+  "extranonce1": "0102",
+  "extranonce2": "030405060708",
+  "hash": "27ed09864fa792b64db6d36de8201a89697bf8684c518cd32885ef0ed1b7942b",
+  "work_u64_be": "2885ef0ed1b7942b",
+  "trailing_zeros": 0,
+  "first_en2_with_tz_ge_12": {
+   "extranonce2": "000000001fc1",
+   "hash": "f195fc9eebe52e53167f81f3fc228591b2b11c03c92789711c4a822c82618000",
+   "trailing_zeros": 15
+  }
+ },
+ {
+  "prefix_len": 247,
+  "message_len": 255,
+  "prefix_rule": "prefix[i] = (i*7+3) & 0xff",
+  "extranonce1": "0102",
+  "extranonce2": "030405060708",
+  "hash": "29380018b185cf6dd857527e73909346313b5f73f83c77cc8342488a6a69ac7b",
+  "work_u64_be": "8342488a6a69ac7b",
+  "trailing_zeros": 0,
+  "first_en2_with_tz_ge_12": {
+   "extranonce2": "000000000c51",
+   "hash": "4be244741a35f52511b09c11ce428f84c75286dd6d9b56595b48233e8aa02000",
+   "trailing_zeros": 13
+  }
+ },
+ {
+  "prefix_len": 248,
+  "message_len": 256,
+  "prefix_rule": "prefix[i] = (i*7+3) & 0xff",
+  "extranonce1": "0102",
+  "extranonce2": "030405060708",
+  "hash": "39a22194d7350d6f401628dc3a31792204dc12d316e923d76c142c28da250a1c",
+  "work_u64_be": "6c142c28da250a1c",
+  "trailing_zeros": 2,
+  "first_en2_with_tz_ge_12": {
+   "extranonce2": "000000002e78",
+   "hash": "6f960ba0d5a1a1df655eaf8b52a04afa6a2f72c0ca951c26a13440a7deb67000",
+   "trailing_zeros": 12
+  }
+ },
+ {
+  "prefix_len": 600,
+  "message_len": 608,
+  "prefix_rule": "prefix[i] = (i*7+3) & 0xff",
+  "extranonce1": "0102",
+  "extranonce2": "030405060708",
+  "hash": "56543577bce2ecc81ab261b2b5bc841941c78e6307af6c636aa36377b7cf641b",
+  "work_u64_be": "6aa36377b7cf641b",
+  "trailing_zeros": 0,
+  "first_en2_with_tz_ge_12": {
+   "extranonce2": "0000000027a1",
+   "hash": "afed267c4da16f68f56554abde97eb147829d21d788c2f512b1f69890be20000",
+   "trailing_zeros": 17
+  }
+ },
+ {
+  "prefix_len": 632,
+  "message_len": 640,
+  "prefix_rule": "prefix[i] = (i*7+3) & 0xff",
+  "extranonce1": "0102",
+  "extranonce2": "030405060708",
+  "hash": "45ced55f04f3140fc6d2f574259e66bb99b0ba3dcd14f19bb51e109b9be461c1",
+  "work_u64_be": "b51e109b9be461c1",
+  "trailing_zeros": 0,
+  "first_en2_with_tz_ge_12": {
+   "extranonce2": "00000000094f",
+   "hash": "a98abb80b99b9d3e4484997acd7a96ab81f60839b8770454a15a83ba0d83d000",
+   "trailing_zeros": 12
+  }
+ }
+]

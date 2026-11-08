@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Extracts the GPU-agnostic host code (sockets, HTTP, job poller, submit, stats API, key loading)
 from ../proxichorizo.cu into host_common.inc so the OpenCL build shares it byte for byte, and
-embeds proxichorizo.cl into kernel_blob.h. Run from the opencl/ directory (the Makefile does)."""
+embeds proxichorizo.cl and txid_blake2b.cl into kernel_blob.h. Run from the opencl/ directory (the Makefile does)."""
 import re, sys, os
 src = open('../proxichorizo.cu', encoding='utf-8').read().split('\n')
 def find(pat):
@@ -20,5 +20,7 @@ vec = open('../vectors.json', 'rb').read()
 with open('kernel_blob.h', 'w') as f:
     f.write('// GENERATED from proxichorizo.cl and ../vectors.json\nstatic const unsigned char CL_SRC[] = {')
     f.write(','.join(str(b) for b in cl)); f.write(',0};\nstatic const unsigned CL_SRC_LEN = %d;\n' % len(cl))
+    tx = open('txid_blake2b.cl', 'rb').read()
+    f.write('static const unsigned char TXID_CL_SRC[] = {'); f.write(','.join(str(b) for b in tx)); f.write(',0};\nstatic const unsigned TXID_CL_SRC_LEN = %d;\n' % len(tx))
     f.write('static const unsigned char VEC_SRC[] = {'); f.write(','.join(str(b) for b in vec)); f.write(',0};\nstatic const unsigned VEC_SRC_LEN = %d;\n' % len(vec))
 print('host_common.inc: %d lines; kernel_blob.h: %d bytes' % (len(out), len(cl)))
