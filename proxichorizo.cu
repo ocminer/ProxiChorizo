@@ -4108,7 +4108,10 @@ static void stratum_client(Shared &sh) {
                         if (const JV *m = pa.at(0)) {
                             logln("pool: " + m->s);
                             std::string low = m->s; for (auto &c : low) c = (char)tolower((unsigned char)c);
-                            if (low.find("paused") != std::string::npos) enter_ledger_pause(sh, "the pool says so");
+                            // a pause notice while a hash job younger than its ttl is current came late (the pool already
+                            // sends hash work): keep mining that job; it ends at its ttl anyway if no other job follows
+                            bool freshHash; { std::lock_guard<std::mutex> l(sh.mu); freshHash = sh.job.id && sh.job.txid && std::chrono::steady_clock::now() < sh.job.deadline; }
+                            if (low.find("paused") != std::string::npos && !freshHash) enter_ledger_pause(sh, "the pool says so");
                         }
                     }
                     continue;
