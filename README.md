@@ -193,7 +193,13 @@ hashed again on the CPU before it is sent, and every GPU passes the upgrade-6 te
 and a CPU comparison of all 32 nonce positions at start (`--hash-selftest`). Measured with
 `--hash-bench` (600-byte prefix, the size of a Proxima mining transaction):
 
-HASHBENCH_TABLE
+| GPU | Backend | Power cap | Hash rate | Measured power | Core clock |
+|---|---|---|---|---|---|
+| RTX 5090 | CUDA | 450 W | **16.4 GH/s** | 448 W | 2572 MHz |
+| RTX 5070 Ti | CUDA | 300 W | **7.27 GH/s** | 230 W | 2782 MHz |
+| RX 7900 XTX | OpenCL | 303 W | **6.28 GH/s** | 274 W | 2448 MHz |
+| Instinct MI50 | OpenCL | 225 W | **2.81 GH/s** | 220 W | 1690 MHz |
+| RX 7600 XT | OpenCL | 165 W | **2.16 GH/s** | 163 W | 2531 MHz |
 
 
 ### 1.0.7: select kernels by GPU model

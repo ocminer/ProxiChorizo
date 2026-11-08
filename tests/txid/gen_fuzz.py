@@ -9,4 +9,4 @@ for plen in range(0, 761):
         prefix = bytes(rnd.getrandbits(8) for _ in range(plen))
         nonce = rnd.getrandbits(64) if rep else 0x0102000000000000 | rnd.getrandbits(16)
         msg = prefix + nonce.to_bytes(8, 'big')
-        out.write('%s %016x %s\n' % (prefix.hex(), nonce, hashlib.blake2b(msg, digest_size=32).hexdigest()))
+        out.write('%s %016x %s\n' % (prefix.hex() or '-', nonce, hashlib.blake2b(msg, digest_size=32).hexdigest()))  # '-' = empty prefix
