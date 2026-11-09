@@ -76,9 +76,9 @@ distribution); the Windows archive brings its own. The pool's certificate is che
   token, password = the seed of your key file. Worker name = the rig name.
 * **MMPOS / SMOS:** the same tarball, launchers `mmpos-run.sh` / `smos-run.sh`; pool URL as
   above, user = token, password = key seed (see [USAGE.md](USAGE.md)).
-* **Docker (NVIDIA):** `ocminersupr/proxichorizo:2.0.0` with `TOKEN`, `KEY_FILE` (or `SEED`)
+* **Docker (NVIDIA):** `ocminersupr/proxichorizo:2.0.1` with `TOKEN`, `KEY_FILE` (or `SEED`)
   and optionally `POOL_URL` (default `stratum+tcp://proxi.suprnova.cc:3355`); see `docker/README.md`.
-* **Docker (AMD):** `ocminersupr/proxichorizo:2.0.0-amd` (also `:amd`), the OpenCL miner with AMD's
+* **Docker (AMD):** `ocminersupr/proxichorizo:2.0.1-amd` (also `:amd`), the OpenCL miner with AMD's
   ROCm OpenCL runtime inside; the host needs only the amdgpu driver (`--device /dev/kfd --device /dev/dri`).
 
 ### Is it working?
