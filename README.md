@@ -198,9 +198,18 @@ and a CPU comparison of all 32 nonce positions at start (`--hash-selftest`). Mea
 | RTX 5090 | CUDA | 575 W | **17.3 GH/s** | 575 W | 2730 MHz |
 | RTX 5090 | CUDA | 450 W | **16.1 GH/s** | 450 W | 2542 MHz |
 | RTX 5070 Ti | CUDA | 300 W | **7.28 GH/s** | 230 W | 2782 MHz |
+| RTX 5080 | CUDA | 360 W | **8.96 GH/s** | 309 W | 2857 MHz |
+| RTX 3070 | CUDA | 240 W | **3.33 GH/s** (2.0.0: 3.30) | 231 W | 1905 MHz |
 | RX 7900 XTX | OpenCL | 303 W | **6.33 GH/s** | 280 W | 2465 MHz |
 | Instinct MI50 | OpenCL | 225 W | **2.81 GH/s** | 220 W | 1690 MHz |
 | RX 7600 XT | OpenCL | 165 W | **2.16 GH/s** | 163 W | 2531 MHz |
+
+After 2.0.0 the RTX 3070 (sm_86) search uses a 32-bit nonce loop and precomputes the nonce-free steps
+of rounds 0 and 1 per job (+0.6 to +1.3 % depending on the prefix length). On the RTX 5090 and the
+RX 7900 XTX the search is bound by the integer ALU, and none of the alternatives we measured (other
+rotation forms, multiply-unit adds and rotations, wave64, other work-group sizes, two nonces per thread)
+was faster, so Blackwell (RTX 50) and all OpenCL devices keep the 2.0.0 kernels, as do the other GPU
+generations.
 
 
 ### 1.0.7: select kernels by GPU model
