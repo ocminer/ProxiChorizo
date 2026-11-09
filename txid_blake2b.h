@@ -47,7 +47,7 @@ TXQ constexpr uint64_t iv(int i) {
 }
 
 // the per-job input of a search kernel (passed by value: it lives in the kernel's constant bank)
-struct Params {
+struct ParamsCore {
     uint64_t m[16];   // the block holding the first nonce byte, nonce bytes zero
     uint64_t h[8];    // chaining value before that block
     uint64_t vi[16];  // compression state before round 0
@@ -60,6 +60,15 @@ struct Params {
     uint32_t shift;   // 8 * (nonce offset % 8)
     uint32_t kernel;  // the shape: 2*W + SH for (a), 31 for the straddle
 };
+// TXID_TRIM 4 (rounds 0 and 1 from a per-step plan, see Plan): every G-step result of rounds 0..1 with the nonce bytes
+// zero (snap; the true value for every step that does not depend on the nonce) and per G half the sum of the two
+// nonce-free operands of a + b + m when exactly one depends on the nonce (pre). A separate, last kernel argument, so
+// the ParamsCore layout (read word by word by the OpenCL kernels) and the other architectures' code stay as in 2.0.0.
+struct Plan01 {
+    uint64_t snap[16 * 8];
+    uint64_t pre[16 * 2];
+};
+struct Params : ParamsCore { Plan01 q; };
 
 static inline uint64_t bswap64h(uint64_t x) {
     x = ((x & 0x00ff00ff00ff00ffULL) << 8) | ((x >> 8) & 0x00ff00ff00ff00ffULL);
@@ -97,6 +106,25 @@ TXQ void g1(uint64_t &a, uint64_t &b, uint64_t &c, uint64_t &d, uint64_t x) { a 
 TXQ void g2(uint64_t &a, uint64_t &b, uint64_t &c, uint64_t &d, uint64_t y) { a += b + y; d = rotr<16>(d ^ a); c += d; b = rotr<63>(b ^ c); }
 TXQ void gf(uint64_t &a, uint64_t &b, uint64_t &c, uint64_t &d, uint64_t x, uint64_t y) { g1(a, b, c, d, x); g2(a, b, c, d, y); }
 
+// ---- per-architecture search options ---------------------------------------------------------
+// TXID_TRIM (bits) selects loop/precomputation trims of the search kernels (txid_cuda.cuh, rounds01 below) for the
+// architectures they were measured on; every other architecture compiles the v2.0.0 code (TXID_TRIM 0).
+#ifdef __CUDA_ARCH__
+#ifndef TXID_TRIM_SM86
+#define TXID_TRIM_SM86 5   // RTX 3070: fast loop + rounds 0..1 plan, +0.6..1.3% (bit 2 measured slower there)
+#endif
+#ifndef TXID_TRIM
+#if __CUDA_ARCH__ == 860
+#define TXID_TRIM TXID_TRIM_SM86
+#else
+#define TXID_TRIM 0
+#endif
+#endif
+#else
+#undef TXID_TRIM
+#define TXID_TRIM 0
+#endif
+
 #define TXID_SIGMA_ROWS {{0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15},{14,10,4,8,9,15,13,6,1,12,0,2,11,7,5,3},\
     {11,8,12,0,5,2,15,13,10,14,3,6,7,1,9,4},{7,9,3,1,13,12,11,14,2,6,5,10,4,0,15,8},{9,0,5,7,2,4,10,15,14,1,11,12,6,8,3,13},\
     {2,12,6,10,0,11,8,3,4,13,7,5,15,14,1,9},{12,5,1,15,14,13,4,10,0,7,6,3,9,2,8,11},{13,11,7,14,12,1,3,9,5,0,15,4,8,6,2,10},\
@@ -124,7 +152,7 @@ template <int FROM> TXQ void rounds(uint64_t v[16], const uint64_t m[16]) {
 // round 0 of the nonce block from the per-job precomputation: only the Gs that read a nonce word run.
 // DEP(i): word i holds nonce bytes. Every condition below is a compile-time constant after unrolling.
 template <int W, bool SH> TXQ constexpr bool dep(int i) { return i == W || (SH && i == W + 1 && W + 1 < 16); }
-template <int W, bool SH> TXQ void round0(uint64_t v[16], const Params &p, const uint64_t m[16]) {
+template <int W, bool SH> TXQ void round0(uint64_t v[16], const ParamsCore &p, const uint64_t m[16]) {
     const bool anyCol = W < 8;   // the first nonce word is in a column G
 #ifdef __CUDA_ARCH__
 #pragma unroll
@@ -149,8 +177,80 @@ template <int W, bool SH> TXQ void round0(uint64_t v[16], const Params &p, const
     }
 }
 
+// ---- rounds 0 and 1 from a compile-time plan (TXID_TRIM 4) ---------------------------------
+// The nonce is in message word W (and W+1 when SH). Plan follows which state words depend on it through the 16 Gs of
+// rounds 0 and 1 (8 steps each: a += b + m; d = rotr32(d ^ a); c += d; b = rotr24(b ^ c); a += b + m'; d = rotr16(d ^ a);
+// c += d; b = rotr63(b ^ c)). A step whose inputs are nonce-free is a per-job constant (Plan01::snap); a + b + m with one
+// nonce-dependent operand is one add with the precomputed sum of the other two (Plan01::pre).
+struct Plan {
+    bool dep[16][8] = {};   // the step's result depends on the nonce
+    int pre[16][2] = {};    // a + b + m: 0 = plain, 1 = a + (b + m), 2 = b + (a + m), 3 = m + (a + b)
+    int vi[16][4] = {}, mi[16][2] = {};
+    TXQ constexpr Plan(int W, bool SH) {
+        constexpr int S[2][16] = {{0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15},{14,10,4,8,9,15,13,6,1,12,0,2,11,7,5,3}};
+        bool vd[16] = {};
+        for (int g = 0; g < 16; g++) {
+            const int r = g / 8, j = g % 8, q = j % 4;
+            const int a = q, b = j < 4 ? 4 + q : 4 + (q + 1) % 4, c = j < 4 ? 8 + q : 8 + (q + 2) % 4, d = j < 4 ? 12 + q : 12 + (q + 3) % 4;
+            vi[g][0] = a; vi[g][1] = b; vi[g][2] = c; vi[g][3] = d; mi[g][0] = S[r][2 * j]; mi[g][1] = S[r][2 * j + 1];
+            for (int h = 0; h < 2; h++) {
+                const int mw = mi[g][h];
+                const bool md = mw == W || (SH && mw == W + 1);
+                const int nd = (vd[a] ? 1 : 0) + (vd[b] ? 1 : 0) + (md ? 1 : 0);
+                pre[g][h] = nd != 1 ? 0 : vd[a] ? 1 : vd[b] ? 2 : 3;
+                vd[a] = vd[a] || vd[b] || md; dep[g][4 * h + 0] = vd[a];
+                vd[d] = vd[d] || vd[a];       dep[g][4 * h + 1] = vd[d];
+                vd[c] = vd[c] || vd[d];       dep[g][4 * h + 2] = vd[c];
+                vd[b] = vd[b] || vd[c];       dep[g][4 * h + 3] = vd[b];
+            }
+        }
+    }
+};
+// the snap/pre precomputation for one job (host): rounds 0..1 over the nonce-free message
+static inline void plan_snap(Params &p, int W, bool SH) {
+    Plan01 &q = p.q;
+    Plan P(W, SH); uint64_t v[16];
+    for (int i = 0; i < 16; i++) v[i] = p.vi[i];
+    for (int g = 0; g < 16; g++) {
+        uint64_t &a = v[P.vi[g][0]], &b = v[P.vi[g][1]], &c = v[P.vi[g][2]], &d = v[P.vi[g][3]];
+        for (int h = 0; h < 2; h++) {
+            const uint64_t mv = p.m[P.mi[g][h]];
+            q.pre[2 * g + h] = P.pre[g][h] == 1 ? b + mv : P.pre[g][h] == 2 ? a + mv : a + b;
+            a = a + b + mv;                                   q.snap[8 * g + 4 * h + 0] = a;
+            d = h ? rotr<16>(d ^ a) : rotr<32>(d ^ a);         q.snap[8 * g + 4 * h + 1] = d;
+            c = c + d;                                        q.snap[8 * g + 4 * h + 2] = c;
+            b = h ? rotr<63>(b ^ c) : rotr<24>(b ^ c);         q.snap[8 * g + 4 * h + 3] = b;
+        }
+    }
+}
+#ifdef __CUDA_ARCH__
+template <int W, bool SH> __device__ __forceinline__ void rounds01(uint64_t v[16], const ParamsCore &p, const Plan01 &q, const uint64_t m[16]) {
+    constexpr Plan P(W, SH);
+#pragma unroll
+    for (int i = 0; i < 16; i++) v[i] = p.vi[i];
+#pragma unroll
+    for (int g = 0; g < 16; g++) {
+        uint64_t &a = v[P.vi[g][0]], &b = v[P.vi[g][1]], &c = v[P.vi[g][2]], &d = v[P.vi[g][3]];
+#pragma unroll
+        for (int h = 0; h < 2; h++) {
+            const int k = 8 * g + 4 * h;
+            const uint64_t mv = m[P.mi[g][h]];
+            if (!P.dep[g][4 * h + 0]) a = q.snap[k + 0];
+            else if (P.pre[g][h] == 1) a = a + q.pre[2 * g + h];
+            else if (P.pre[g][h] == 2) a = b + q.pre[2 * g + h];
+            else if (P.pre[g][h] == 3) a = mv + q.pre[2 * g + h];
+            else a = a + b + mv;
+            if (!P.dep[g][4 * h + 1]) d = q.snap[k + 1]; else d = h ? rotr<16>(d ^ a) : rotr<32>(d ^ a);
+            if (!P.dep[g][4 * h + 2]) c = q.snap[k + 2]; else c = c + d;
+            if (!P.dep[g][4 * h + 3]) b = q.snap[k + 3]; else b = h ? rotr<63>(b ^ c) : rotr<24>(b ^ c);
+        }
+    }
+}
+#endif
+
 // shape (a): X = the 8 nonce bytes as a little-endian word (bswap of en1<<48|en2); returns output word 3
-template <int W, bool SH> TXQ uint64_t txid_h3(const Params &p, uint64_t X) {
+template <int W, bool SH> TXQ uint64_t txid_h3(const ParamsCore &p, uint64_t X, const Plan01 *q = nullptr) {
+    (void)q;
     uint64_t m[16], v[16];
 #ifdef __CUDA_ARCH__
 #pragma unroll
@@ -161,21 +261,32 @@ template <int W, bool SH> TXQ uint64_t txid_h3(const Params &p, uint64_t X) {
         else if (SH && i == W + 1) m[i] = X >> (64 - p.shift);
         else m[i] = 0;   // padding after the nonce
     }
+#if TXID_TRIM & 4
+    rounds01<W, SH>(v, p, *q, m);
+    rounds<2>(v, m);
+#else
     round0<W, SH>(v, p, m);
     rounds<1>(v, m);
+#endif
     return p.h[3] ^ v[3] ^ v[11];
 }
 
 // shape (b): the nonce starts in word 15 of the second-to-last block and ends in word 0 of the final block
-TXQ uint64_t txid_h3_straddle(const Params &p, uint64_t X) {
+TXQ uint64_t txid_h3_straddle(const ParamsCore &p, uint64_t X, const Plan01 *q = nullptr) {
+    (void)q;
     uint64_t m[16], v[16], h[8];
 #ifdef __CUDA_ARCH__
 #pragma unroll
 #endif
     for (int i = 0; i < 15; i++) m[i] = p.m[i];
     m[15] = p.m[15] | (X << p.shift);
+#if TXID_TRIM & 4
+    rounds01<15, false>(v, p, *q, m);
+    rounds<2>(v, m);
+#else
     round0<15, false>(v, p, m);
     rounds<1>(v, m);
+#endif
 #ifdef __CUDA_ARCH__
 #pragma unroll
 #endif
@@ -282,6 +393,7 @@ static inline Shape prepare(const uint8_t *prefix, int prefix_len, int k, Params
     p.tfin = (uint64_t)s.len;
     p.shift = (uint32_t)s.shift;
     p.kernel = (uint32_t)s.kernel;
+    plan_snap(p, s.straddle ? 15 : s.W, s.straddle ? false : s.shift != 0);
     return s;
 }
 // output word 3 for nonce n through the GPU algorithm, on the CPU (tests the precomputation)

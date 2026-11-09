@@ -15,8 +15,43 @@ namespace txid {
 __device__ __forceinline__ uint64_t bswap64d(uint64_t x) {
     return ((uint64_t)__byte_perm((uint32_t)x, 0, 0x0123) << 32) | __byte_perm((uint32_t)(x >> 32), 0, 0x0123);
 }
+// TXID_TRIM (bits; per measured architecture, see txid_blake2b.h; 0 elsewhere = the original loop):
+//  1: when every thread runs all `iters` nonces and the launch stays inside one 2^32 window of the nonce's low word
+//     (a launch-uniform test), a loop over the low word only: the high word of X is one byte permute per nonce and
+//     the bounds test is the loop counter;
+//  2: when the share mask has no bits in the low word of h3 (k <= 32), only the high word is tested first.
+template <int ID> __device__ __forceinline__ uint64_t h3_of(const ParamsCore &p, uint64_t X, const Plan01 &q) {
+    if constexpr (ID == 31) return txid_h3_straddle(p, X, &q);
+    else return txid_h3<ID / 2, (ID & 1) != 0>(p, X, &q);
+}
+__device__ __forceinline__ bool is_hit(const ParamsCore &p, uint64_t h3) {
+    if (TXID_TRIM & 2) {
+        if (((uint32_t)(h3 >> 32) & (uint32_t)(p.mask >> 32)) != 0) return false;
+        return ((uint32_t)h3 & (uint32_t)p.mask) == 0;
+    }
+    return (h3 & p.mask) == 0;
+}
+__device__ __forceinline__ void record(uint64_t n, uint64_t h3, HitRec *hits, unsigned *nhit) {
+    unsigned s = atomicAdd(nhit, 1u);
+    if (s < TXID_MAX_HITS) hits[s] = HitRec{n, h3};
+}
 template <int ID>
-__global__ void __launch_bounds__(TXID_TPB) search_kernel(const Params p, uint64_t nbase, uint64_t count, uint32_t iters, HitRec *hits, unsigned *nhit) {
+__global__ void __launch_bounds__(TXID_TPB) search_kernel(const ParamsCore p, uint64_t nbase, uint64_t count, uint32_t iters, HitRec *hits, unsigned *nhit, const Plan01 q) {
+#if TXID_TRIM & 1
+    {
+        const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x, stride32 = gridDim.x * blockDim.x;
+        if ((uint64_t)stride32 * iters == count && (uint64_t)(uint32_t)nbase + count <= (1ULL << 32)) {
+            const uint64_t xl = __byte_perm((uint32_t)(nbase >> 32), 0, 0x0123);
+            uint32_t nlo = (uint32_t)nbase + tid;
+            for (uint32_t i = 0; i < iters; i++, nlo += stride32) {
+                const uint64_t X = ((uint64_t)__byte_perm(nlo, 0, 0x0123) << 32) | xl;
+                const uint64_t h3 = h3_of<ID>(p, X, q);
+                if (is_hit(p, h3)) record((nbase & 0xffffffff00000000ULL) | nlo, h3, hits, nhit);
+            }
+            return;
+        }
+    }
+#endif
     const uint64_t gid = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
     const uint64_t stride = (uint64_t)gridDim.x * blockDim.x;
     for (uint32_t i = 0; i < iters; i++) {
@@ -24,6 +59,10 @@ __global__ void __launch_bounds__(TXID_TPB) search_kernel(const Params p, uint64
         if (idx >= count) break;
         const uint64_t n = nbase + idx;
         const uint64_t X = bswap64d(n);
+#if TXID_TRIM
+        const uint64_t h3 = h3_of<ID>(p, X, q);
+        if (is_hit(p, h3)) record(n, h3, hits, nhit);
+#else
         uint64_t h3;
         if constexpr (ID == 31) h3 = txid_h3_straddle(p, X);
         else h3 = txid_h3<ID / 2, (ID & 1) != 0>(p, X);
@@ -31,10 +70,11 @@ __global__ void __launch_bounds__(TXID_TPB) search_kernel(const Params p, uint64
             unsigned s = atomicAdd(nhit, 1u);
             if (s < TXID_MAX_HITS) hits[s] = HitRec{n, h3};
         }
+#endif
     }
 }
 template <int ID> static void launch_id(int id, unsigned grid, unsigned block, cudaStream_t st, const Params &p, uint64_t nbase, uint64_t count, uint32_t iters, HitRec *hits, unsigned *nhit) {
-    if (id == ID) { search_kernel<ID><<<grid, block, 0, st>>>(p, nbase, count, iters, hits, nhit); return; }
+    if (id == ID) { search_kernel<ID><<<grid, block, 0, st>>>(static_cast<const ParamsCore &>(p), nbase, count, iters, hits, nhit, p.q); return; }
     if constexpr (ID < 31) launch_id<ID + 1>(id, grid, block, st, p, nbase, count, iters, hits, nhit);
 }
 // one search launch over [nbase, nbase + count); grid*block*iters must cover count

@@ -455,14 +455,14 @@ struct ClTxSearch {
     TxProg *tp; cl_mem params, hits, nhit;
     explicit ClTxSearch(ClDev &d) : tp(get_txprog(d)) {
         cl_int err;
-        params = clCreateBuffer(d.ctx, CL_MEM_READ_ONLY, sizeof(txid::Params), nullptr, &err); CL_CHECK(err);
+        params = clCreateBuffer(d.ctx, CL_MEM_READ_ONLY, sizeof(txid::ParamsCore), nullptr, &err); CL_CHECK(err);
         hits = clCreateBuffer(d.ctx, CL_MEM_READ_WRITE, sizeof(txid::HitRec) * TXID_MAX_HITS, nullptr, &err); CL_CHECK(err);
         nhit = clCreateBuffer(d.ctx, CL_MEM_READ_WRITE, 4, nullptr, &err); CL_CHECK(err);
     }
     ~ClTxSearch() { clReleaseMemObject(params); clReleaseMemObject(hits); clReleaseMemObject(nhit); }
     std::vector<txid::HitRec> operator()(const txid::Params &p, uint64_t nbase, uint64_t count) {
         std::vector<txid::HitRec> out; cl_command_queue q = tp->dev->q; cl_uint zero = 0;
-        CL_CHECK(clEnqueueWriteBuffer(q, params, CL_TRUE, 0, sizeof p, &p, 0, nullptr, nullptr));
+        CL_CHECK(clEnqueueWriteBuffer(q, params, CL_TRUE, 0, sizeof(txid::ParamsCore), &p, 0, nullptr, nullptr));
         CL_CHECK(clEnqueueWriteBuffer(q, nhit, CL_TRUE, 0, 4, &zero, 0, nullptr, nullptr));
         cl_uint iters = 4; size_t groups = (size_t)((count + (uint64_t)TX_WG * iters - 1) / ((uint64_t)TX_WG * iters));
         if (tx_enqueue(tp, params, (int)p.kernel, nbase, count, iters, hits, nhit, groups) != CL_SUCCESS || mining_wait(q) != CL_SUCCESS) { out.push_back(txid::HitRec{~0ULL, 0}); return out; }
@@ -482,7 +482,7 @@ struct ClTxidWorker {
     ClTxidWorker(Shared &s, int ord, ClDev &dev) : sh(s), ordinal(ord), d(dev), tp(get_txprog(dev)), hits(TXID_MAX_HITS) {
         groups = (size_t)dev.cus * 32; if (const char *e = getenv("PX_TXID_GROUPS")) groups = (size_t)atoi(e);
         cl_int err;
-        params = clCreateBuffer(d.ctx, CL_MEM_READ_ONLY, sizeof(txid::Params), nullptr, &err); CL_CHECK(err);
+        params = clCreateBuffer(d.ctx, CL_MEM_READ_ONLY, sizeof(txid::ParamsCore), nullptr, &err); CL_CHECK(err);
         d_hits = clCreateBuffer(d.ctx, CL_MEM_READ_WRITE, sizeof(txid::HitRec) * TXID_MAX_HITS, nullptr, &err); CL_CHECK(err);
         d_n = clCreateBuffer(d.ctx, CL_MEM_READ_WRITE, 4, nullptr, &err); CL_CHECK(err);
     }
@@ -502,7 +502,7 @@ struct ClTxidWorker {
         }
         auto t0 = std::chrono::steady_clock::now();
         cl_uint zero = 0;
-        if (dirty) { CL_CHECK(clEnqueueWriteBuffer(d.q, params, CL_FALSE, 0, sizeof p, &p, 0, nullptr, nullptr)); dirty = false; }
+        if (dirty) { CL_CHECK(clEnqueueWriteBuffer(d.q, params, CL_FALSE, 0, sizeof(txid::ParamsCore), &p, 0, nullptr, nullptr)); dirty = false; }
         CL_CHECK(clEnqueueFillBuffer(d.q, d_n, &zero, 4, 0, 4, 0, nullptr, nullptr));
         uint64_t per = (uint64_t)groups * TX_WG * iters, count = std::min<uint64_t>(per, hi - cur);
         CL_CHECK(tx_enqueue(tp, params, (int)p.kernel, ((uint64_t)en1 << 48) | cur, count, iters, d_hits, d_n, groups));
