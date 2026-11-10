@@ -89,42 +89,44 @@ The wire protocol between miner and pool is documented in [STRATUM-SPEC.md](STRA
 
 ## 2. Solo mining — your own node and `proxi node mine`
 
-> **2.0:** solo mining through `proxi node mine` covers the VRF work (until slot 196000) only.
-> The hash work of library upgrade 6 (from slot 197000) is mined through stratum pools.
+ProxiChorizo supports the **Blake2b transaction-hash work of library upgrade 6**
+through the version-2 external nonce seeker protocol. Run a current, synced Proxima
+node and a matching `proxi` wallet (v1.6.3 was used for the current solo check).
+The wallet builds, signs and submits each transit; ProxiChorizo searches its nonce.
+The wallet key stays with `proxi`: **no key file or seed is needed by ProxiChorizo
+for Blake2b jobs**.
 
-Solo, the reference miner `proxi node mine` builds, proves and submits the transits with
-your wallet key and ProxiChorizo only does the nonce search for it (the "external nonce
-seeker" protocol of Proxima). You need a synced Proxima access node and the `proxi` wallet
-(see https://lunfardo314.github.io/#/participate/proxi).
-
-1. In the wallet profile `proxi.yaml` set the seeker server:
+1. In the wallet's `proxi.yaml`, enable the seeker endpoint:
    ```yaml
    mine:
        seeker:
-           listen: 0.0.0.0:8200          # where seekers fetch jobs (127.0.0.1:8200 if on the same box)
+           listen: 127.0.0.1:8200
            token: some-long-random-string
    ```
-2. Start the miner without CPU workers (`--workers N` would add CPU search beside the GPUs):
+   For a GPU on another machine, bind the endpoint to an address reachable by that
+   machine and use a private network or tunnel. The seeker endpoint uses HTTP;
+   `--proxi` points to this endpoint, not the node's general API.
+2. Start the wallet's mining controller with no CPU search workers:
    ```bash
    proxi node mine --workers 0
    ```
-3. Start ProxiChorizo with the **same key file as the wallet** and the token from step 1:
+3. Put the same token in a local `seeker.token` file, then start the GPU miner:
    ```bash
-   ./proxichorizo --proxi http://your-node:8200 --token some-long-random-string --key-file proxima.key
+   ./proxichorizo --proxi http://127.0.0.1:8200 --token-file seeker.token --name solo1
    ```
-   If the key file is passphrase-encrypted, pass the seed with `--seed-hex` instead.
+   `--devices 0,1` selects GPUs; the default is all supported GPUs. The OpenCL
+   executable `proxichorizo-cl` uses the same solo options.
 
-**Library upgrade at slot 29000 (2026-10-21 17:01 UTC, proxima v1.1.0-take1):** from that
-slot transits are stamped at tick 83 and carry miner version 5. `proxi node mine` does this
-for you, but only from v1.1.0-take1 on — update `proxi` and your node before the slot, or
-every transit your older `proxi` builds after it is rejected. ProxiChorizo itself needs no
-update (the nonce search is unchanged); pool miners have nothing to do.
+ProxiChorizo recomputes every GPU hit on the CPU, submits only improving work and
+continues searching until the job expires or is replaced. A `SOLVED ... accepted`
+message means the wallet verified the nonce. Check the wallet's **confirmed transit
+... (1 of ours)** message for ledger inclusion: competing solutions can beat an
+accepted nonce before settlement. The miner reconnects if the controller restarts.
 
-`proxi node mine` logs `SOLVED …` / `confirmed` for every transit; the first rewards of a
-new account are 15 PROX "opening" payouts until the account is known on the ledger, then
-50 and 95 PROX (see the Proxima docs on mine payout options). Expect contests: several
-miners solve the same height and the smallest VRF output wins, so a small solo miner wins
-rarely but exactly in proportion to its hashrate.
+Legacy version-1 VRF jobs still require `--key-file proxima.key` (an unencrypted key
+file) or a seed. That key requirement does not apply to current Blake2b solo mining.
+See the [upstream seeker protocol](https://github.com/lunfardo314/proxima/blob/master/kb/external_nonce_seeker.md)
+for the job format and the wallet's own documentation for payout configuration.
 
 ## 3. HiveOS
 
@@ -135,7 +137,7 @@ release, miner name `proxichorizo`. Flight sheet:
 |---|---|
 | Pool URL | `stratum+tcp://proxi.suprnova.cc:3355` (or your own `proxi node mine` seeker address, `http://HOST:PORT`) |
 | Wallet / template | your pool **token** (or the mine.seeker.token) |
-| Pass | the **seed**: first 64 hex characters of `private_key` in your key file |
+| Pass | leave empty for Blake2b; for legacy VRF only, the first 64 hex characters of `private_key` |
 | Extra config | optional `KEY=VALUE` lines: `DEVICES=0,1`, `API_BIND=127.0.0.1:4078`, `EXTRA_ARGS=...`; omit geometry overrides to use automatic GPU profiles. `MINER_GROUPS` overrides the block/workgroup count. |
 
 Hashrate, shares and per-GPU figures come from the miner's stats API on `127.0.0.1:4078`.
@@ -143,8 +145,9 @@ Hashrate, shares and per-GPU figures come from the miner's stats API on `127.0.0
 ## 4. MMPOS and SMOS
 
 The Linux tarball `proxichorizo-<version>.tar.gz` contains `mmpos-run.sh` and `smos-run.sh`:
-set `POOL_URL` (job server), `TOKEN` (pool token) and `SEED` (as above) in the miner config
-(`WALLET`/`PASSWORD` are accepted as aliases), optionally `DEVICES`, `VARIANT`, `EXTRA_ARGS`.
+set `POOL_URL` (job server) and `TOKEN` (pool or seeker token) in the miner config
+(`WALLET` is an alias for `TOKEN`), optionally `DEVICES`, `VARIANT`, `EXTRA_ARGS`.
+Only legacy VRF needs `SEED` (`PASSWORD` is its alias).
 MMPOS's API-based "external miner" format is served by `mmp-launch.sh` / `mmp-stats.sh` /
 `mmp-external.conf` from the same tarball (pool = job server, user = token, password = seed).
 
@@ -152,22 +155,23 @@ MMPOS's API-based "external miner" format is served by `mmp-launch.sh` / `mmp-st
 
 ```bash
 docker run -d --name proxichorizo --gpus all --restart unless-stopped -p 4078:4078 \
-  -e TOKEN=YOUR_TOKEN -e SEED=FIRST_64_HEX_OF_private_key -e WORKER=docker1 ocminersupr/proxichorizo:latest
+  -e TOKEN=YOUR_TOKEN -e WORKER=docker1 ocminersupr/proxichorizo:latest
 ```
-`POOL_URL` defaults to `stratum+tcp://proxi.suprnova.cc:3355`; `KEY_FILE` (a mounted key) replaces `SEED`;
+`POOL_URL` defaults to `stratum+tcp://proxi.suprnova.cc:3355`; for solo, set it to the
+reachable HTTP seeker endpoint. `SEED` or `KEY_FILE` (a mounted key) is needed only for legacy VRF;
 arguments after the image name go straight to the miner. Statistics at `http://localhost:4078/`.
 
 AMD GPUs use the `-amd` image (OpenCL miner + ROCm OpenCL runtime; the host needs only the amdgpu driver):
 ```bash
 docker run -d --name proxichorizo --device /dev/kfd --device /dev/dri --group-add video --group-add render \
   --restart unless-stopped -p 4078:4078 \
-  -e TOKEN=YOUR_TOKEN -e SEED=FIRST_64_HEX_OF_private_key -e WORKER=docker1 ocminersupr/proxichorizo:amd
+  -e TOKEN=YOUR_TOKEN -e WORKER=docker1 ocminersupr/proxichorizo:amd
 ```
 
 ## 5b. AMD GPUs (OpenCL)
 
 Build `opencl/proxichorizo-cl` (see README) on a machine with an OpenCL driver (ROCm, or the
-vendor ICD on HiveOS/mmpOS). Usage is identical: `./proxichorizo-cl --proxi ... --token ... --key-file proxima.key --name rig1`;
+vendor ICD on HiveOS/mmpOS). Usage is identical: `./proxichorizo-cl --proxi ... --token ... --name rig1`;
 `--list-devices` shows the GPUs, `--gpus 0,1` selects them, `--autotune` picks the fastest kernel variant.
 The first start compiles the kernels (about a minute per variant) and verifies them against the
 built-in test vectors; a variant that does not pass on your driver is disabled automatically.

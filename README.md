@@ -1,14 +1,15 @@
 # ProxiChorizo — GPU miner for Proxima (PROX)
 
 A GPU miner for [Proxima](https://lunfardo314.github.io/)'s fair-launch mine chain, for NVIDIA
-(CUDA) and AMD (OpenCL) GPUs, by suprnova.cc. Proxima's proof of work is an ECVRF (Ed25519,
-RFC 9381) output under the key that signs the transit; the miner searches nonces for the
-pool's jobs and reports the ones whose output has enough trailing zero bits.
+(CUDA) and AMD (OpenCL) GPUs, by suprnova.cc. The current proof of work is the mining
+transaction's BLAKE2b-256 hash. The miner searches nonces and reports valid solutions;
+it also retains support for the earlier ECVRF work.
 
 **From 1.0.0 the miner talks stratum** to the pool — one persistent connection, plain
 (`stratum+tcp://`) or encrypted (`stratum+ssl://`) — with its own nonce range and share
 difficulty per connection, as on any NOMP-style pool. Solo mining against your own node
-(`proxi node mine`, HTTP) works as before.
+(`proxi node mine`, HTTP) supports the current Blake2b work without a key file on
+the GPU machine. See the [solo setup and confirmation checks](USAGE.md#2-solo-mining--your-own-node-and-proxi-node-mine).
 
 Built for and used by the Suprnova Proxima pool: https://proxi.suprnova.cc
 
@@ -19,8 +20,48 @@ slot 197000 (about 14:54 UTC) the work is the mining transaction's own ID, a BLA
 VRF jobs until the switch, hash jobs after it, chosen per job by the pool, without a restart.
 Update to 2.0 before the switch; from slot 196000 the pool accepts only ProxiChorizo 2.0 or
 later. Hash work needs **no key file**: after the switch the miner can run with only the
-pool URL, worker and token. Hash rates are in GH/s (RTX 5090 ≈ 16.1 GH/s at 450 W, 17.3 at 575 W); see
+pool URL, worker and token. Hash rates are in GH/s and depend on the job's message length;
+the historical 600-byte synthetic test measured RTX 5090 ≈ 16.1 GH/s at 450 W, 17.3 at 575 W. See
 [2.0 hash benchmarks](#20-hash-work-txid-blake2b).
+
+### Unreleased Blake2b improvements — 2026-11-10
+
+Development builds improve the measured RTX 5090 job layouts and fix solo candidate
+selection. Other GPU models and unmeasured layouts keep their existing kernels.
+These changes are **not included in the published v2.0.1 packages**.
+
+Matched A/B/B/A measurements against the published v2.0.1 Linux binary, using
+30-second runs and wall-clock hash counts:
+
+| GPU | Prefix bytes | Power limit | v2.0.1 GH/s | Development GH/s | Change |
+|---|---:|---:|---:|---:|---:|
+| RTX 5090 A | 353 | 600 W | 16.786 | 17.036 | +1.49% |
+| RTX 5090 A | 364 | 600 W | 16.550 | 16.968 | +2.53% |
+| RTX 5090 A | 369 (current mainnet layout) | 600 W | 16.567 | 16.907 | +2.06% |
+| RTX 5090 A | 436 (solo opening layout) | 600 W | 16.786 | 17.116 | +1.97% |
+| RTX 5090 A | 369 | 450 W | 15.229 | 15.592 | +2.38% |
+| RTX 5090 B | 369 | 420 W | 14.264 | 14.540 | +1.94% |
+| RTX 5090 A | 600 (historical synthetic test) | 600 W | 17.356 | 17.354 | −0.01% (unchanged kernel) |
+
+Card A used the development build; card B used the full development binary, with
+identical hash-kernel instructions. Both used CUDA 12.9.1 and automatic GPU clocks.
+Memory reported 13,801 MHz. Actual average power, GPU clocks, temperatures and the
+spread between repeat runs are in the [measurement CSV](benchmarks/hash-development-2026-11-10.csv).
+Card B's baseline varied by 1.32% as the card warmed; both candidate runs exceeded
+both baseline runs. These are short matched measurements, not guaranteed pool rates
+or a clock-tuning recommendation. Compare versions at the same message length.
+
+Solo now keeps considering better solutions after 256 candidates, orders them by
+the complete consensus work value, and handles expired jobs and delayed responses.
+With the unmodified upstream v1.6.3 wallet controller and zero CPU search workers,
+the development build produced 16 confirmed testnet transits across a forced
+controller restart. The full binary produced another 13 confirmed testnet transits
+and 4,270 accepted pool shares with zero rejections. Steady miner CPU use was
+0.50–0.86% of one core in these tests. More than 50 million nonce checks matched
+the complete CPU hash. See the [solo guide](USAGE.md#2-solo-mining--your-own-node-and-proxi-node-mine).
+
+The solo fixes share the CUDA/OpenCL host implementation. AMD hardware and Windows
+GPU execution have not been qualified for this development change.
 
 ## How to mine (quick start)
 
@@ -35,15 +76,15 @@ Linux x86-64 (also HiveOS, MMPOS, SMOS) or Windows 10/11 x64, and a PROX address
    to your PROX address.
 2. **Download** the release for your system from
    [GitHub Releases](https://github.com/ocminer/ProxiChorizo/releases) and unpack it.
-3. **Start the miner** with the pool URL, your token, the key file and a worker name:
+3. **Start the miner** with the pool URL, your token and a worker name:
 
    Linux
    ```bash
-   ./proxichorizo -o stratum+tcp://proxi.suprnova.cc:3355 -u rig1 -p YOUR_TOKEN --key-file proxima.key
+   ./proxichorizo -o stratum+tcp://proxi.suprnova.cc:3355 -u rig1 -p YOUR_TOKEN
    ```
    Windows (Command Prompt, in the unpacked folder; or edit and run `start.cmd`)
    ```
-   proxichorizo.exe -o stratum+tcp://proxi.suprnova.cc:3355 -u rig1 -p YOUR_TOKEN --key-file proxima.key
+   proxichorizo.exe -o stratum+tcp://proxi.suprnova.cc:3355 -u rig1 -p YOUR_TOKEN
    ```
    AMD GPUs on Linux: the same with `./proxichorizo-cl`. The native Windows archive contains the NVIDIA CUDA miner.
 
@@ -73,10 +114,10 @@ distribution); the Windows archive brings its own. The pool's certificate is che
 
 * **HiveOS:** custom miner `proxichorizo`, installation URL = the `proxichorizo-hiveos.tar.gz`
   of the release; pool URL `stratum+tcp://proxi.suprnova.cc:3355`, wallet/template = your
-  token, password = the seed of your key file. Worker name = the rig name.
+  token, password empty for Blake2b. Worker name = the rig name.
 * **MMPOS / SMOS:** the same tarball, launchers `mmpos-run.sh` / `smos-run.sh`; pool URL as
-  above, user = token, password = key seed (see [USAGE.md](USAGE.md)).
-* **Docker (NVIDIA):** `ocminersupr/proxichorizo:2.0.1` with `TOKEN`, `KEY_FILE` (or `SEED`)
+  above, user = token, password empty for Blake2b (see [USAGE.md](USAGE.md)).
+* **Docker (NVIDIA):** `ocminersupr/proxichorizo:2.0.1` with `TOKEN`
   and optionally `POOL_URL` (default `stratum+tcp://proxi.suprnova.cc:3355`); see `docker/README.md`.
 * **Docker (AMD):** `ocminersupr/proxichorizo:2.0.1-amd` (also `:amd`), the OpenCL miner with AMD's
   ROCm OpenCL runtime inside; the host needs only the amdgpu driver (`--device /dev/kfd --device /dev/dri`).
@@ -150,7 +191,7 @@ native SM90 code for H100.
 ```
 ./proxichorizo --proxi stratum+tcp://proxi.suprnova.cc:3355 --token YOUR_TOKEN --key-file proxima.key --name rig1   # pool, stratum (or --token-file FILE); every GPU, one process
 ./proxichorizo ... -d 0,2                   # only these GPUs (PCI bus order, as nvidia-smi numbers them)
-./proxichorizo --proxi http://your-node:8200 --token SEEKER_TOKEN --key-file proxima.key                        # solo, see USAGE.md
+./proxichorizo --proxi http://your-node:8200 --token SEEKER_TOKEN                                               # Blake2b solo, see USAGE.md
 ./proxichorizo --autotune --bench 10        # fastest kernel variant per GPU, then its hashrate
 ./proxichorizo --selftest vectors.json      # the math against the Proxima node's VRF vectors
 ./proxichorizo ... --api-bind 127.0.0.1:4078   # JSON statistics at /, mmpOS line at /mmpos
@@ -191,7 +232,8 @@ the nonce once; a GPU then needs one BLAKE2b compression per attempt (two when t
 crosses a block boundary) and tests only the output word that holds the work. Every share is
 hashed again on the CPU before it is sent, and every GPU passes the upgrade-6 test vectors
 and a CPU comparison of all 32 nonce positions at start (`--hash-selftest`). Measured with
-`--hash-bench` (600-byte prefix, the size of a Proxima mining transaction):
+`--hash-bench` with a **600-byte synthetic prefix**. Actual transaction templates have
+different lengths, so these historical rates must be compared at the same prefix length:
 
 | GPU | Backend | Power cap | Hash rate | Measured power | Core clock |
 |---|---|---|---|---|---|
@@ -204,12 +246,12 @@ and a CPU comparison of all 32 nonce positions at start (`--hash-selftest`). Mea
 | Instinct MI50 | OpenCL | 225 W | **2.81 GH/s** | 220 W | 1690 MHz |
 | RX 7600 XT | OpenCL | 165 W | **2.16 GH/s** | 163 W | 2531 MHz |
 
-After 2.0.0 the RTX 3070 (sm_86) search uses a 32-bit nonce loop and precomputes the nonce-free steps
+In 2.0.1 the RTX 3070 (sm_86) search uses a 32-bit nonce loop and precomputes the nonce-free steps
 of rounds 0 and 1 per job (+0.6 to +1.3 % depending on the prefix length). On the RTX 5090 and the
 RX 7900 XTX the search is bound by the integer ALU, and none of the alternatives we measured (other
 rotation forms, multiply-unit adds and rotations, wave64, other work-group sizes, two nonces per thread)
-was faster, so Blackwell (RTX 50) and all OpenCL devices keep the 2.0.0 kernels, as do the other GPU
-generations.
+was faster in that investigation, so 2.0.1 retained the 2.0.0 kernels on Blackwell (RTX 50),
+OpenCL and the other GPU generations.
 
 
 ### 1.0.7: select kernels by GPU model

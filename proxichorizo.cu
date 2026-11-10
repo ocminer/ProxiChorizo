@@ -2,7 +2,7 @@
 // reuse in commercial or closed-source miners needs written permission. See LICENSE.
 #include <cuda_runtime.h>
 #include <functional>
-#include "txid_cuda.cuh"   // txid-blake2b work of library upgrade 6: CPU reference, precomputation, CUDA kernels
+#include "txid_aligned.cuh"   // txid-blake2b work of library upgrade 6: CPU reference, precomputation, CUDA kernels
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -3494,12 +3494,26 @@ static void install_job(Shared &sh, const std::string &body) {
         // seeker protocol version 2 (proxi node mine from library upgrade 6): the transit's ID preimage without the
         // 8-byte nonce; no key. The beat is a work key: hash[24..31] || hash[6..23] (26 bytes), smaller is better.
         std::string msgh; json_str(body, "message", msgh);
+        uint64_t nonce_offset = 0;
+        if (!json_u64(body, "k", k) || k > 64 || !json_u64(body, "nonce_offset", nonce_offset)) {
+            log_err("bad difficulty or missing nonce_offset in a version 2 job"); sh.job = Job(); return;
+        }
         Job j; j.txid = true; j.id = id; j.jid = std::to_string(id); j.slot = slot; j.k = (int)k;
-        if (!unhex(msgh, j.hprefix) || j.hprefix.empty() || j.hprefix.size() > 65536) { logln("bad message in a version 2 job"); sh.job = Job(); return; }
+        if (!unhex(msgh, j.hprefix) || j.hprefix.empty() || j.hprefix.size() > 65536 || nonce_offset != j.hprefix.size()) { logln("bad message or nonce_offset in a version 2 job"); sh.job = Job(); return; }
         j.en1 = sh.en1; j.nonce_base = (uint64_t)j.en1 << 48; j.has_base = true;
         std::vector<uint8_t> b; memset(j.beat, 0xff, 64);
-        if (!beath.empty() && unhex(beath, b) && b.size() == 26) { j.has_beat = true; memcpy(j.beat, b.data(), 26); }
-        j.has_ttl = ttl > 0; j.clean = true;
+        if (!beath.empty()) {
+            if (!unhex(beath, b) || b.size() != 26) { log_err("bad beat in a version 2 job"); sh.job = Job(); return; }
+            j.has_beat = true; memcpy(j.beat, b.data(), 26);
+        }
+        // A long-poll can arrive after a newer result response. Keep the stricter
+        // beat for the same immutable job, rather than submit beaten work again.
+        if (sh.job.id == id && sh.job.txid && sh.job.hprefix == j.hprefix && sh.job.has_beat &&
+            (!j.has_beat || memcmp(sh.job.beat, j.beat, 26) < 0)) {
+            j.has_beat = true; memcpy(j.beat, sh.job.beat, 26);
+        }
+        j.has_ttl = true; j.clean = true;  // zero TTL means expired, never unlimited
+
         j.deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(ttl);
         bool changed = sh.job.id != id;
         bool modeSwitch = sh.last_job_id != 0 && !sh.last_txid;
@@ -3508,6 +3522,7 @@ static void install_job(Shared &sh, const std::string &body) {
         if (changed) logln("hash job " + j.jid + ": slot " + std::to_string(slot) + ", k=" + std::to_string(k) + ", " + std::to_string(j.hprefix.size()) + "-byte message, ttl " + std::to_string(ttl) + " ms");
         return;
     }
+    if (version != 1) { log_err("unsupported seeker job version " + std::to_string(version)); sh.job = Job(); return; }
     if (!sh.have_key) {
         if (!sh.vrf_refused_logged) { log_warn("VRF job ignored: no --key-file given; this miner mines the hash jobs of library upgrade 6 (seeker protocol version 2) without a key"); sh.vrf_refused_logged = true; }
         sh.job = Job(); return;
@@ -3883,16 +3898,25 @@ static void txid_found(Shared &sh, const Job &j, const txid::HitRec *hits, unsig
         }
         ok.push_back(f);
     }
-    std::sort(ok.begin(), ok.end(), [](const Found &a, const Found &b) { return a.work > b.work; });
+    std::sort(ok.begin(), ok.end(), [&](const Found &a, const Found &b) {
+        if (sh.url.stratum) return a.work > b.work;
+        int order = memcmp(a.h + 24, b.h + 24, 8);
+        return order ? order < 0 : memcmp(a.h + 6, b.h + 6, 18) < 0;
+    });
     for (auto &f : ok) {
         {
             std::lock_guard<std::mutex> l(sh.mu);
             const Job &cur = sh.job;
             if (cur.id != j.id && (cur.id == 0 || cur.clean)) return;   // replaced (clean_jobs): the pool would answer stale
             if (cur.id == j.id && cur.stale) return;
-            if (sh.cap_job != j.id) { sh.cap_job = j.id; sh.cap_n = 0; sh.cap_best = -1; }
-            if (sh.cap_n >= TXID_JOB_CAP && f.work <= sh.cap_best) continue;
-            sh.cap_n++; if (f.work > sh.cap_best) sh.cap_best = f.work;
+            // Only the pool caps credited shares. Solo must keep improving the
+            // full 26-byte work key, including after 256 candidates and when a
+            // smaller key has the same (or fewer) trailing zero bits.
+            if (sh.url.stratum) {
+                if (sh.cap_job != j.id) { sh.cap_job = j.id; sh.cap_n = 0; sh.cap_best = -1; }
+                if (sh.cap_n >= TXID_JOB_CAP && f.work <= sh.cap_best) continue;
+                sh.cap_n++; if (f.work > sh.cap_best) sh.cap_best = f.work;
+            }
         }
         if (sh.con.verbose) logln("GPU share of job " + j.jid + ": " + std::to_string(f.work) + " zero bits (k=" + std::to_string(j.k) + ")");
         if (sh.url.stratum) stratum_submit_txid(sh, j, f.n, f.h, f.work, ordinal);
@@ -4219,11 +4243,12 @@ struct GpuCfg { int dev; int blocks; int threads; int iters; const VariantOps *o
 // extranonce2 range, never repeating an extranonce2 within a job (the cursor survives a job's re-send).
 struct TxidWorker {
     Shared &sh; int ordinal; unsigned grid; uint32_t iters = 64; float last_ms = 0;
-    txid::Params p; uint64_t job = 0; uint16_t en1 = 0; int k = -1; uint64_t cur = 0, lo = 0, hi = 0; bool exhausted = false;
+    txid::Params p; txid::AlignedSearch aligned_cache; bool aligned_gpu = false, aligned_job = false; uint64_t job = 0; uint16_t en1 = 0; int k = -1; uint64_t cur = 0, lo = 0, hi = 0; bool exhausted = false;
     std::map<std::pair<uint64_t, uint16_t>, uint64_t> cursors;
     txid::HitRec *d_hits = nullptr; unsigned *d_n = nullptr; std::vector<txid::HitRec> hits; cudaEvent_t e0, e1;
-    TxidWorker(Shared &s, int ord, int sms) : sh(s), ordinal(ord), hits(TXID_MAX_HITS) {
-        grid = (unsigned)sms * 16;
+    TxidWorker(Shared &s, int ord, const cudaDeviceProp &prop) : sh(s), ordinal(ord), hits(TXID_MAX_HITS) {
+        grid = (unsigned)prop.multiProcessorCount * 16;
+        aligned_gpu = txid::aligned_device(prop);
         if (const char *e = getenv("PX_TXID_GRID")) grid = (unsigned)atoi(e);
         CUDA_CHECK(cudaMalloc(&d_hits, sizeof(txid::HitRec) * TXID_MAX_HITS)); CUDA_CHECK(cudaMalloc(&d_n, sizeof(unsigned)));
         CUDA_CHECK(cudaEventCreate(&e0)); CUDA_CHECK(cudaEventCreate(&e1));
@@ -4236,6 +4261,7 @@ struct TxidWorker {
             if (job) { cursors[{job, en1}] = cur; if (cursors.size() > 256) cursors.clear(); }
             job = j.id; en1 = j.en1; k = j.k; exhausted = false;
             txid::prepare(j.hprefix.data(), (int)j.hprefix.size(), k, p);
+            aligned_job = aligned_gpu && txid::aligned_shape((int)j.hprefix.size()); aligned_cache.reset();
             txid_range(sh, ordinal, lo, hi);
             auto it = cursors.find({job, en1}); cur = it != cursors.end() ? it->second : lo;
         } else if (j.k != k) { k = j.k; p.mask = txid::mask_for_k(k); }
@@ -4244,15 +4270,18 @@ struct TxidWorker {
             idle(10); return true;
         }
         uint64_t per = (uint64_t)grid * TXID_TPB * iters, count = std::min<uint64_t>(per, hi - cur);
+        if (aligned_job) count = txid::aligned_count(cur, count);
 #define TX_TRY(x) if (cudaError_t e_ = (x)) { fail = std::string(cudaGetErrorString(e_)) + " in " #x; return false; }
         TX_TRY(cudaMemsetAsync(d_n, 0, sizeof(unsigned)));
         TX_TRY(cudaEventRecord(e0));
-        txid::launch(grid, TXID_TPB, 0, p, ((uint64_t)en1 << 48) | cur, count, iters, d_hits, d_n);
+        if (aligned_job) txid::launch_aligned(grid, TXID_TPB, 0, p, (int)j.hprefix.size(), ((uint64_t)en1 << 48) | cur, count, d_hits, d_n, aligned_cache);
+        else txid::launch(grid, TXID_TPB, 0, p, ((uint64_t)en1 << 48) | cur, count, iters, d_hits, d_n);
         TX_TRY(cudaGetLastError());
         TX_TRY(cudaEventRecord(e1));
         { cudaError_t q0 = cudaEventQuery(e1); if (q0 != cudaSuccess && q0 != cudaErrorNotReady) { TX_TRY(q0); } }   // flush (WDDM)
         // sleep through most of the launch, then poll: no CPU core spins
-        if (last_ms > 3.0f) std::this_thread::sleep_for(std::chrono::microseconds((int64_t)((last_ms - 1.5f) * 1000.0f)));
+        float wait_ms = aligned_job && count != per ? last_ms * (float)((double)count / per) : last_ms;
+        if (wait_ms > 3.0f) std::this_thread::sleep_for(std::chrono::microseconds((int64_t)((wait_ms - 1.5f) * 1000.0f)));
         for (;;) { cudaError_t q = cudaEventQuery(e1); if (q == cudaSuccess) break; if (q != cudaErrorNotReady) { TX_TRY(q); } std::this_thread::sleep_for(std::chrono::microseconds(200)); }
         float ms = 0; TX_TRY(cudaEventElapsedTime(&ms, e0, e1));
         cur += count;
@@ -4311,7 +4340,7 @@ static void gpu_worker(Shared &sh, GpuCfg cfg) {
     std::string fail;
     // txid-blake2b (hash jobs): launch geometry (TXID_TPB threads, SMs x 16 blocks, iterations adapted so a launch
     // takes ~txid_launch_ms), this GPU's extranonce2 range and the per-job cursor in it
-    TxidWorker tw(sh, cfg.ordinal, prop.multiProcessorCount);
+    TxidWorker tw(sh, cfg.ordinal, prop);
     while (!sh.stop) {
         if (!thermal_gate(sh, cfg.ordinal)) {
             { std::lock_guard<std::mutex> l(sh.mu); sh.gpus[cfg.ordinal].win_idle_ms += 1000; }
@@ -4858,6 +4887,9 @@ int main(int argc, char **argv) {
         for (int d : devs) {
             CUDA_CHECK(cudaSetDevice(d)); cudaDeviceProp prop; CUDA_CHECK(cudaGetDeviceProperties(&prop, d));
             std::string why; auto t0 = std::chrono::steady_clock::now(); int r = txid::cuda_selfcheck(why);
+            if (!r && txid::aligned_device(prop)) {
+                std::string extra; r = txid::aligned_selfcheck(extra); why += "; " + extra;
+            }
             double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
             if (r || !quiet) fprintf(stderr, "GPU %d %s: txid-blake2b self-check %s: %s (%.1f s)\n", d, prop.name, r ? "FAILED" : "passed", why.c_str(), secs);
             rc |= r;
@@ -4871,6 +4903,7 @@ int main(int argc, char **argv) {
             CUDA_CHECK(cudaSetDevice(d)); cudaDeviceProp prop; CUDA_CHECK(cudaGetDeviceProperties(&prop, d));
             std::vector<uint8_t> prefix((size_t)std::max(0, txidPrefix)); for (size_t i = 0; i < prefix.size(); i++) prefix[i] = (uint8_t)(i * 31 + 7);
             txid::Params p; txid::Shape shp = txid::prepare(prefix.data(), (int)prefix.size(), 40, p);
+            bool aligned = txid::aligned_device(prop) && txid::aligned_shape((int)prefix.size()); txid::AlignedSearch aligned_cache;
             txid::HitRec *dh; unsigned *dn; CUDA_CHECK(cudaMalloc(&dh, sizeof(txid::HitRec) * TXID_MAX_HITS)); CUDA_CHECK(cudaMalloc(&dn, 4)); CUDA_CHECK(cudaMemset(dn, 0, 4));
             unsigned grid = prop.multiProcessorCount * 16; if (const char *e = getenv("PX_TXID_GRID")) grid = atoi(e);
             uint32_t it = 64; uint64_t n = 0x0102000000000000ULL, total = 0; double kms = 0; int launches = 0;
@@ -4878,9 +4911,13 @@ int main(int argc, char **argv) {
             auto t0 = std::chrono::steady_clock::now(), last = t0; uint64_t lastTotal = 0;
             while (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < txidBench) {
                 uint64_t per = (uint64_t)grid * TXID_TPB * it;
-                cudaEventRecord(e0); txid::launch(grid, TXID_TPB, 0, p, n, per, it, dh, dn); cudaEventRecord(e1); CUDA_CHECK(cudaEventSynchronize(e1));
-                float ms = 0; cudaEventElapsedTime(&ms, e0, e1); kms += ms; launches++; n += per; total += per;
-                if (ms > 0) it = (uint32_t)std::max(4.0, std::min(65536.0, it * 0.5 + it * (double)txidLaunchMs / ms * 0.5));
+                uint64_t count = aligned ? txid::aligned_count(n, per) : per;
+                cudaEventRecord(e0);
+                if (aligned) txid::launch_aligned(grid, TXID_TPB, 0, p, (int)prefix.size(), n, count, dh, dn, aligned_cache);
+                else txid::launch(grid, TXID_TPB, 0, p, n, count, it, dh, dn);
+                cudaEventRecord(e1); CUDA_CHECK(cudaEventSynchronize(e1));
+                float ms = 0; cudaEventElapsedTime(&ms, e0, e1); kms += ms; launches++; n += count; total += count;
+                if (count == per && ms > 0) it = (uint32_t)std::max(4.0, std::min(65536.0, it * 0.5 + it * (double)txidLaunchMs / ms * 0.5));
                 auto now = std::chrono::steady_clock::now();
                 if (now - last >= std::chrono::seconds(5)) {
                     GpuSensors se; char bus[32] = "?"; cudaDeviceGetPCIBusId(bus, sizeof bus, d); se = read_sensors(bus);
@@ -4889,8 +4926,8 @@ int main(int argc, char **argv) {
                 }
             }
             double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-            fprintf(stderr, "GPU %d %s: txid-blake2b %d-byte prefix (kernel %d): %.3f GH/s over %.0f s (%.3f GH/s kernel time, %d launches of %.1f ms, %ux%dx%u)\n",
-                    d, prop.name, txidPrefix, shp.kernel, total / el / 1e9, el, total / (kms / 1e3) / 1e9, launches, kms / launches, grid, TXID_TPB, it);
+            fprintf(stderr, "GPU %d %s: txid-blake2b %d-byte prefix (kernel %d%s): %.3f GH/s over %.0f s (%.3f GH/s kernel time, %d launches of %.1f ms, %ux%dx%u)\n",
+                    d, prop.name, txidPrefix, shp.kernel, aligned ? ", aligned32" : "", total / el / 1e9, el, total / (kms / 1e3) / 1e9, launches, kms / launches, grid, TXID_TPB, it);
             cudaFree(dh); cudaFree(dn);
         }
         return 0;
