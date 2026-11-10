@@ -73,6 +73,8 @@ jobs:
           make -C opencl test-profiles CL_INC=/usr/include CL_LIB=/usr/lib/x86_64-linux-gnu
           python3 tests/opencl_arithmetic.py
           python3 scripts/test-launchers.py
+          g++ -O2 -std=c++17 -pthread tests/txid/solo_host_test.cpp -ldl -o /tmp/test-solo-host
+          /tmp/test-solo-host
           ./proxichorizo --help
           ./opencl/proxichorizo-cl --help
       - name: stratum and stratum+ssl against the live pool (system OpenSSL, no GPU)

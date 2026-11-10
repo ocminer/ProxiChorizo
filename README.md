@@ -24,11 +24,12 @@ pool URL, worker and token. Hash rates are in GH/s and depend on the job's messa
 the historical 600-byte synthetic test measured RTX 5090 ≈ 16.1 GH/s at 450 W, 17.3 at 575 W. See
 [2.0 hash benchmarks](#20-hash-work-txid-blake2b).
 
-### Unreleased Blake2b improvements — 2026-11-10
+### 2.0.2 Blake2b improvements — 2026-11-10
 
-Development builds improve the measured RTX 5090 job layouts and fix solo candidate
+Version 2.0.2 improves the measured RTX 5090 job layouts and fixes solo candidate
 selection. Other GPU models and unmeasured layouts keep their existing kernels.
-These changes are **not included in the published v2.0.1 packages**.
+The measurements below come from the qualified development builds used to select
+these changes; they are not relabeled as final release measurements.
 
 Matched A/B/B/A measurements against the published v2.0.1 Linux binary, using
 30-second runs and wall-clock hash counts:
@@ -117,9 +118,9 @@ distribution); the Windows archive brings its own. The pool's certificate is che
   token, password empty for Blake2b. Worker name = the rig name.
 * **MMPOS / SMOS:** the same tarball, launchers `mmpos-run.sh` / `smos-run.sh`; pool URL as
   above, user = token, password empty for Blake2b (see [USAGE.md](USAGE.md)).
-* **Docker (NVIDIA):** `ocminersupr/proxichorizo:2.0.1` with `TOKEN`
+* **Docker (NVIDIA):** `ocminersupr/proxichorizo:2.0.2` with `TOKEN`
   and optionally `POOL_URL` (default `stratum+tcp://proxi.suprnova.cc:3355`); see `docker/README.md`.
-* **Docker (AMD):** `ocminersupr/proxichorizo:2.0.1-amd` (also `:amd`), the OpenCL miner with AMD's
+* **Docker (AMD):** `ocminersupr/proxichorizo:2.0.2-amd` (also `:amd`), the OpenCL miner with AMD's
   ROCm OpenCL runtime inside; the host needs only the amdgpu driver (`--device /dev/kfd --device /dev/dri`).
 
 ### Is it working?

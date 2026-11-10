@@ -342,7 +342,7 @@ helps to find a mismatch. Answers and error codes as in §7 (`23` = work below k
   to clients that connect during it. A client SHOULD keep its connection, idle its GPUs and not
   reconnect in a loop.
 * From slot 196000 the pool refuses `mining.authorize` from clients whose user agent is below
-  `ProxiChorizo/2.0.0` or later (e.g. `ProxiChorizo/2.0.1`; pre-releases `2.0.0-rc.N` are accepted). The user agent is the first
+  `ProxiChorizo/2.0.0` or later (e.g. `ProxiChorizo/2.0.2`; pre-releases `2.0.0-rc.N` are accepted). The user agent is the first
   parameter of `mining.subscribe` and MUST stay `ProxiChorizo/<semver>`.
 
 ### 9.6 Test vectors
