@@ -175,13 +175,13 @@ jobs:
         run: |
           python gen_host.py
           if errorlevel 1 exit /b 1
-          cl /nologo /EHsc /std:c++17 /O2 /MT /W3 /utf-8 /I"%OCL_DIR%\include" proxichorizo_cl.cpp windows_opencl_loader.cpp /Fe:proxichorizo-cl.exe /link "%OCL_DIR%\lib\OpenCL.lib" delayimp.lib /DELAYLOAD:OpenCL.dll
+          cl /nologo /EHsc /std:c++17 /O2 /MT /W3 /utf-8 /DNOMINMAX /D_CRT_SECURE_NO_WARNINGS /I"%OCL_DIR%\include" proxichorizo_cl.cpp windows_opencl_loader.cpp /Fe:proxichorizo-cl.exe /link "%OCL_DIR%\lib\OpenCL.lib" delayimp.lib /DELAYLOAD:OpenCL.dll
           if errorlevel 1 exit /b 1
       - name: CPU profile checks and executable startup with and without OpenCL.dll
         shell: pwsh
         working-directory: opencl
         run: |
-          cl /nologo /EHsc /std:c++17 /O2 /MT /utf-8 /I"$env:OCL_DIR\include" tests/profiles.cpp windows_opencl_loader.cpp /Fe:test-profiles.exe /link "$env:OCL_DIR\lib\OpenCL.lib" delayimp.lib /DELAYLOAD:OpenCL.dll
+          cl /nologo /EHsc /std:c++17 /O2 /MT /utf-8 /DNOMINMAX /D_CRT_SECURE_NO_WARNINGS /I"$env:OCL_DIR\include" tests/profiles.cpp windows_opencl_loader.cpp /Fe:test-profiles.exe /link "$env:OCL_DIR\lib\OpenCL.lib" delayimp.lib /DELAYLOAD:OpenCL.dll
           if ($LASTEXITCODE -ne 0) { throw 'profile test build failed' }
           ./test-profiles.exe; if ($LASTEXITCODE -ne 0) { throw 'profile checks failed' }
           ./proxichorizo-cl.exe --help; if ($LASTEXITCODE -ne 0) { throw '--help failed' }
