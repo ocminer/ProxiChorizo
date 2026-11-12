@@ -1,5 +1,6 @@
 name: release
-# Builds ProxiChorizo for Linux (glibc 2.31: any distro, HiveOS, MMPOS, SMOS) and Windows (MSVC),
+# Builds ProxiChorizo for Linux (glibc 2.31: any distro, HiveOS, MMPOS, SMOS) and Windows (MSVC: NVIDIA CUDA
+# and AMD OpenCL),
 # packages the archives with checksums, pushes the Docker image, and publishes the GitHub release
 # of the tag with RELEASE-v<version>.md as its notes. Trigger: push a tag v<version>; the tag must
 # match PX_VERSION in proxichorizo.cu. workflow_dispatch builds artifacts without a release.
@@ -11,6 +12,11 @@ on:
       version:
         description: source version for a manual build (dev uses PX_VERSION)
         default: dev
+      target:
+        description: jobs of a manual build (windows-amd = only the Windows AMD/OpenCL package)
+        type: choice
+        options: [all, windows-amd]
+        default: all
 permissions:
   contents: write
   packages: write
@@ -48,6 +54,7 @@ jobs:
 
   linux:
     needs: version
+    if: inputs.target != 'windows-amd'
     runs-on: ubuntu-latest
     container: nvidia/cuda:12.9.1-devel-ubuntu20.04
     steps:
@@ -96,6 +103,7 @@ jobs:
 
   windows:
     needs: version
+    if: inputs.target != 'windows-amd'
     runs-on: windows-2022
     timeout-minutes: 350
     steps:
@@ -140,8 +148,78 @@ jobs:
         env: { GH_TOKEN: "${{ github.token }}" }
         run: gh release upload "v${{ needs.version.outputs.ver }}" (Get-ChildItem dist/* | ForEach-Object FullName) --clobber
 
+  windows-amd:
+    needs: version
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      # Khronos OpenCL SDK: headers + OpenCL.lib to link against. OpenCL.dll is NOT shipped: the AMD GPU
+      # driver installs it, and the miner delay-loads it (opencl/windows_opencl_loader.cpp explains a missing one).
+      OCL_SDK: v2025.07.23
+      OCL_SDK_SHA256: b5f742038a7999e51750c930dbcbcfe7eeeb2a931bfc67bf62ba59eb13ff4049
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with: { arch: x64 }
+      - name: Khronos OpenCL SDK
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'ocl-sdk.zip'
+          Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/KhronosGroup/OpenCL-SDK/releases/download/$env:OCL_SDK/OpenCL-SDK-$env:OCL_SDK-Win-x64.zip" -OutFile $zip
+          if ((Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:OCL_SDK_SHA256) { throw 'OpenCL SDK checksum mismatch' }
+          Expand-Archive $zip (Join-Path $env:RUNNER_TEMP 'ocl') -Force
+          "OCL_DIR=$(Join-Path $env:RUNNER_TEMP "ocl/OpenCL-SDK-$env:OCL_SDK-Win-x64")" >> $env:GITHUB_ENV
+      - name: build the OpenCL miner (AMD)
+        shell: cmd
+        working-directory: opencl
+        run: |
+          python gen_host.py
+          if errorlevel 1 exit /b 1
+          cl /nologo /EHsc /std:c++17 /O2 /MT /W3 /utf-8 /I"%OCL_DIR%\include" proxichorizo_cl.cpp windows_opencl_loader.cpp /Fe:proxichorizo-cl.exe /link "%OCL_DIR%\lib\OpenCL.lib" delayimp.lib /DELAYLOAD:OpenCL.dll
+          if errorlevel 1 exit /b 1
+      - name: CPU profile checks and executable startup with and without OpenCL.dll
+        shell: pwsh
+        working-directory: opencl
+        run: |
+          cl /nologo /EHsc /std:c++17 /O2 /MT /utf-8 /I"$env:OCL_DIR\include" tests/profiles.cpp windows_opencl_loader.cpp /Fe:test-profiles.exe /link "$env:OCL_DIR\lib\OpenCL.lib" delayimp.lib /DELAYLOAD:OpenCL.dll
+          if ($LASTEXITCODE -ne 0) { throw 'profile test build failed' }
+          ./test-profiles.exe; if ($LASTEXITCODE -ne 0) { throw 'profile checks failed' }
+          ./proxichorizo-cl.exe --help; if ($LASTEXITCODE -ne 0) { throw '--help failed' }
+          $system = Test-Path (Join-Path $env:WINDIR 'System32/OpenCL.dll')
+          "runner OpenCL.dll in System32: $system"
+          if (!$system) {
+            # no AMD driver: the first OpenCL call must explain the missing runtime and exit 3, not crash
+            $out = & ./proxichorizo-cl.exe --list-devices 2>&1 | Out-String; $out
+            if ($LASTEXITCODE -ne 3 -or !$out.Contains('AMD Adrenalin')) { throw "missing-OpenCL handling: exit $LASTEXITCODE" }
+          }
+          # with the Khronos ICD loader (no GPU driver): OpenCL loads and reports no platforms
+          $t = Join-Path $env:RUNNER_TEMP 'cl-loader-test'; New-Item -ItemType Directory -Force $t | Out-Null
+          Copy-Item proxichorizo-cl.exe, "$env:OCL_DIR/bin/OpenCL.dll" $t
+          & "$t/proxichorizo-cl.exe" --list-devices 2>&1 | Out-String
+          "exit $LASTEXITCODE (no GPU on the runner)"
+          if ($LASTEXITCODE -eq 3) { throw 'OpenCL.dll next to the miner was not loaded' }
+      - name: OpenSSL 3 for the package (stratum+ssl)
+        shell: pwsh
+        run: |
+          if (!(Test-Path 'C:\Program Files\OpenSSL\bin\libssl-3-x64.dll') -and !(Test-Path 'C:\Program Files\OpenSSL-Win64\bin\libssl-3-x64.dll')) { choco install openssl -y --no-progress }
+          Get-ChildItem 'C:\Program Files\OpenSSL*\bin\lib*-3-x64.dll' | ForEach-Object FullName
+      - name: package
+        shell: pwsh
+        run: scripts/package-windows.ps1 -Version "${{ needs.version.outputs.ver }}" -Exe opencl/proxichorizo-cl.exe -Flavor amd
+      - name: verify packaged notices and checksums
+        shell: pwsh
+        run: python scripts/verify-release.py --version "${{ needs.version.outputs.ver }}" (Get-ChildItem dist/*.zip | ForEach-Object FullName)
+      - uses: actions/upload-artifact@v4
+        with: { name: windows-amd, path: dist/*, if-no-files-found: error }
+      - name: attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: gh release upload "v${{ needs.version.outputs.ver }}" (Get-ChildItem dist/* | ForEach-Object FullName) --clobber
+
   docker:
     needs: version
+    if: inputs.target != 'windows-amd'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -183,7 +261,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [version, linux, windows, docker]
+    needs: [version, linux, windows, windows-amd, docker]
     runs-on: ubuntu-latest
     env: { GH_TOKEN: "${{ github.token }}" }
     steps:

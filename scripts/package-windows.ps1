@@ -1,14 +1,19 @@
-param([Parameter(Mandatory=$true)][string]$Version, [string]$Exe = 'proxichorizo.exe', [string]$Cuda = '12.9')
+# -Flavor nvidia: proxichorizo.exe (CUDA) -> proxichorizo-<ver>-windows-x86_64.zip
+# -Flavor amd:    proxichorizo-cl.exe (OpenCL) -> proxichorizo-<ver>-windows-amd-x86_64.zip
+param([Parameter(Mandatory=$true)][string]$Version, [string]$Exe = 'proxichorizo.exe', [string]$Cuda = '12.9',
+      [ValidateSet('nvidia', 'amd')][string]$Flavor = 'nvidia')
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 Set-Location $root
-$name = "proxichorizo-$Version-windows-x86_64"
+$amd = $Flavor -eq 'amd'
+$name = if ($amd) { "proxichorizo-$Version-windows-amd-x86_64" } else { "proxichorizo-$Version-windows-x86_64" }
+$exeName = if ($amd) { 'proxichorizo-cl.exe' } else { 'proxichorizo.exe' }
 $stage = Join-Path ($env:RUNNER_TEMP ?? $env:TEMP) $name
 Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $stage | Out-Null
 if (!(Test-Path $Exe)) { throw "executable missing: $Exe" }
-Copy-Item $Exe "$stage/proxichorizo.exe"
-Copy-Item windows/* $stage
+Copy-Item $Exe "$stage/$exeName"
+Copy-Item $(if ($amd) { 'windows-amd/*' } else { 'windows/*' }) $stage
 Copy-Item README.md, USAGE.md, LICENSE, NOTICE, PLATFORMS.md, STRATUM-SPEC.md, vectors.json, vectors-txid-blake2b.json $stage
 Copy-Item -Recurse benchmarks (Join-Path $stage 'benchmarks')
 if (Test-Path "RELEASE-v$Version.md") { Copy-Item "RELEASE-v$Version.md" $stage }
@@ -25,20 +30,23 @@ if ((Get-Item "$stage/cacert.pem").Length -lt 100000) { throw 'cacert.pem downlo
 $info = @{
     version = $Version; source_commit = (& git rev-parse HEAD).Trim()
     ci_run = "https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
-    platform = 'native-windows-x86_64'; cuda = $Cuda; architectures = @(75,80,86,89,90,120)
+    platform = 'native-windows-x86_64'
     windows_gpu_hardware_test = $false
 }
+if ($amd) { $info.gpu = 'amd-opencl'; $info.opencl = $true; $info.opencl_runtime = 'OpenCL.dll from the AMD GPU driver (delay-loaded)' }
+else { $info.gpu = 'nvidia-cuda'; $info.cuda = $Cuda; $info.architectures = @(75,80,86,89,90,120) }
 $info | ConvertTo-Json | Set-Content "$stage/BUILD-INFO.json"
-# cudart is linked statically; a clean --help proves the executable starts (no GPU on the runner).
+# cudart / the MSVC runtime are linked statically and OpenCL.dll is delay-loaded: a clean --help proves the
+# executable starts (no GPU on the runner).
 Push-Location $stage
 try {
-    $helpText = & ./proxichorizo.exe --help 2>&1
+    $helpText = & "./$exeName" --help 2>&1
     if ($LASTEXITCODE -ne 0) { throw "executable startup failed: $LASTEXITCODE" }
     if (!(($helpText -join "`n").Contains("ProxiChorizo $Version"))) { throw 'executable version mismatch' }
     $helpText | Select-Object -First 2
     # the packaged OpenSSL DLLs and cacert.pem against the live pool, plain and TLS (no GPU needed)
     foreach ($url in 'stratum+tcp://proxi.suprnova.cc:3355', 'stratum+ssl://proxi.suprnova.cc:3356') {
-        & ./proxichorizo.exe --check-pool $url
+        & "./$exeName" --check-pool $url
         if ($LASTEXITCODE -ne 0) { throw "check-pool $url failed" }
     }
 } finally { Pop-Location }

@@ -55,7 +55,9 @@ def verify_archive(path, version, commit):
     check_notices(files, version)
     info = json.loads(text(files["BUILD-INFO.json"]))
     assert info["version"] == version and info["source_commit"] == commit
-    assert info["architectures"] == ARCHS, "architecture metadata mismatch"
+    windows_amd = path.suffix == ".zip" and "proxichorizo-cl.exe" in files
+    if not windows_amd:
+        assert info["architectures"] == ARCHS, "architecture metadata mismatch"
     expected = {}
     for line in text(files["SHA256SUMS.txt"]).splitlines():
         match = re.fullmatch(r"([0-9a-fA-F]{64})\s+\*?(.+)", line)
@@ -71,7 +73,15 @@ def verify_archive(path, version, commit):
     if path.suffix == ".zip":
         assert info["platform"] == "native-windows-x86_64"
         assert info["windows_gpu_hardware_test"] is False
-        assert files["proxichorizo.exe"].startswith(b"MZ")
+        if windows_amd:
+            assert path.name == "proxichorizo-" + version + "-windows-amd-x86_64.zip"
+            assert info["gpu"] == "amd-opencl" and info["opencl"] is True and "cuda" not in info
+            assert files["proxichorizo-cl.exe"].startswith(b"MZ") and "proxichorizo.exe" not in files
+            assert "OpenCL.dll" not in files, "the AMD driver provides OpenCL.dll; do not ship a loader"
+            assert "proxichorizo-cl.exe" in text(files["start.ps1"]) and "AMD OpenCL" in text(files["README.txt"])
+        else:
+            assert path.name == "proxichorizo-" + version + "-windows-x86_64.zip"
+            assert files["proxichorizo.exe"].startswith(b"MZ") and "proxichorizo-cl.exe" not in files
         assert "ProxiChorizo " + version in text(files["README.txt"])
         for name in ["start.cmd", "start.ps1", "README.txt"]:
             assert name in files
