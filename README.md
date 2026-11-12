@@ -87,7 +87,7 @@ Linux x86-64 (also HiveOS, MMPOS, SMOS) or Windows 10/11 x64, and a PROX address
    ```
    proxichorizo.exe -o stratum+tcp://proxi.suprnova.cc:3355 -u rig1 -p YOUR_TOKEN
    ```
-   AMD GPUs on Linux: the same with `./proxichorizo-cl`. The native Windows archive contains the NVIDIA CUDA miner.
+   AMD GPUs: the same with `./proxichorizo-cl` on Linux, or `proxichorizo-cl.exe` from the Windows AMD archive.
 
 ### Pool addresses
 
@@ -184,7 +184,8 @@ native SM90 code for H100.
 
 * `proxichorizo-<ver>.tar.gz` — Linux x86-64, built on glibc 2.31. One tarball serves plain Linux, **HiveOS** (`h-run.sh`), **MMPOS** (`mmpos-run.sh`) and **SMOS** (`smos-run.sh`) — pick the launcher for your OS and set the pool URL, your pool token and your key seed in the flight sheet.
 * `proxichorizo-hiveos.tar.gz` — the same package under the directory name HiveOS's custom-miner installer requires (miner name `proxichorizo`).
-* `proxichorizo-<ver>-windows-x86_64.zip` — native **Windows** x64, with the OpenSSL DLLs and `cacert.pem` for `stratum+ssl://`. Put the pool's `proxima.key` next to it, set your token in `start.cmd` and run it.
+* `proxichorizo-<ver>-windows-x86_64.zip` — native **Windows** x64 for **NVIDIA** (CUDA), with the OpenSSL DLLs and `cacert.pem` for `stratum+ssl://`. Set your token in `start.cmd` and run it.
+* `proxichorizo-<ver>-windows-amd-x86_64.zip` — native **Windows** x64 for **AMD** (OpenCL, `proxichorizo-cl.exe`), same layout; needs the AMD Adrenalin driver, which provides `OpenCL.dll`. Windows does not expose AMD temperatures to the miner, so watch them in AMD Software.
 * Docker: `ocminersupr/proxichorizo:<ver>` for NVIDIA, `ocminersupr/proxichorizo:<ver>-amd` for AMD (`docker/README.md`).
 * `SHA256SUMS` and one `.sha256` per asset; every archive carries its own `SHA256SUMS.txt` and `BUILD-INFO.json`.
 
