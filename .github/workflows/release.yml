@@ -185,19 +185,18 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'profile test build failed' }
           ./test-profiles.exe; if ($LASTEXITCODE -ne 0) { throw 'profile checks failed' }
           ./proxichorizo-cl.exe --help; if ($LASTEXITCODE -ne 0) { throw '--help failed' }
-          $system = Test-Path (Join-Path $env:WINDIR 'System32/OpenCL.dll')
-          "runner OpenCL.dll in System32: $system"
-          if (!$system) {
-            # no AMD driver: the first OpenCL call must explain the missing runtime and exit 3, not crash
-            $out = & ./proxichorizo-cl.exe --list-devices 2>&1 | Out-String; $out
-            if ($LASTEXITCODE -ne 3 -or !$out.Contains('AMD Adrenalin')) { throw "missing-OpenCL handling: exit $LASTEXITCODE" }
-          }
-          # with the Khronos ICD loader (no GPU driver): OpenCL loads and reports no platforms
-          $t = Join-Path $env:RUNNER_TEMP 'cl-loader-test'; New-Item -ItemType Directory -Force $t | Out-Null
-          Copy-Item proxichorizo-cl.exe, "$env:OCL_DIR/bin/OpenCL.dll" $t
-          & "$t/proxichorizo-cl.exe" --list-devices 2>&1 | Out-String
-          "exit $LASTEXITCODE (no GPU on the runner)"
-          if ($LASTEXITCODE -eq 3) { throw 'OpenCL.dll next to the miner was not loaded' }
+          # OpenCL present (the runner has an OpenCL.dll but no GPU): the miner loads it and reports no GPU
+          $out = & ./proxichorizo-cl.exe --list-devices 2>&1 | Out-String; $code = $LASTEXITCODE; $out
+          if ($code -eq 3 -or $out.Contains('AMD Adrenalin')) { throw "OpenCL.dll on the runner was not loaded (exit $code)" }
+          # no AMD driver: the same delay-load hook against a DLL that does not exist must explain and exit 3
+          Set-Content missing.def "LIBRARY OpenCLmissing.dll`nEXPORTS`n  clGetPlatformIDs"
+          lib /nologo /def:missing.def /machine:x64 /out:missing.lib | Out-Null
+          Set-Content missing-test.cpp "#define CL_TARGET_OPENCL_VERSION 120`n#include <CL/cl.h>`nint main() { cl_uint n = 0; clGetPlatformIDs(0, nullptr, &n); return 0; }"
+          cl /nologo /EHsc /MT /DNOMINMAX /I"$env:OCL_DIR\include" missing-test.cpp windows_opencl_loader.cpp /Fe:missing-test.exe /link missing.lib delayimp.lib /DELAYLOAD:OpenCLmissing.dll
+          if ($LASTEXITCODE -ne 0) { throw 'missing-runtime test build failed' }
+          $out = & ./missing-test.exe 2>&1 | Out-String; $code = $LASTEXITCODE; $out
+          if ($code -ne 3 -or !$out.Contains('AMD Adrenalin')) { throw "missing-OpenCL handling: exit $code" }
+          exit 0
       - name: OpenSSL 3 for the package (stratum+ssl)
         shell: pwsh
         run: |
