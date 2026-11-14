@@ -84,6 +84,22 @@ template <int R> TXQ uint64_t rotr(uint64_t x) {
 #ifndef TXID_ROT_IMAD
 #define TXID_ROT_IMAD 0   // bits: 1 rot24, 2 rot16, 4 rot63 computed on the multiply-add pipe (wide multiplies by 2^s)
 #endif
+    if (R == 63 && (TXID_ROT_IMAD & 32)) {
+        // rotl by 1 without the shifter: y = x + x (64-bit add); s = hi's sign bit replicated by a byte permute
+        // (0 or 0xffffffff); y.lo - s adds the wrapped bit (y.lo is even, so no carry). The subtraction is a
+        // multiply-add s * 0xffffffff + y.lo so it stays on the multiply-add pipe.
+        const uint64_t y = x + x;
+        uint32_t sgn; asm("prmt.b32 %0, %1, 0, 0xBBBB;" : "=r"(sgn) : "r"(hi));   // __byte_perm drops the sign-replicate bit
+        uint32_t m1, l; asm("mov.b32 %0, -1;" : "=r"(m1));
+        asm("mad.lo.u32 %0, %1, %2, %3;" : "=r"(l) : "r"(sgn), "r"(m1), "r"((uint32_t)y));
+        return (y & 0xffffffff00000000ULL) | l;
+    }
+    if (R == 63 && (TXID_ROT_IMAD & 16)) {
+        // rotl by 1: x + x (64-bit add) | hi >> 31 taken as the high half of hi * 2 (multiply pipe, no shifter)
+        uint32_t two, top; asm("mov.b32 %0, 2;" : "=r"(two));
+        asm("mul.hi.u32 %0, %1, %2;" : "=r"(top) : "r"(hi), "r"(two));
+        return (x + x) | top;
+    }
     if (R == 63 && (TXID_ROT_IMAD & 8)) {
         // rotl by 1 as add-with-carry: lo+lo carries lo's top bit into hi+hi, whose carry is hi's top bit for lo
         uint32_t l, h;
