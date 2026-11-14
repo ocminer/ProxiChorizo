@@ -81,6 +81,29 @@ template <int R> TXQ uint64_t rotr(uint64_t x) {
 #ifdef __CUDA_ARCH__
     uint32_t lo = (uint32_t)x, hi = (uint32_t)(x >> 32), a, b;
     if (R == 32) return ((uint64_t)lo << 32) | hi;
+#ifndef TXID_ROT_IMAD
+#define TXID_ROT_IMAD 0   // bits: 1 rot24, 2 rot16, 4 rot63 computed on the multiply-add pipe (wide multiplies by 2^s)
+#endif
+    if (R == 63 && (TXID_ROT_IMAD & 8)) {
+        // rotl by 1 as add-with-carry: lo+lo carries lo's top bit into hi+hi, whose carry is hi's top bit for lo
+        uint32_t l, h;
+        asm("add.cc.u32 %0, %2, %2;\n\taddc.cc.u32 %1, %3, %3;\n\taddc.u32 %0, %0, 0;" : "=&r"(l), "=&r"(h) : "r"(lo), "r"(hi));
+        return ((uint64_t)h << 32) | l;
+    }
+    if ((R == 24 && (TXID_ROT_IMAD & 1)) || (R == 16 && (TXID_ROT_IMAD & 2)) || (R == 63 && (TXID_ROT_IMAD & 4))) {
+        // rotr(x, R) == rotl(x, s), s = 64 - R; per 32-bit half: lo*2^s and hi*2^s (s mod 32) as 64-bit products.
+        // R < 32: result.lo = (lo >> R) | (hi << (32-R)), result.hi = (hi >> R) | (lo << (32-R)).
+        // R > 32 (63): rotl by 1 on the swapped halves.  The pieces never overlap, so + equals |.
+        constexpr uint32_t K = R < 32 ? (1u << (32 - R)) : (1u << (64 - R));
+        uint32_t x0 = R < 32 ? lo : hi, x1 = R < 32 ? hi : lo;     // R > 32: rotr(x,R) = rotr(swap(x), R-32)
+        uint64_t t; asm("mul.wide.u32 %0, %1, %2;" : "=l"(t) : "r"(x1), "r"(K));
+        const uint32_t tlo = (uint32_t)t, thi = (uint32_t)(t >> 32);
+        uint32_t ulo, uhi; uint64_t u; asm("mad.wide.u32 %0, %1, %2, %3;" : "=l"(u) : "r"(x0), "r"(K), "l"((uint64_t)tlo << 32));
+        ulo = (uint32_t)u; uhi = (uint32_t)(u >> 32);
+        uint32_t r1; asm("mad.lo.u32 %0, %1, 1, %2;" : "=r"(r1) : "r"(ulo), "r"(thi));
+        // result low word = (x0 >> (32-s')) | (x1 << s') = uhi; result high word = r1
+        return ((uint64_t)r1 << 32) | uhi;
+    }
 #ifndef TXID_ROT_PRMT
 #define TXID_ROT_PRMT 1
 #endif

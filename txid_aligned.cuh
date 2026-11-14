@@ -7,7 +7,10 @@ namespace txid {
 // Only measured devices and message layouts use this search. Other devices and
 // all unlisted layouts retain their existing kernels, including block straddles.
 static inline bool aligned_device(const cudaDeviceProp &p) {
-    if (const char *e = getenv("PX_TXID_ALIGNED")) if (!strcmp(e, "0")) return false;
+    if (const char *e = getenv("PX_TXID_ALIGNED")) {
+        if (!strcmp(e, "0")) return false;
+        if (!strcmp(e, "1")) return p.major == 12 && p.minor == 0;   // diagnostics: any SM120 device
+    }
     return p.major == 12 && p.minor == 0 &&
         (!strcmp(p.name, "NVIDIA GeForce RTX 5090") || !strcmp(p.name, "GeForce RTX 5090"));
 }
