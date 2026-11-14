@@ -1,12 +1,12 @@
 # Docker deployment
 
-`ocminersupr/proxichorizo:2.0.2` (also `:latest`; mirrored as `ghcr.io/ocminer/proxichorizo`).
+`ocminersupr/proxichorizo:2.0.3` (also `:latest`; mirrored as `ghcr.io/ocminer/proxichorizo`).
 Install the NVIDIA Container Toolkit on the host.
 
 ```sh
 docker run -d --name proxichorizo --gpus '"device=0"' --restart unless-stopped -p 4078:4078 \
   -e TOKEN='YOUR_POOL_TOKEN' -e WORKER=rig1 \
-  ocminersupr/proxichorizo:2.0.2
+  ocminersupr/proxichorizo:2.0.3
 ```
 
 `POOL_URL` defaults to `stratum+tcp://proxi.suprnova.cc:3355`; for solo mining point it at your own
@@ -17,7 +17,7 @@ and `DEVICES=0,1`. Statistics: `curl http://localhost:4078/`.
 
 ## AMD GPUs
 
-`ocminersupr/proxichorizo:2.0.2-amd` (also `:amd`; mirrored as `ghcr.io/ocminer/proxichorizo:2.0.2-amd`) carries the
+`ocminersupr/proxichorizo:2.0.3-amd` (also `:amd`; mirrored as `ghcr.io/ocminer/proxichorizo:2.0.3-amd`) carries the
 OpenCL miner `proxichorizo-cl` and AMD's ROCm 6.4 OpenCL runtime (Vega 20 / MI50, CDNA, RDNA2, RDNA3, RDNA4).
 The host needs only the amdgpu kernel driver; no ROCm install and no container toolkit:
 
@@ -25,7 +25,7 @@ The host needs only the amdgpu kernel driver; no ROCm install and no container t
 docker run -d --name proxichorizo --device /dev/kfd --device /dev/dri --group-add video --group-add render \
   --restart unless-stopped -p 4078:4078 \
   -e TOKEN='YOUR_POOL_TOKEN' -e WORKER=rig1 \
-  ocminersupr/proxichorizo:2.0.2-amd
+  ocminersupr/proxichorizo:2.0.3-amd
 ```
 
 The same environment variables apply. `DEVICES=0,1` selects GPUs (`--list-devices` shows them:
@@ -34,4 +34,4 @@ If the host's render group has a different id than the image's, use `--group-add
 The first start compiles and verifies the kernels for each GPU (about a minute).
 
 Arguments after the image name bypass the env front end and go straight to the miner:
-`docker run --rm --gpus all ocminersupr/proxichorizo:2.0.2 --hash-bench 10`.
+`docker run --rm --gpus all ocminersupr/proxichorizo:2.0.3 --hash-bench 10`.

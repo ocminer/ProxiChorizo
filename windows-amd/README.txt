@@ -1,4 +1,4 @@
-ProxiChorizo 2.0.2 - native Windows x64 / AMD OpenCL
+ProxiChorizo 2.0.3 - native Windows x64 / AMD OpenCL
 
 OpenCL nonce seeker for Proxima (PROX): pool mining on proxi.suprnova.cc or solo with your
 own proxi node mine. Windows 10/11 x64 with an AMD Radeon or Instinct GPU and the AMD

@@ -1,0 +1,4 @@
+gpu,prefix_bytes,power_limit_w,approx_power_w,sm_mhz,baseline,baseline_ghs,candidate_ghs,gain_percent,method,seconds_per_arm,cuda,driver,benchmark_date,notes
+RTX PRO 6000 Blackwell Server Edition,369,600,445,2430,v2.0.2 release kernel path,16.20,16.59,2.4,ABBA,30,12.9.1,580.178.04,2026-11-14,current mainnet layout; development build sm_120
+RTX PRO 6000 Blackwell Server Edition,316,600,445,2430,ordinary kernel same build,16.378,17.260,5.39,single run per arm,30,12.9.1,580.178.04,2026-11-14,best layout in the 256-376 byte sweep
+RTX PRO 6000 Blackwell Server Edition,256-376 (46 layouts),600,445,2430,ordinary kernel same build,,,1.50,single run per arm (mean),30,12.9.1,580.178.04,2026-11-14,layouts with prefix % 8 == 0 keep the ordinary kernel (ABBA -0.07..-0.33% aligned)

@@ -24,6 +24,27 @@ pool URL, worker and token. Hash rates are in GH/s and depend on the job's messa
 the historical 600-byte synthetic test measured RTX 5090 ≈ 16.1 GH/s at 450 W, 17.3 at 575 W. See
 [2.0 hash benchmarks](#20-hash-work-txid-blake2b).
 
+### 2.0.3 RTX PRO 6000 improvements — 2026-11-14
+
+Version 2.0.3 uses the faster aligned nonce search on the **RTX PRO 6000 Blackwell
+Server Edition** for every message layout where it is faster. RTX 5090 keeps its
+2.0.2 layouts; other GPU models keep their existing kernels.
+
+| GPU | Prefix bytes | Power limit | v2.0.2 GH/s | 2.0.3 development GH/s | Change |
+|---|---:|---:|---:|---:|---:|
+| RTX PRO 6000 Blackwell Server Edition | 369 (current mainnet layout) | 600 W | 16.20 | 16.59 | +2.4% |
+| RTX PRO 6000 Blackwell Server Edition | 316 (best measured layout) | 600 W | 16.38 | 17.26 | +5.4% |
+| RTX PRO 6000 Blackwell Server Edition | 46 layouts, 256–376 bytes | 600 W | | | +1.5% mean |
+
+The 369-byte row is a matched A/B/B/A comparison (30-second runs); the sweep rows
+compare the two kernels in one development build with one run each. Cards drew
+about 445 W at automatic clocks (2430 MHz), CUDA 12.9.1, driver 580.178.04. Layouts
+whose prefix length is a multiple of 8 keep the ordinary kernel, which measured
+0.07–0.33% faster there. Every layout of the new search was checked against the
+complete CPU hash (2,176 cases, 1.25 million nonces); a shorter check runs at
+every start. Details: [measurement CSV](benchmarks/hash-pro6000-2026-11-14.csv).
+These are short development measurements, not guaranteed pool rates.
+
 ### 2.0.2 Blake2b improvements — 2026-11-10
 
 Version 2.0.2 improves the measured RTX 5090 job layouts and fixes solo candidate
@@ -118,9 +139,9 @@ distribution); the Windows archive brings its own. The pool's certificate is che
   token, password empty for Blake2b. Worker name = the rig name.
 * **MMPOS / SMOS:** the same tarball, launchers `mmpos-run.sh` / `smos-run.sh`; pool URL as
   above, user = token, password empty for Blake2b (see [USAGE.md](USAGE.md)).
-* **Docker (NVIDIA):** `ocminersupr/proxichorizo:2.0.2` with `TOKEN`
+* **Docker (NVIDIA):** `ocminersupr/proxichorizo:2.0.3` with `TOKEN`
   and optionally `POOL_URL` (default `stratum+tcp://proxi.suprnova.cc:3355`); see `docker/README.md`.
-* **Docker (AMD):** `ocminersupr/proxichorizo:2.0.2-amd` (also `:amd`), the OpenCL miner with AMD's
+* **Docker (AMD):** `ocminersupr/proxichorizo:2.0.3-amd` (also `:amd`), the OpenCL miner with AMD's
   ROCm OpenCL runtime inside; the host needs only the amdgpu driver (`--device /dev/kfd --device /dev/dri`).
 
 ### Is it working?
