@@ -12,7 +12,9 @@ static inline bool aligned_device(const cudaDeviceProp &p) {
         if (!strcmp(e, "1")) return p.major == 12 && p.minor == 0;   // diagnostics: any SM120 device
     }
     return p.major == 12 && p.minor == 0 &&
-        (!strcmp(p.name, "NVIDIA GeForce RTX 5090") || !strcmp(p.name, "GeForce RTX 5090"));
+        (!strcmp(p.name, "NVIDIA GeForce RTX 5090") || !strcmp(p.name, "GeForce RTX 5090") ||
+         // measured 2026-11-14: 16.20 -> 16.59 GH/s (+2.4%) at the 369-byte layout, exact on 54960 CPU/GPU nonces
+         !strcmp(p.name, "NVIDIA RTX PRO 6000 Blackwell Server Edition"));
 }
 static inline bool aligned_shape(int plen) {
     int off = plen % 128;
