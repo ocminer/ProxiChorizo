@@ -4243,12 +4243,12 @@ struct GpuCfg { int dev; int blocks; int threads; int iters; const VariantOps *o
 // extranonce2 range, never repeating an extranonce2 within a job (the cursor survives a job's re-send).
 struct TxidWorker {
     Shared &sh; int ordinal; unsigned grid; uint32_t iters = 64; float last_ms = 0;
-    txid::Params p; txid::AlignedSearch aligned_cache; bool aligned_gpu = false, aligned_job = false; uint64_t job = 0; uint16_t en1 = 0; int k = -1; uint64_t cur = 0, lo = 0, hi = 0; bool exhausted = false;
+    txid::Params p; txid::AlignedSearch aligned_cache; bool aligned_gpu = false, aligned_all = false, aligned_job = false; uint64_t job = 0; uint16_t en1 = 0; int k = -1; uint64_t cur = 0, lo = 0, hi = 0; bool exhausted = false;
     std::map<std::pair<uint64_t, uint16_t>, uint64_t> cursors;
     txid::HitRec *d_hits = nullptr; unsigned *d_n = nullptr; std::vector<txid::HitRec> hits; cudaEvent_t e0, e1;
     TxidWorker(Shared &s, int ord, const cudaDeviceProp &prop) : sh(s), ordinal(ord), hits(TXID_MAX_HITS) {
         grid = (unsigned)prop.multiProcessorCount * 16;
-        aligned_gpu = txid::aligned_device(prop);
+        aligned_gpu = txid::aligned_device(prop); aligned_all = txid::aligned_all_layouts(prop);
         if (const char *e = getenv("PX_TXID_GRID")) grid = (unsigned)atoi(e);
         CUDA_CHECK(cudaMalloc(&d_hits, sizeof(txid::HitRec) * TXID_MAX_HITS)); CUDA_CHECK(cudaMalloc(&d_n, sizeof(unsigned)));
         CUDA_CHECK(cudaEventCreate(&e0)); CUDA_CHECK(cudaEventCreate(&e1));
@@ -4261,7 +4261,7 @@ struct TxidWorker {
             if (job) { cursors[{job, en1}] = cur; if (cursors.size() > 256) cursors.clear(); }
             job = j.id; en1 = j.en1; k = j.k; exhausted = false;
             txid::prepare(j.hprefix.data(), (int)j.hprefix.size(), k, p);
-            aligned_job = aligned_gpu && txid::aligned_shape((int)j.hprefix.size()); aligned_cache.reset();
+            aligned_job = aligned_gpu && txid::aligned_shape((int)j.hprefix.size(), aligned_all); aligned_cache.reset();
             txid_range(sh, ordinal, lo, hi);
             auto it = cursors.find({job, en1}); cur = it != cursors.end() ? it->second : lo;
         } else if (j.k != k) { k = j.k; p.mask = txid::mask_for_k(k); }
@@ -4888,7 +4888,7 @@ int main(int argc, char **argv) {
             CUDA_CHECK(cudaSetDevice(d)); cudaDeviceProp prop; CUDA_CHECK(cudaGetDeviceProperties(&prop, d));
             std::string why; auto t0 = std::chrono::steady_clock::now(); int r = txid::cuda_selfcheck(why);
             if (!r && txid::aligned_device(prop)) {
-                std::string extra; r = txid::aligned_selfcheck(extra); why += "; " + extra;
+                std::string extra; r = txid::aligned_selfcheck(extra, txid::aligned_all_layouts(prop)); why += "; " + extra;
             }
             double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
             if (r || !quiet) fprintf(stderr, "GPU %d %s: txid-blake2b self-check %s: %s (%.1f s)\n", d, prop.name, r ? "FAILED" : "passed", why.c_str(), secs);
@@ -4903,7 +4903,7 @@ int main(int argc, char **argv) {
             CUDA_CHECK(cudaSetDevice(d)); cudaDeviceProp prop; CUDA_CHECK(cudaGetDeviceProperties(&prop, d));
             std::vector<uint8_t> prefix((size_t)std::max(0, txidPrefix)); for (size_t i = 0; i < prefix.size(); i++) prefix[i] = (uint8_t)(i * 31 + 7);
             txid::Params p; txid::Shape shp = txid::prepare(prefix.data(), (int)prefix.size(), 40, p);
-            bool aligned = txid::aligned_device(prop) && txid::aligned_shape((int)prefix.size()); txid::AlignedSearch aligned_cache;
+            bool aligned = txid::aligned_device(prop) && txid::aligned_shape((int)prefix.size(), txid::aligned_all_layouts(prop)); txid::AlignedSearch aligned_cache;
             txid::HitRec *dh; unsigned *dn; CUDA_CHECK(cudaMalloc(&dh, sizeof(txid::HitRec) * TXID_MAX_HITS)); CUDA_CHECK(cudaMalloc(&dn, 4)); CUDA_CHECK(cudaMemset(dn, 0, 4));
             unsigned grid = prop.multiProcessorCount * 16; if (const char *e = getenv("PX_TXID_GRID")) grid = atoi(e);
             uint32_t it = 64; uint64_t n = 0x0102000000000000ULL, total = 0; double kms = 0; int launches = 0;

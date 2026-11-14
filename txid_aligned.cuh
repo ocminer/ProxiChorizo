@@ -16,8 +16,17 @@ static inline bool aligned_device(const cudaDeviceProp &p) {
          // measured 2026-11-14: 16.20 -> 16.59 GH/s (+2.4%) at the 369-byte layout, exact on 54960 CPU/GPU nonces
          !strcmp(p.name, "NVIDIA RTX PRO 6000 Blackwell Server Edition"));
 }
-static inline bool aligned_shape(int plen) {
+// every layout whose four counter bytes fit 4-aligned inside extranonce2 (message bytes plen+2..plen+7) and whose
+// nonce bytes stay in one block: plen % 4 != 3 and plen % 128 <= 120
+static inline bool aligned_placeable(int plen) { int off = plen % 128; return plen > 0 && off <= 120 && plen % 4 != 3; }
+static inline bool aligned_all_layouts(const cudaDeviceProp &p) {
+    if (const char *e = getenv("PX_TXID_ALIGNED")) if (!strcmp(e, "1")) return p.major == 12 && p.minor == 0;
+    return p.major == 12 && p.minor == 0 && !strcmp(p.name, "NVIDIA RTX PRO 6000 Blackwell Server Edition");
+}
+static inline bool aligned_shape(int plen, bool all = false) {
     int off = plen % 128;
+    // prefix % 8 == 0: the ordinary kernel already sees a whole nonce word; measured -0.07..-0.33% aligned (PRO 6000)
+    if (all) return aligned_placeable(plen) && plen % 8 != 0;
     return off == 52 || off == 97 || off == 108 || off == 113;
 }
 static inline int aligned_offset(int plen) { return ((plen + 5) / 4) * 4 - plen; }
@@ -62,10 +71,10 @@ struct AlignedSearch {
     }
 };
 
-template <int OFFSET> __global__ void __launch_bounds__(TXID_TPB)
-aligned_kernel(const ParamsCore p, uint32_t low, uint64_t fixed, uint32_t full, uint32_t tail, HitRec *hits, unsigned *nhit) {
+// W: message word holding the counter, HIGH: its upper half, LAST: last non-zero message word (all compile-time).
+template <int W, int HIGH, int LAST> __global__ void __launch_bounds__(TXID_TPB)
+aligned_kernel(const ParamsCore p, uint32_t low, uint64_t fixed, uint32_t full, uint32_t tail, HitRec *hits, unsigned *nhit, uint32_t nshift) {
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 1200
-    constexpr int OFF=((OFFSET+5)/4)*4-OFFSET, W=(OFFSET+OFF)/8, HIGH=((OFFSET+OFF)%8)/4, LAST=(OFFSET+7)/8;
     uint32_t gid = blockIdx.x * blockDim.x + threadIdx.x, stride = gridDim.x * blockDim.x;
     uint32_t n = low + gid, limit = full + (gid < tail);
     for (uint32_t i = 0; i < limit; i++, n += stride) {
@@ -76,11 +85,17 @@ aligned_kernel(const ParamsCore p, uint32_t low, uint64_t fixed, uint32_t full, 
         round0<W, false>(v, p, m); rounds<1>(v, m);
         uint64_t h3 = p.h[3] ^ v[3] ^ v[11];
         if ((h3 & p.mask) == 0) {
-            uint64_t nonce = fixed | ((uint64_t)__byte_perm(n, 0, 0x0123) << (8 * (4 - OFF)));
+            uint64_t nonce = fixed | ((uint64_t)__byte_perm(n, 0, 0x0123) << nshift);
             record(nonce, h3, hits, nhit);
         }
     }
 #endif
+}
+template <int KEY> static inline void aligned_dispatch(int key, unsigned grid, unsigned block, cudaStream_t st, const ParamsCore &p,
+                                                       uint32_t low, uint64_t fixed, uint32_t full, uint32_t tail, HitRec *hits, unsigned *nhit, uint32_t nshift) {
+    constexpr int W = KEY / 4, HIGH = (KEY / 2) & 1, LAST = W + (KEY & 1);
+    if constexpr (LAST < 16) if (key == KEY) { aligned_kernel<W, HIGH, LAST><<<grid, block, 0, st>>>(p, low, fixed, full, tail, hits, nhit, nshift); return; }
+    if constexpr (KEY < 63) aligned_dispatch<KEY + 1>(key, grid, block, st, p, low, fixed, full, tail, hits, nhit, nshift);
 }
 // Caller bounds count at a 2^32 logical-counter boundary and resets cache on a
 // new job. Tail threads run one additional nonce: no padded or repeated work.
@@ -89,20 +104,26 @@ static inline void launch_aligned(unsigned grid, unsigned block, cudaStream_t st
     cache.prepare(base, plen, nbase);
     uint64_t stride = (uint64_t)grid * block;
     uint32_t full = (uint32_t)(count / stride), tail = (uint32_t)(count % stride);
-#define TX_ALIGNED_CASE(O) case O: aligned_kernel<O><<<grid, block, 0, st>>>(cache.p, (uint32_t)nbase, cache.fixed, full, tail, hits, nhit); break
-    switch (plen % 128) { TX_ALIGNED_CASE(52); TX_ALIGNED_CASE(97); TX_ALIGNED_CASE(108); TX_ALIGNED_CASE(113); }
-#undef TX_ALIGNED_CASE
+    const int off = plen % 128, OFF = aligned_offset(plen), W = (off + OFF) / 8, HIGH = ((off + OFF) % 8) / 4, LAST = (off + 7) / 8;
+    aligned_dispatch<0>(4 * W + 2 * HIGH + (LAST - W), grid, block, st, cache.p, (uint32_t)nbase, cache.fixed, full, tail, hits, nhit, 8u * (4 - OFF));
 }
 
 // Same independent full CPU hash used for ordinary-kernel checks. Exercise
 // fixed-byte changes, partial grids, zero/low masks and 2^32 carry boundaries.
-static inline int aligned_selfcheck(std::string &why) {
+static inline int aligned_selfcheck(std::string &why, bool all = false) {
     HitRec *dh=nullptr; unsigned *dn=nullptr;
     cudaError_t e = cudaMalloc(&dh, TXID_MAX_HITS * sizeof(HitRec));
     if (e == cudaSuccess) e = cudaMalloc(&dn, sizeof(unsigned));
     if (e != cudaSuccess) { cudaFree(dh); why=cudaGetErrorString(e); return 1; }
     int cases=0; uint64_t checked=0;
-    for (int off : {52,97,108,113}) for (int blocks : {0,2,5}) for (int test=0; test<8; test++) {
+    std::vector<int> offs{52,97,108,113};
+    const char *fe = getenv("PX_TXID_SELFTEST_FULL"); const bool every = all && fe && !strcmp(fe, "1");
+    if (all) { offs.clear(); int seen[64] = {0};
+        for (int off = 0; off <= 120; off++) { if (!aligned_placeable(128 + off)) continue;
+            int O = aligned_offset(128 + off), w = (off + O) / 8, hi = ((off + O) % 8) / 4, key = 4 * w + 2 * hi + ((off + 7) / 8 - w);
+            if (every || !seen[key]++) offs.push_back(off); } }
+    for (int off : offs) for (int blocks : {0,2,5}) for (int test=0; test<(all && !every ? 3 : 8); test++) {
+        if (blocks==0 && off==0) continue;   // an empty prefix is not a job
         int plen=blocks*128+off, k=test%3==0 ? 0 : test%3==1 ? 3 : 12;
         std::vector<uint8_t> prefix(plen); for (int i=0; i<plen; i++) prefix[i]=(uint8_t)(i*31+test*19);
         Params p; prepare(prefix.data(), plen, k, p); AlignedSearch cache;
