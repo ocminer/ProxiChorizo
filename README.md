@@ -59,6 +59,10 @@ corrupted payloads stop startup. Linux, Windows and Docker use the same checked
 build path. This protects distributed payloads; it is not a claim that code
 running on a user's machine is impossible to inspect. Source licensing is unchanged.
 
+On the tested RX 7900 XTX Linux host, ROCm consumed approximately one CPU core
+with both v2.0.3 and v2.0.4. Profiling located this in its async-event runtime;
+this release does not resolve that host-specific driver behavior.
+
 ### 2.0.3 RTX PRO 6000 improvements — 2026-11-14
 
 Version 2.0.3 uses the faster aligned nonce search on the **RTX PRO 6000 Blackwell
@@ -90,7 +94,7 @@ these changes; they are not relabeled as final release measurements.
 Matched A/B/B/A measurements against the published v2.0.1 Linux binary, using
 30-second runs and wall-clock hash counts:
 
-| GPU | Prefix bytes | Power limit | v2.0.1 GH/s | 2.0.4 kernel GH/s | Change |
+| GPU | Prefix bytes | Power limit | v2.0.1 GH/s | Development GH/s | Change |
 |---|---:|---:|---:|---:|---:|
 | RTX 5090 A | 353 | 600 W | 16.786 | 17.036 | +1.49% |
 | RTX 5090 A | 364 | 600 W | 16.550 | 16.968 | +2.53% |
