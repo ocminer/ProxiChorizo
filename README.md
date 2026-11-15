@@ -29,7 +29,27 @@ the historical 600-byte synthetic test measured RTX 5090 ≈ 16.1 GH/s at 450 W,
 Version 2.0.5 ships ready-to-edit setups for mining at suprnova.cc in [`examples/`](examples/README.md)
 (Linux, Windows NVIDIA and AMD, HiveOS, mmpOS, SMOS, Docker, systemd), included in every
 package. The launchers no longer print the outdated "no SEED/KEY_FILE" notice: current jobs
-need only the pool token. Mining kernels and hash rates are unchanged from 2.0.4.
+need only the pool token.
+
+The CUDA and OpenCL builds now compile the published kernel sources directly.
+All per-card optimizations from 2.0.4 are retained. Matched Linux A/B/B/A checks
+against the published 2.0.4 binaries used 40-second runs, a 369-byte prefix and
+unchanged clocks/power settings:
+
+| GPU | Power limit | v2.0.4 GH/s | v2.0.5 check GH/s | Difference |
+|---|---:|---:|---:|---:|
+| RTX 5090 | 600 W | 19.728 | 19.707 | -0.11% |
+| RTX 5080 | 360 W | 10.663 | 10.656 | -0.07% |
+| RTX 5070 Ti | 300 W | 8.882 | 8.881 | -0.01% |
+| RTX 3070 | 240 W | 3.204 | 3.204 | +0.02% |
+| RX 7900 XTX | 303 W | 6.046 | 6.026 | -0.34% |
+
+These are regression checks with platform-specific Linux validation builds,
+not a new performance-gain claim or guaranteed pool rates. The small differences
+are within the observed run variation. The [measurement CSV](benchmarks/hash-2.0.5-regression-2026-11-15.csv)
+records binary hashes, power draw and test details. Full-reference hash checks
+passed on all five cards. The 5090 also passed the legacy VRF vectors; NVIDIA
+native fallback paths passed. Physical Windows GPU performance remains unmeasured.
 
 ### 2.0.4 RTX 50 hash improvements — 2026-11-15
 
