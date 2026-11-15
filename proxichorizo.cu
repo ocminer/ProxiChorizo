@@ -2,7 +2,7 @@
 // reuse in commercial or closed-source miners needs written permission. See LICENSE.
 #include <cuda_runtime.h>
 #include <functional>
-#include "txid_aligned.cuh"   // txid-blake2b work of library upgrade 6: CPU reference, precomputation, CUDA kernels
+#include "txid_blackwell.h"   // txid-blake2b: CPU reference, native kernels and checked per-card selection
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,7 +21,7 @@
 #include <map>
 #include <cmath>
 #include <cerrno>
-#define PX_VERSION "2.0.3"
+#define PX_VERSION "2.0.4"
 #include <signal.h>
 // sockets: POSIX or Winsock behind four helpers
 #ifdef _WIN32
@@ -4243,12 +4243,12 @@ struct GpuCfg { int dev; int blocks; int threads; int iters; const VariantOps *o
 // extranonce2 range, never repeating an extranonce2 within a job (the cursor survives a job's re-send).
 struct TxidWorker {
     Shared &sh; int ordinal; unsigned grid; uint32_t iters = 64; float last_ms = 0;
-    txid::Params p; txid::AlignedSearch aligned_cache; bool aligned_gpu = false, aligned_all = false, aligned_job = false; uint64_t job = 0; uint16_t en1 = 0; int k = -1; uint64_t cur = 0, lo = 0, hi = 0; bool exhausted = false;
+    txid::Params p; txid::AlignedSearch aligned_cache; bool aligned_job = false; uint64_t job = 0; uint16_t en1 = 0; int k = -1; uint64_t cur = 0, lo = 0, hi = 0; bool exhausted = false;
     std::map<std::pair<uint64_t, uint16_t>, uint64_t> cursors;
+    txid::BlackwellChoice kernel_choice;
     txid::HitRec *d_hits = nullptr; unsigned *d_n = nullptr; std::vector<txid::HitRec> hits; cudaEvent_t e0, e1;
-    TxidWorker(Shared &s, int ord, const cudaDeviceProp &prop) : sh(s), ordinal(ord), hits(TXID_MAX_HITS) {
+    TxidWorker(Shared &s, int ord, const cudaDeviceProp &prop) : sh(s), ordinal(ord), kernel_choice(prop), hits(TXID_MAX_HITS) {
         grid = (unsigned)prop.multiProcessorCount * 16;
-        aligned_gpu = txid::aligned_device(prop); aligned_all = txid::aligned_all_layouts(prop);
         if (const char *e = getenv("PX_TXID_GRID")) grid = (unsigned)atoi(e);
         CUDA_CHECK(cudaMalloc(&d_hits, sizeof(txid::HitRec) * TXID_MAX_HITS)); CUDA_CHECK(cudaMalloc(&d_n, sizeof(unsigned)));
         CUDA_CHECK(cudaEventCreate(&e0)); CUDA_CHECK(cudaEventCreate(&e1));
@@ -4261,10 +4261,13 @@ struct TxidWorker {
             if (job) { cursors[{job, en1}] = cur; if (cursors.size() > 256) cursors.clear(); }
             job = j.id; en1 = j.en1; k = j.k; exhausted = false;
             txid::prepare(j.hprefix.data(), (int)j.hprefix.size(), k, p);
-            aligned_job = aligned_gpu && txid::aligned_shape((int)j.hprefix.size(), aligned_all); aligned_cache.reset();
+            int mode = kernel_choice.select(p, (int)j.hprefix.size(), grid, d_hits, d_n, fail);
+            if (mode < 0) return false;
+            aligned_job = mode != 0; aligned_cache.fast = mode == 2; aligned_cache.reset();
             txid_range(sh, ordinal, lo, hi);
             auto it = cursors.find({job, en1}); cur = it != cursors.end() ? it->second : lo;
         } else if (j.k != k) { k = j.k; p.mask = txid::mask_for_k(k); }
+        if (j.has_ttl && std::chrono::steady_clock::now() > j.deadline) { idle(10); return true; }
         if (cur >= hi) {
             if (!exhausted) { exhausted = true; log_warn("GPU #" + std::to_string(sh.gpus[ordinal].dev) + ": searched its whole extranonce2 range of job " + j.jid + ", idle until the next job"); }
             idle(10); return true;
@@ -4890,6 +4893,9 @@ int main(int argc, char **argv) {
             if (!r && txid::aligned_device(prop)) {
                 std::string extra; r = txid::aligned_selfcheck(extra, txid::aligned_all_layouts(prop)); why += "; " + extra;
             }
+            if (!r && txid::bw_device(prop)) {
+                std::string extra; r = txid::bw_selfcheck(prop, extra); why += "; " + extra;
+            }
             double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
             if (r || !quiet) fprintf(stderr, "GPU %d %s: txid-blake2b self-check %s: %s (%.1f s)\n", d, prop.name, r ? "FAILED" : "passed", why.c_str(), secs);
             rc |= r;
@@ -4906,6 +4912,10 @@ int main(int argc, char **argv) {
             bool aligned = txid::aligned_device(prop) && txid::aligned_shape((int)prefix.size(), txid::aligned_all_layouts(prop)); txid::AlignedSearch aligned_cache;
             txid::HitRec *dh; unsigned *dn; CUDA_CHECK(cudaMalloc(&dh, sizeof(txid::HitRec) * TXID_MAX_HITS)); CUDA_CHECK(cudaMalloc(&dn, 4)); CUDA_CHECK(cudaMemset(dn, 0, 4));
             unsigned grid = prop.multiProcessorCount * 16; if (const char *e = getenv("PX_TXID_GRID")) grid = atoi(e);
+            txid::BlackwellChoice choice(prop); std::string choice_error;
+            int mode = choice.select(p, (int)prefix.size(), grid, dh, dn, choice_error);
+            if (mode < 0) { fprintf(stderr, "hash calibration failed: %s\n", choice_error.c_str()); cudaFree(dh); cudaFree(dn); return 1; }
+            aligned = mode != 0; aligned_cache.fast = mode == 2;
             uint32_t it = 64; uint64_t n = 0x0102000000000000ULL, total = 0; double kms = 0; int launches = 0;
             cudaEvent_t e0, e1; cudaEventCreate(&e0); cudaEventCreate(&e1);
             auto t0 = std::chrono::steady_clock::now(), last = t0; uint64_t lastTotal = 0;
@@ -4926,8 +4936,10 @@ int main(int argc, char **argv) {
                 }
             }
             double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+            const unsigned launch_block = aligned_cache.fast ? 512u : TXID_TPB;
+            const unsigned launch_grid = (unsigned)(((uint64_t)grid * TXID_TPB + launch_block - 1) / launch_block);
             fprintf(stderr, "GPU %d %s: txid-blake2b %d-byte prefix (kernel %d%s): %.3f GH/s over %.0f s (%.3f GH/s kernel time, %d launches of %.1f ms, %ux%dx%u)\n",
-                    d, prop.name, txidPrefix, shp.kernel, aligned ? ", aligned32" : "", total / el / 1e9, el, total / (kms / 1e3) / 1e9, launches, kms / launches, grid, TXID_TPB, it);
+                    d, prop.name, txidPrefix, shp.kernel, aligned_cache.fast ? ", Blackwell" : aligned ? ", aligned32" : "", total / el / 1e9, el, total / (kms / 1e3) / 1e9, launches, kms / launches, launch_grid, launch_block, it);
             cudaFree(dh); cudaFree(dn);
         }
         return 0;

@@ -48,6 +48,8 @@ jobs:
         with:
           context: .
           file: docker/Dockerfile.amd
+          secrets: |
+            PX_KERNEL_BUILD_KEY=${{ secrets.PX_KERNEL_BUILD_KEY }}
           load: true
           push: false
           tags: ${{ steps.reg.outputs.tags }}

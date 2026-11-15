@@ -5,13 +5,16 @@
 ARG ROCM_VERSION=6.4.3
 FROM ubuntu:20.04 AS build
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      g++ make python3 ocl-icd-opencl-dev opencl-headers && rm -rf /var/lib/apt/lists/*
+      g++ make python3 python3-nacl ocl-icd-opencl-dev opencl-headers && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY proxichorizo.cu vectors.json txid_blake2b.h txid_vectors.h ./
 COPY opencl/ opencl/
-RUN make -C opencl clean && make -C opencl proxichorizo-cl CL_INC=/usr/include CL_LIB=/usr/lib/x86_64-linux-gnu \
-      CXXFLAGS="-O2 -std=c++17 -Wall -Wno-unused-function -I/usr/include -static-libstdc++ -static-libgcc" \
-    && strip opencl/proxichorizo-cl
+COPY kernel_protection.cpp kernel_protection.h ./
+COPY third_party/monocypher/ third_party/monocypher/
+COPY scripts/build-protected.py scripts/protect-kernels.py scripts/
+COPY tests/kernel_protection.py tests/
+RUN --mount=type=secret,id=PX_KERNEL_BUILD_KEY,required=true \
+    PX_KERNEL_BUILD_KEY="$(cat /run/secrets/PX_KERNEL_BUILD_KEY)" python3 scripts/build-protected.py --kind opencl --output opencl/proxichorizo-cl --require-key && strip opencl/proxichorizo-cl
 
 FROM ubuntu:24.04
 ARG ROCM_VERSION
@@ -25,7 +28,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
 WORKDIR /app
 COPY --from=build /src/opencl/proxichorizo-cl /app/proxichorizo-cl
 COPY docker/entrypoint.sh /app/entrypoint.sh
-COPY README.md USAGE.md LICENSE NOTICE PLATFORMS.md STRATUM-SPEC.md vectors.json vectors-txid-blake2b.json /app/
+COPY README.md USAGE.md LICENSE LICENSE-Monocypher.txt NOTICE PLATFORMS.md STRATUM-SPEC.md vectors.json vectors-txid-blake2b.json /app/
 COPY benchmarks/ /app/benchmarks/
 RUN chmod +x /app/entrypoint.sh /app/proxichorizo-cl
 ENV PX_BIN=proxichorizo-cl PATH=/opt/rocm/bin:$PATH

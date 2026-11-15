@@ -31,6 +31,7 @@
 #include "../txid_blake2b.h"   // txid-blake2b work of library upgrade 6: CPU reference and per-job precomputation
 #include "host_common.inc"
 #include "kernel_blob.h"
+#include "../kernel_protection.h"
 
 // must match proxichorizo.cl
 struct JobDev { uint8_t pk[32]; uint8_t prefix[64]; int prefix_len; int k; uint8_t beat[64]; uint64_t mw[9]; uint64_t beat_w[8]; uint64_t h2c_mid[8]; };
@@ -185,6 +186,7 @@ static const Platform &platformFor(const ClDev &d) {
 }
 
 static std::string g_kernel_src;   // from the blob or --kernel-file
+static std::string g_tx_kernel_src;
 static std::string g_extra_build;  // --build-opts
 
 // a built variant on one device
@@ -429,7 +431,7 @@ static TxProg *get_txprog(ClDev &dev) {
     std::lock_guard<std::mutex> l(g_prog_mu);
     auto it = g_txprogs.find(dev.id); if (it != g_txprogs.end()) return it->second;
     TxProg *tp = new TxProg(); tp->dev = &dev;
-    const char *src = (const char *)TXID_CL_SRC; size_t len = TXID_CL_SRC_LEN; cl_int err;
+    const char *src = g_tx_kernel_src.c_str(); size_t len = g_tx_kernel_src.size(); cl_int err;
     tp->p = clCreateProgramWithSource(dev.ctx, 1, &src, &len, &err); CL_CHECK(err);
     std::string opts = "-cl-std=CL1.2 -DTX_WG=" + std::to_string(TX_WG) + " -DTX_MAX_HITS=" + std::to_string(TXID_MAX_HITS) + " " + g_extra_build;
     auto t0 = std::chrono::steady_clock::now();
@@ -834,6 +836,9 @@ static void on_signal(int) {
 }
 
 int main(int argc, char **argv) {
+    px_protection_check();
+    g_kernel_src = px_open_kernel(CL_SRC, CL_SRC_LEN, 2);
+    g_tx_kernel_src = px_open_kernel(TXID_CL_SRC, TXID_CL_SRC_LEN, 3);
     std::string proxi, token, keyfile, seedhex, name, selftest, gpus, variant, apiBind, kernelFile, user, checkPool;
     int groups = 0, iters = 0; double bench = 0, autotuneSecs = 0; bool fetest = false, listVariants = false, listDevices = false, verify = false, verifyPipeline = false;
     double txidBench = 0; bool txidSelftest = false; int txidPrefix = 600, txidLaunchMs = 40;
@@ -880,7 +885,6 @@ int main(int argc, char **argv) {
     if (!checkPool.empty()) return check_pool(checkPool);
     if (listVariants) { for (int v = 0; v < NVARIANTS; v++) printf("%s\n", VARIANTS[v].name); return 0; }
     if (!kernelFile.empty()) { std::ifstream f(kernelFile); if (!f) { fprintf(stderr, "cannot open %s\n", kernelFile.c_str()); return 1; } std::stringstream ss; ss << f.rdbuf(); g_kernel_src = ss.str(); }
-    else g_kernel_src.assign((const char *)CL_SRC, CL_SRC_LEN);
     enumerate_devices();
     if (g_devs.empty()) { fprintf(stderr, "no OpenCL GPU found (is the OpenCL ICD installed? ROCm: /etc/OpenCL/vendors)\n"); return 2; }
     if (listDevices) { for (size_t i = 0; i < g_devs.size(); i++) printf("%zu: %s, %u CUs, bus %d, platform %s\n", i, dev_label(g_devs[i]).c_str(), g_devs[i].cus, g_devs[i].bus, g_devs[i].platname.c_str()); return 0; }

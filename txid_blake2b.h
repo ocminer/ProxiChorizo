@@ -141,8 +141,14 @@ template <int R> TXQ uint64_t rotr(uint64_t x) {
     return (x >> R) | (x << (64 - R));
 #endif
 }
+#if defined(TXID_BW_DEVICE) && defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 1200
+#include "txid_bw_math.cuh"
+TXQ void g1(uint64_t &a, uint64_t &b, uint64_t &c, uint64_t &d, uint64_t x) { a = bw_add(bw_add(a, b), x); d = rotr<32>(d ^ a); c = bw_add_c(c, d); b = rotr<24>(b ^ c); }
+TXQ void g2(uint64_t &a, uint64_t &b, uint64_t &c, uint64_t &d, uint64_t y) { a = bw_add(bw_add(a, b), y); d = rotr<16>(d ^ a); c = bw_add_c(c, d); b = bw_rot63(b ^ c); }
+#else
 TXQ void g1(uint64_t &a, uint64_t &b, uint64_t &c, uint64_t &d, uint64_t x) { a += b + x; d = rotr<32>(d ^ a); c += d; b = rotr<24>(b ^ c); }
 TXQ void g2(uint64_t &a, uint64_t &b, uint64_t &c, uint64_t &d, uint64_t y) { a += b + y; d = rotr<16>(d ^ a); c += d; b = rotr<63>(b ^ c); }
+#endif
 TXQ void gf(uint64_t &a, uint64_t &b, uint64_t &c, uint64_t &d, uint64_t x, uint64_t y) { g1(a, b, c, d, x); g2(a, b, c, d, y); }
 
 // ---- per-architecture search options ---------------------------------------------------------
@@ -274,6 +280,16 @@ template <int W, bool SH> __device__ __forceinline__ void rounds01(uint64_t v[16
         for (int h = 0; h < 2; h++) {
             const int k = 8 * g + 4 * h;
             const uint64_t mv = m[P.mi[g][h]];
+#if defined(TXID_BW_DEVICE) && __CUDA_ARCH__ == 1200
+            if (!P.dep[g][4 * h + 0]) a = q.snap[k + 0];
+            else if (P.pre[g][h] == 1) a = bw_add(a, q.pre[2 * g + h]);
+            else if (P.pre[g][h] == 2) a = bw_add(b, q.pre[2 * g + h]);
+            else if (P.pre[g][h] == 3) a = bw_add(mv, q.pre[2 * g + h]);
+            else a = bw_add(bw_add(a, b), mv);
+            if (!P.dep[g][4 * h + 1]) d = q.snap[k + 1]; else d = h ? rotr<16>(d ^ a) : rotr<32>(d ^ a);
+            if (!P.dep[g][4 * h + 2]) c = q.snap[k + 2]; else c = bw_add_c(c, d);
+            if (!P.dep[g][4 * h + 3]) b = q.snap[k + 3]; else b = h ? bw_rot63(b ^ c) : rotr<24>(b ^ c);
+#else
             if (!P.dep[g][4 * h + 0]) a = q.snap[k + 0];
             else if (P.pre[g][h] == 1) a = a + q.pre[2 * g + h];
             else if (P.pre[g][h] == 2) a = b + q.pre[2 * g + h];
@@ -282,6 +298,7 @@ template <int W, bool SH> __device__ __forceinline__ void rounds01(uint64_t v[16
             if (!P.dep[g][4 * h + 1]) d = q.snap[k + 1]; else d = h ? rotr<16>(d ^ a) : rotr<32>(d ^ a);
             if (!P.dep[g][4 * h + 2]) c = q.snap[k + 2]; else c = c + d;
             if (!P.dep[g][4 * h + 3]) b = q.snap[k + 3]; else b = h ? rotr<63>(b ^ c) : rotr<24>(b ^ c);
+#endif
         }
     }
 }

@@ -47,6 +47,9 @@ notes/
 *.ptx
 *.cubin
 *.fatbin
+*.obj
+kernel_key.h
+*.protection.json
 build/
 dist/
 /tools/vrfvec/vrfvec
@@ -55,6 +58,7 @@ dist/
 .idea/
 *.swp
 .DS_Store
+__pycache__/
 # OpenCL build: generated files and the binary
 /opencl/host_common.inc
 /opencl/kernel_blob.h

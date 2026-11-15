@@ -59,18 +59,19 @@ jobs:
     container: nvidia/cuda:12.9.1-devel-ubuntu20.04
     steps:
       - name: tools
-        run: apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git binutils python3 ocl-icd-opencl-dev opencl-headers >/dev/null
+        run: apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git binutils python3 python3-nacl ocl-icd-opencl-dev opencl-headers >/dev/null
       - uses: actions/checkout@v4
       - name: build (glibc 2.31, Turing to Blackwell)
+        env: { PX_KERNEL_BUILD_KEY: "${{ secrets.PX_KERNEL_BUILD_KEY }}" }
         run: |
           git config --global --add safe.directory "$PWD"
           nvcc --version | tail -2
-          # nvcc --threads can lose its device-link temp file (nvlink "Could not read file ...dlink.reg.c"): retry
-          for try in 1 2 3; do nvcc -O3 -std=c++17 --threads 2 $ARCHS -Xcompiler -static-libstdc++ -Xcompiler -static-libgcc -o proxichorizo proxichorizo.cu -lpthread -ldl && break; echo "nvcc attempt $try failed"; [ $try -lt 3 ] || exit 1; done
+          python3 scripts/build-protected.py --kind cuda --output proxichorizo --threads 2 --require-key
           objdump -T proxichorizo | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
       - name: build the OpenCL miner (AMD)
+        env: { PX_KERNEL_BUILD_KEY: "${{ secrets.PX_KERNEL_BUILD_KEY }}" }
         run: |
-          make -C opencl proxichorizo-cl CL_INC=/usr/include CL_LIB=/usr/lib/x86_64-linux-gnu CXXFLAGS="-O2 -std=c++17 -Wall -Wno-unused-function -I/usr/include -static-libstdc++ -static-libgcc"
+          python3 scripts/build-protected.py --kind opencl --output opencl/proxichorizo-cl --require-key
           objdump -T opencl/proxichorizo-cl | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
           ldd opencl/proxichorizo-cl | grep -i opencl
       - name: CPU regression checks
@@ -115,11 +116,14 @@ jobs:
           method: network
       - uses: ilammy/msvc-dev-cmd@v1
         with: { arch: x64 }
-      - name: build
-        shell: cmd
-        # nvcc --threads can lose its device-link temp file (nvlink "Could not read file ...dlink.reg.c"): retry
+      - name: build protected CUDA release
+        shell: pwsh
+        env: { PX_KERNEL_BUILD_KEY: "${{ secrets.PX_KERNEL_BUILD_KEY }}" }
         run: |
-          nvcc -O3 -std=c++17 --threads 2 %ARCHS% -Xcompiler /MT -o proxichorizo.exe proxichorizo.cu || nvcc -O3 -std=c++17 --threads 2 %ARCHS% -Xcompiler /MT -o proxichorizo.exe proxichorizo.cu || nvcc -O3 -std=c++17 --threads 1 %ARCHS% -Xcompiler /MT -o proxichorizo.exe proxichorizo.cu
+          python -m pip install PyNaCl==1.6.2
+          if ($LASTEXITCODE -ne 0) { throw 'PyNaCl installation failed' }
+          python scripts/build-protected.py --kind cuda --output proxichorizo.exe --threads 2 --require-key
+          if ($LASTEXITCODE -ne 0) { throw 'protected CUDA build failed' }
       - name: CPU profile checks and executable startup
         shell: cmd
         run: |
@@ -169,14 +173,14 @@ jobs:
           if ((Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:OCL_SDK_SHA256) { throw 'OpenCL SDK checksum mismatch' }
           Expand-Archive $zip (Join-Path $env:RUNNER_TEMP 'ocl') -Force
           "OCL_DIR=$(Join-Path $env:RUNNER_TEMP "ocl/OpenCL-SDK-$env:OCL_SDK-Win-x64")" >> $env:GITHUB_ENV
-      - name: build the OpenCL miner (AMD)
-        shell: cmd
-        working-directory: opencl
+      - name: build the protected OpenCL miner (AMD)
+        shell: pwsh
+        env: { PX_KERNEL_BUILD_KEY: "${{ secrets.PX_KERNEL_BUILD_KEY }}" }
         run: |
-          python gen_host.py
-          if errorlevel 1 exit /b 1
-          cl /nologo /EHsc /std:c++17 /O2 /MT /W3 /utf-8 /DNOMINMAX /D_CRT_SECURE_NO_WARNINGS /I"%OCL_DIR%\include" proxichorizo_cl.cpp windows_opencl_loader.cpp /Fe:proxichorizo-cl.exe /link "%OCL_DIR%\lib\OpenCL.lib" delayimp.lib /DELAYLOAD:OpenCL.dll
-          if errorlevel 1 exit /b 1
+          python -m pip install PyNaCl==1.6.2
+          if ($LASTEXITCODE -ne 0) { throw 'PyNaCl installation failed' }
+          python scripts/build-protected.py --kind opencl --output opencl/proxichorizo-cl.exe --require-key
+          if ($LASTEXITCODE -ne 0) { throw 'protected OpenCL build failed' }
       - name: CPU profile checks and executable startup with and without OpenCL.dll
         shell: pwsh
         working-directory: opencl
@@ -237,6 +241,8 @@ jobs:
         with:
           context: .
           file: docker/Dockerfile
+          secrets: |
+            PX_KERNEL_BUILD_KEY=${{ secrets.PX_KERNEL_BUILD_KEY }}
           load: true
           push: false
           tags: ${{ steps.reg.outputs.tags }}

@@ -24,6 +24,41 @@ pool URL, worker and token. Hash rates are in GH/s and depend on the job's messa
 the historical 600-byte synthetic test measured RTX 5090 ≈ 16.1 GH/s at 450 W, 17.3 at 575 W. See
 [2.0 hash benchmarks](#20-hash-work-txid-blake2b).
 
+### 2.0.4 RTX 50 hash improvements — 2026-11-15
+
+Version 2.0.4 adds a separately compiled Blackwell hash path for the
+RTX 5090, RTX 5080 and RTX 5070 Ti. Each card checks it against the CPU reference
+at startup. A warmed comparison chooses the kernel for each message layout;
+layouts that do not improve keep their native path. Other GPU models keep their
+existing selection, and AMD hash calculations are unchanged.
+
+| GPU | Prefix bytes | Power limit | v2.0.3 GH/s | 2.0.4 kernel GH/s | Change | Measured watts, old → new |
+|---|---:|---:|---:|---:|---:|---:|
+| RTX 5090 | 369 | 600 W | 16.902 | 19.857 | +17.48% | 600 → 600 W |
+| RTX 5090 | 369 | 450 W | 15.393 | 16.785 | +9.04% | 450 → 450 W |
+| RTX 5080 | 369 | 360 W | 8.351 | 10.671 | +27.78% | 281 → 353 W |
+| RTX 5070 Ti | 369 | 300 W | 6.912 | 8.883 | +28.51% | 242 → 297 W |
+
+These are matched A/B/B/A measurements at unchanged clocks and power limits,
+using Linux development builds of the kernels selected for 2.0.4. Protection
+packaging is validated separately; measured binary hashes are retained. The 5080 and
+5070 Ti use more of their available power with the faster kernel. The
+[measurement CSV](benchmarks/hash-blackwell-development-2026-11-15.csv) records
+run lengths, clocks, drivers and the measured binary hash. Hashrate depends on
+the job's message layout; these short measurements are not guaranteed pool rates.
+
+The optional module is compiled by the installed driver and cached by CUDA.
+Its first startup can take longer. If driver compilation is unavailable, the
+miner retains its native kernel; a hash-check failure stops startup. Set
+`PX_TXID_BW=0` to disable the new path for diagnosis. Windows GPU performance
+has not been measured in this development session.
+
+Production builds encrypt and authenticate all embedded CUDA images (including
+Blackwell PTX) and both OpenCL kernel sources. They are decoded in memory;
+corrupted payloads stop startup. Linux, Windows and Docker use the same checked
+build path. This protects distributed payloads; it is not a claim that code
+running on a user's machine is impossible to inspect. Source licensing is unchanged.
+
 ### 2.0.3 RTX PRO 6000 improvements — 2026-11-14
 
 Version 2.0.3 uses the faster aligned nonce search on the **RTX PRO 6000 Blackwell
@@ -55,7 +90,7 @@ these changes; they are not relabeled as final release measurements.
 Matched A/B/B/A measurements against the published v2.0.1 Linux binary, using
 30-second runs and wall-clock hash counts:
 
-| GPU | Prefix bytes | Power limit | v2.0.1 GH/s | Development GH/s | Change |
+| GPU | Prefix bytes | Power limit | v2.0.1 GH/s | 2.0.4 kernel GH/s | Change |
 |---|---:|---:|---:|---:|---:|
 | RTX 5090 A | 353 | 600 W | 16.786 | 17.036 | +1.49% |
 | RTX 5090 A | 364 | 600 W | 16.550 | 16.968 | +2.53% |
@@ -139,9 +174,9 @@ distribution); the Windows archive brings its own. The pool's certificate is che
   token, password empty for Blake2b. Worker name = the rig name.
 * **MMPOS / SMOS:** the same tarball, launchers `mmpos-run.sh` / `smos-run.sh`; pool URL as
   above, user = token, password empty for Blake2b (see [USAGE.md](USAGE.md)).
-* **Docker (NVIDIA):** `ocminersupr/proxichorizo:2.0.3` with `TOKEN`
+* **Docker (NVIDIA):** `ocminersupr/proxichorizo:2.0.4` with `TOKEN`
   and optionally `POOL_URL` (default `stratum+tcp://proxi.suprnova.cc:3355`); see `docker/README.md`.
-* **Docker (AMD):** `ocminersupr/proxichorizo:2.0.3-amd` (also `:amd`), the OpenCL miner with AMD's
+* **Docker (AMD):** `ocminersupr/proxichorizo:2.0.4-amd` (also `:amd`), the OpenCL miner with AMD's
   ROCm OpenCL runtime inside; the host needs only the amdgpu driver (`--device /dev/kfd --device /dev/dri`).
 
 ### Is it working?
@@ -229,12 +264,13 @@ Measured (1.0.5, `--bench`, platform defaults): RTX 5090 ≈ 78.6 MH/s at 600 W 
 **AMD / other OpenCL GPUs:** `cd opencl && make && ./proxichorizo-cl --selftest && ./proxichorizo-cl --proxi ... --token ... --key-file ...` — needs an OpenCL ICD and headers (ROCm or `ocl-icd-opencl-dev opencl-headers`); the kernels are compiled by the driver at start-up (about a minute) and checked against the embedded test vectors before mining. Version 1.0.6 adds faster measured profiles for RX 7900 XTX, RX 7600 XT and MI50; see the [AMD benchmarks](#amd-106-benchmarks) below. Remove old `--groups`/`--iters` overrides to use the automatic profiles. Same options as the CUDA miner (`--groups` instead of `--blocks`). See the AMD section of PLATFORMS.md for rates.
 
 ```bash
-make                 # all supported generations (Turing .. Blackwell), slow
+make                 # protected build; needs Python3 + PyNaCl; all generations, slow
 make ARCHS="-gencode arch=compute_86,code=sm_86"   # just your card, fast
 make test            # self-test against the Go reference vectors, random field test, cross-variant verify
 ```
 
-Requires CUDA 12.8+ (13 recommended) and a driver that supports it. The binary links the
+Requires CUDA 12.8+ and a driver that supports it. Release builds use the qualified
+CUDA 12.9.1 compiler; the optional Blackwell module is embedded as PTX. The binary links the
 CUDA runtime statically; the release builds also link libstdc++ statically and are made on
 glibc 2.31 so they run on HiveOS and mmpOS images.
 

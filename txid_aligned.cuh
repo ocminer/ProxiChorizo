@@ -4,6 +4,10 @@
 #include <cstdlib>
 
 namespace txid {
+#ifdef PX_BW_PTX
+extern "C" void txid_bw_launch(int, unsigned, unsigned, cudaStream_t, const ParamsCore &,
+    uint32_t, uint64_t, uint32_t, uint32_t, HitRec *, unsigned *, uint32_t, const Plan01 &);
+#endif
 // Only measured devices and message layouts use this search. Other devices and
 // all unlisted layouts retain their existing kernels, including block straddles.
 static inline bool aligned_device(const cudaDeviceProp &p) {
@@ -47,6 +51,8 @@ static inline uint64_t aligned_count(uint64_t nbase, uint64_t count) {
 }
 struct AlignedSearch {
     ParamsCore p{};
+    bool fast = false;
+    Plan01 plan{};
     uint64_t window = ~0ULL, fixed = 0;
     void reset() { window = ~0ULL; }
     void prepare(const Params &base, int plen, uint64_t nbase) {
@@ -67,6 +73,11 @@ struct AlignedSearch {
             int a=j, b=4+(j+1)%4, cc=8+(j+2)%4, d=12+(j+3)%4;
             g1(p.vhd[a], p.vhd[b], p.vhd[cc], p.vhd[d], p.m[8+2*j]);
             gf(p.vr[a], p.vr[b], p.vr[cc], p.vr[d], p.m[8+2*j], p.m[9+2*j]);
+        }
+        if (fast) {
+            Params tmp; static_cast<ParamsCore &>(tmp) = p;
+            plan_snap(tmp, (off + aligned_offset(plen)) / 8, false);
+            plan = tmp.q;
         }
     }
 };
@@ -105,12 +116,18 @@ static inline void launch_aligned(unsigned grid, unsigned block, cudaStream_t st
     uint64_t stride = (uint64_t)grid * block;
     uint32_t full = (uint32_t)(count / stride), tail = (uint32_t)(count % stride);
     const int off = plen % 128, OFF = aligned_offset(plen), W = (off + OFF) / 8, HIGH = ((off + OFF) % 8) / 4, LAST = (off + 7) / 8;
+#ifdef PX_BW_PTX
+    if (cache.fast) {
+        txid_bw_launch(4 * W + 2 * HIGH + (LAST - W), grid, block, st, cache.p, (uint32_t)nbase, cache.fixed, full, tail, hits, nhit, 8u * (4 - OFF), cache.plan);
+        return;
+    }
+#endif
     aligned_dispatch<0>(4 * W + 2 * HIGH + (LAST - W), grid, block, st, cache.p, (uint32_t)nbase, cache.fixed, full, tail, hits, nhit, 8u * (4 - OFF));
 }
 
 // Same independent full CPU hash used for ordinary-kernel checks. Exercise
 // fixed-byte changes, partial grids, zero/low masks and 2^32 carry boundaries.
-static inline int aligned_selfcheck(std::string &why, bool all = false) {
+static inline int aligned_selfcheck(std::string &why, bool all = false, bool fast = false) {
     HitRec *dh=nullptr; unsigned *dn=nullptr;
     cudaError_t e = cudaMalloc(&dh, TXID_MAX_HITS * sizeof(HitRec));
     if (e == cudaSuccess) e = cudaMalloc(&dn, sizeof(unsigned));
@@ -126,14 +143,18 @@ static inline int aligned_selfcheck(std::string &why, bool all = false) {
         if (blocks==0 && off==0) continue;   // an empty prefix is not a job
         int plen=blocks*128+off, k=test%3==0 ? 0 : test%3==1 ? 3 : 12;
         std::vector<uint8_t> prefix(plen); for (int i=0; i<plen; i++) prefix[i]=(uint8_t)(i*31+test*19);
-        Params p; prepare(prefix.data(), plen, k, p); AlignedSearch cache;
+        Params p; prepare(prefix.data(), plen, k, p); AlignedSearch cache; cache.fast = fast;
         uint64_t first=0xa1b27856ffffff00ULL+(uint64_t)test*0x123450011ULL;
         if (test==7) first=0xfffffffffffffeffULL;
         uint64_t count=513+test*17; std::vector<HitRec> got,want;
         for (uint64_t done=0; done<count;) {
             uint64_t nbase=first+done, batch=aligned_count(nbase,count-done);
             e=cudaMemset(dn,0,sizeof(unsigned));
-            if (e==cudaSuccess) { launch_aligned(3,128,0,p,plen,nbase,batch,dh,dn,cache); e=cudaDeviceSynchronize(); }
+            if (e==cudaSuccess) {
+                launch_aligned(3,128,0,p,plen,nbase,batch,dh,dn,cache);
+                e=cudaGetLastError();
+                if(e==cudaSuccess)e=cudaDeviceSynchronize();
+            }
             unsigned n=0; if(e==cudaSuccess)e=cudaMemcpy(&n,dn,sizeof n,cudaMemcpyDeviceToHost);
             if(e!=cudaSuccess||n>TXID_MAX_HITS) { why=e==cudaSuccess?"aligned hit overflow":cudaGetErrorString(e);cudaFree(dh);cudaFree(dn);return 1; }
             size_t at=got.size();got.resize(at+n);if(n)e=cudaMemcpy(got.data()+at,dh,n*sizeof(HitRec),cudaMemcpyDeviceToHost);
