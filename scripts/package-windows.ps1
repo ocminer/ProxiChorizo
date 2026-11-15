@@ -16,6 +16,9 @@ Copy-Item $Exe "$stage/$exeName"
 Copy-Item $(if ($amd) { 'windows-amd/*' } else { 'windows/*' }) $stage
 Copy-Item README.md, USAGE.md, LICENSE, LICENSE-Monocypher.txt, NOTICE, PLATFORMS.md, STRATUM-SPEC.md, vectors.json, vectors-txid-blake2b.json $stage
 Copy-Item -Recurse benchmarks (Join-Path $stage 'benchmarks')
+New-Item -ItemType Directory -Force (Join-Path $stage 'examples') | Out-Null
+Copy-Item examples/README.md (Join-Path $stage 'examples')
+Copy-Item $(if ($amd) { 'examples/windows-amd/*.cmd' } else { 'examples/windows/*.cmd' }) (Join-Path $stage 'examples')
 if (Test-Path "RELEASE-v$Version.md") { Copy-Item "RELEASE-v$Version.md" $stage }
 # stratum+ssl:// loads OpenSSL at run time: ship OpenSSL 3's two DLLs (from the runner's OpenSSL
 # installation, or $env:OPENSSL_DIR) and Mozilla's CA bundle as cacert.pem next to the miner

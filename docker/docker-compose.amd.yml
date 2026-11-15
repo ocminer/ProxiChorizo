@@ -1,6 +1,6 @@
 services:
   miner:
-    image: ocminersupr/proxichorizo:1.0.8-amd
+    image: ocminersupr/proxichorizo:amd
     restart: unless-stopped
     devices:
       - /dev/kfd
@@ -10,7 +10,6 @@ services:
       - render
     environment:
       TOKEN: "YOUR_POOL_TOKEN"
-      SEED: "FIRST_64_HEX_CHARS_OF_private_key"
       WORKER: "rig1"
       # POOL_URL defaults to stratum+tcp://proxi.suprnova.cc:3355
       # DEVICES: "0"

@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 # SMOS custom-miner launcher for ProxiChorizo. SMOS exports the miner settings as
-# environment variables and captures stdout. Set POOL_URL (the pool), TOKEN (pool token)
-# and SEED (key seed, 64 hex) in the SMOS miner config; WALLET/PASSWORD are accepted as aliases.
+# environment variables and captures stdout. Set POOL_URL (the pool) and TOKEN (pool token)
+# in the SMOS miner config (WALLET is an alias for TOKEN). SEED/PASSWORD: legacy VRF only, not needed.
 cd "$(dirname "$0")" || exit 1
 POOL_URL="${POOL_URL:-${POOL:-}}"; TOKEN="${TOKEN:-${WALLET:-}}"; SEED="${SEED:-${PASSWORD:-}}"
 [[ -z $POOL_URL ]] && { echo "POOL_URL missing (e.g. stratum+tcp://proxi.suprnova.cc:3355)"; exit 1; }
 [[ -z $TOKEN    ]] && { echo "TOKEN missing (your pool registration token)"; exit 1; }
-[[ -z $SEED && -z $KEY_FILE ]] && echo "no SEED/KEY_FILE: mining hash jobs only (txid-blake2b, Proxima library upgrade 6); VRF jobs need the key seed"
 [[ $POOL_URL == *://* ]] || POOL_URL="http://$POOL_URL"
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 # binary: the CUDA miner with an NVIDIA driver, the OpenCL miner (AMD) otherwise or with MINER=cl

@@ -242,7 +242,9 @@ native SM90 code for H100.
 ## Download
 [GitHub Releases](https://github.com/ocminer/ProxiChorizo/releases):
 
-* `proxichorizo-<ver>.tar.gz` — Linux x86-64, built on glibc 2.31. One tarball serves plain Linux, **HiveOS** (`h-run.sh`), **MMPOS** (`mmpos-run.sh`) and **SMOS** (`smos-run.sh`) — pick the launcher for your OS and set the pool URL, your pool token and your key seed in the flight sheet.
+**Mining at suprnova.cc:** ready-to-edit start scripts and flight-sheet values for Linux, Windows, HiveOS, mmpOS, SMOS and Docker are in [`examples/`](examples/README.md) (also inside every package). You only need your pool token and a worker name.
+
+* `proxichorizo-<ver>.tar.gz` — Linux x86-64, built on glibc 2.31. One tarball serves plain Linux, **HiveOS** (`h-run.sh`), **MMPOS** (`mmpos-run.sh`) and **SMOS** (`smos-run.sh`) — pick the launcher for your OS and set the pool URL and your pool token in the flight sheet (no key seed needed). Ready-made suprnova.cc setups for every platform are in `examples/`.
 * `proxichorizo-hiveos.tar.gz` — the same package under the directory name HiveOS's custom-miner installer requires (miner name `proxichorizo`).
 * `proxichorizo-<ver>-windows-x86_64.zip` — native **Windows** x64 for **NVIDIA** (CUDA), with the OpenSSL DLLs and `cacert.pem` for `stratum+ssl://`. Set your token in `start.cmd` and run it.
 * `proxichorizo-<ver>-windows-amd-x86_64.zip` — native **Windows** x64 for **AMD** (OpenCL, `proxichorizo-cl.exe`), same layout; needs the AMD Adrenalin driver, which provides `OpenCL.dll`. Windows does not expose AMD temperatures to the miner, so watch them in AMD Software.
@@ -251,7 +253,7 @@ native SM90 code for H100.
 
 ## Usage
 ```
-./proxichorizo --proxi stratum+tcp://proxi.suprnova.cc:3355 --token YOUR_TOKEN --key-file proxima.key --name rig1   # pool, stratum (or --token-file FILE); every GPU, one process
+./proxichorizo --proxi stratum+tcp://proxi.suprnova.cc:3355 --token YOUR_TOKEN --name rig1   # pool, stratum (or --token-file FILE); every GPU, one process
 ./proxichorizo ... -d 0,2                   # only these GPUs (PCI bus order, as nvidia-smi numbers them)
 ./proxichorizo --proxi http://your-node:8200 --token SEEKER_TOKEN                                               # Blake2b solo, see USAGE.md
 ./proxichorizo --autotune --bench 10        # fastest kernel variant per GPU, then its hashrate
@@ -265,7 +267,7 @@ Measured (1.0.5, `--bench`, platform defaults): RTX 5090 ≈ 78.6 MH/s at 600 W 
 
 ## Build
 
-**AMD / other OpenCL GPUs:** `cd opencl && make && ./proxichorizo-cl --selftest && ./proxichorizo-cl --proxi ... --token ... --key-file ...` — needs an OpenCL ICD and headers (ROCm or `ocl-icd-opencl-dev opencl-headers`); the kernels are compiled by the driver at start-up (about a minute) and checked against the embedded test vectors before mining. Version 1.0.6 adds faster measured profiles for RX 7900 XTX, RX 7600 XT and MI50; see the [AMD benchmarks](#amd-106-benchmarks) below. Remove old `--groups`/`--iters` overrides to use the automatic profiles. Same options as the CUDA miner (`--groups` instead of `--blocks`). See the AMD section of PLATFORMS.md for rates.
+**AMD / other OpenCL GPUs:** `cd opencl && make && ./proxichorizo-cl --selftest && ./proxichorizo-cl --proxi ... --token ...` — needs an OpenCL ICD and headers (ROCm or `ocl-icd-opencl-dev opencl-headers`); the kernels are compiled by the driver at start-up (about a minute) and checked against the embedded test vectors before mining. Version 1.0.6 adds faster measured profiles for RX 7900 XTX, RX 7600 XT and MI50; see the [AMD benchmarks](#amd-106-benchmarks) below. Remove old `--groups`/`--iters` overrides to use the automatic profiles. Same options as the CUDA miner (`--groups` instead of `--blocks`). See the AMD section of PLATFORMS.md for rates.
 
 ```bash
 make                 # protected build; needs Python3 + PyNaCl; all generations, slow

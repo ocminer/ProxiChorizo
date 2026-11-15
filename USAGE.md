@@ -20,19 +20,21 @@ to your PROX address by the pool (PPLNS, 1 % fee) and paid out to it.
 1. Open https://proxi.suprnova.cc/StartMining.html and register with your **PROX
    address** (the 64-hex holder ID of your wallet, shown by `proxi node balance` as
    `a/<hex>`; type it without the `a/`).
-2. The page gives you a **token** and a **key file**. Save the key file as `proxima.key`
-   next to the miner. This key can only mine for your account; it holds no funds.
+2. The page gives you a **token**. That is all the miner needs: current Proxima jobs
+   (txid-blake2b, since library upgrade 6) need no key file or seed.
 3. Start the miner:
 
    Linux
    ```bash
-   ./proxichorizo --proxi stratum+tcp://proxi.suprnova.cc:3355 --token YOUR_TOKEN --key-file proxima.key --name rig1
+   ./proxichorizo --proxi stratum+tcp://proxi.suprnova.cc:3355 --token YOUR_TOKEN --name rig1
    ```
    Windows
    ```bat
-   proxichorizo.exe --proxi stratum+tcp://proxi.suprnova.cc:3355 --token YOUR_TOKEN --key-file proxima.key --name rig1
+   proxichorizo.exe --proxi stratum+tcp://proxi.suprnova.cc:3355 --token YOUR_TOKEN --name rig1
    ```
    `--name` is the worker name shown on the pool; use a different one per rig/GPU.
+   Ready-to-edit start scripts and flight-sheet values for every platform are in the
+   [`examples/`](examples/README.md) folder of the package.
 
 4. The miner prints a start-up banner (version, licence, pool, worker, the GPUs with
    bus id and kernel) and then, every 30 seconds, one line per GPU and a total:
@@ -61,9 +63,9 @@ a yellow log line, and resumes by itself once it has cooled 8 °C below the limi
 30 s); the other GPUs keep mining. `--max-temp 0` disables it. The stats API shows a paused GPU as
 `"status":"paused","reason":"thermal"`.
 
-Instead of `--key-file` you may pass the key as `--seed-hex <first 64 hex chars of
-"private_key" in proxima.key>` or in the environment variable `NONCE_SEEKER_SEED` —
-that is what the HiveOS/mmpOS/Docker packages do.
+Legacy VRF jobs (before library upgrade 6) also needed the pool's key, as `--key-file proxima.key`,
+`--seed-hex <first 64 hex chars of "private_key">` or the environment variable `NONCE_SEEKER_SEED`.
+The options remain for compatibility; current jobs ignore them.
 
 ### Stratum
 
@@ -149,7 +151,7 @@ set `POOL_URL` (job server) and `TOKEN` (pool or seeker token) in the miner conf
 (`WALLET` is an alias for `TOKEN`), optionally `DEVICES`, `VARIANT`, `EXTRA_ARGS`.
 Only legacy VRF needs `SEED` (`PASSWORD` is its alias).
 MMPOS's API-based "external miner" format is served by `mmp-launch.sh` / `mmp-stats.sh` /
-`mmp-external.conf` from the same tarball (pool = job server, user = token, password = seed).
+`mmp-external.conf` from the same tarball (pool = job server, user = token, password = `x` or empty).
 
 ## 5. Docker
 
@@ -248,6 +250,6 @@ line shows the kernel, the launch shape and the reason.
 - `GPU #n: CUDA error … this GPU is disabled` — a device error (Xid, fallen off the bus) on
   one card; the others keep mining. Check `dmesg`/`nvidia-smi` and restart the miner once the
   card is back. The process exits with code 2 only when no working GPU is left.
-- Windows: `start.cmd` expects `proxima.key` in the unpacked folder; `start.ps1 -KeyFile` points elsewhere.
+- Windows: `start.cmd` needs only your token; `examples\start-suprnova*.cmd` are ready-made alternatives (TCP and TLS).
 
 The source and issue tracker: https://github.com/ocminer/ProxiChorizo
