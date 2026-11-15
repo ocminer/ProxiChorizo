@@ -5,8 +5,8 @@ NVCC ?= nvcc
 ARCHS ?= -gencode arch=compute_75,code=sm_75 -gencode arch=compute_80,code=sm_80 -gencode arch=compute_86,code=sm_86 \
          -gencode arch=compute_89,code=sm_89 -gencode arch=compute_90,code=sm_90 \
          -gencode arch=compute_120,code=sm_120 -gencode arch=compute_120,code=compute_120
-proxichorizo: proxichorizo.cu proxichorizo_device.cuh platform_profiles.h txid_blake2b.h txid_cuda.cuh txid_aligned.cuh txid_blackwell.h txid_blackwell.cu txid_bw_math.cuh kernel_protection.cpp scripts/build-protected.py scripts/protect-kernels.py
-	NVCC="$(NVCC)" python3 scripts/build-protected.py --kind cuda --output $@ --archs="$(ARCHS)"
+proxichorizo: proxichorizo.cu proxichorizo_device.cuh platform_profiles.h txid_blake2b.h txid_cuda.cuh txid_aligned.cuh txid_blackwell.h txid_blackwell.cu txid_bw_math.cuh scripts/build.py
+	NVCC="$(NVCC)" python3 scripts/build.py --kind cuda --output $@ --archs="$(ARCHS)"
 
 test: proxichorizo
 	./proxichorizo --selftest vectors.json && ./proxichorizo --fetest && ./proxichorizo --verify

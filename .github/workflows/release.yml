@@ -59,19 +59,17 @@ jobs:
     container: nvidia/cuda:12.9.1-devel-ubuntu20.04
     steps:
       - name: tools
-        run: apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git binutils python3 python3-nacl ocl-icd-opencl-dev opencl-headers >/dev/null
+        run: apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git binutils python3 ocl-icd-opencl-dev opencl-headers >/dev/null
       - uses: actions/checkout@v4
       - name: build (glibc 2.31, Turing to Blackwell)
-        env: { PX_KERNEL_BUILD_KEY: "${{ secrets.PX_KERNEL_BUILD_KEY }}" }
         run: |
           git config --global --add safe.directory "$PWD"
           nvcc --version | tail -2
-          python3 scripts/build-protected.py --kind cuda --output proxichorizo --threads 2 --require-key
+          python3 scripts/build.py --kind cuda --output proxichorizo --threads 2
           objdump -T proxichorizo | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
       - name: build the OpenCL miner (AMD)
-        env: { PX_KERNEL_BUILD_KEY: "${{ secrets.PX_KERNEL_BUILD_KEY }}" }
         run: |
-          python3 scripts/build-protected.py --kind opencl --output opencl/proxichorizo-cl --require-key
+          python3 scripts/build.py --kind opencl --output opencl/proxichorizo-cl
           objdump -T opencl/proxichorizo-cl | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
           ldd opencl/proxichorizo-cl | grep -i opencl
       - name: CPU regression checks
@@ -116,14 +114,11 @@ jobs:
           method: network
       - uses: ilammy/msvc-dev-cmd@v1
         with: { arch: x64 }
-      - name: build protected CUDA release
+      - name: build CUDA release
         shell: pwsh
-        env: { PX_KERNEL_BUILD_KEY: "${{ secrets.PX_KERNEL_BUILD_KEY }}" }
         run: |
-          python -m pip install PyNaCl==1.6.2
-          if ($LASTEXITCODE -ne 0) { throw 'PyNaCl installation failed' }
-          python scripts/build-protected.py --kind cuda --output proxichorizo.exe --threads 2 --require-key
-          if ($LASTEXITCODE -ne 0) { throw 'protected CUDA build failed' }
+          python scripts/build.py --kind cuda --output proxichorizo.exe --threads 2
+          if ($LASTEXITCODE -ne 0) { throw 'CUDA build failed' }
       - name: CPU profile checks and executable startup
         shell: cmd
         run: |
@@ -173,14 +168,11 @@ jobs:
           if ((Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:OCL_SDK_SHA256) { throw 'OpenCL SDK checksum mismatch' }
           Expand-Archive $zip (Join-Path $env:RUNNER_TEMP 'ocl') -Force
           "OCL_DIR=$(Join-Path $env:RUNNER_TEMP "ocl/OpenCL-SDK-$env:OCL_SDK-Win-x64")" >> $env:GITHUB_ENV
-      - name: build the protected OpenCL miner (AMD)
+      - name: build the OpenCL miner (AMD)
         shell: pwsh
-        env: { PX_KERNEL_BUILD_KEY: "${{ secrets.PX_KERNEL_BUILD_KEY }}" }
         run: |
-          python -m pip install PyNaCl==1.6.2
-          if ($LASTEXITCODE -ne 0) { throw 'PyNaCl installation failed' }
-          python scripts/build-protected.py --kind opencl --output opencl/proxichorizo-cl.exe --require-key
-          if ($LASTEXITCODE -ne 0) { throw 'protected OpenCL build failed' }
+          python scripts/build.py --kind opencl --output opencl/proxichorizo-cl.exe
+          if ($LASTEXITCODE -ne 0) { throw 'OpenCL build failed' }
       - name: CPU profile checks and executable startup with and without OpenCL.dll
         shell: pwsh
         working-directory: opencl
@@ -241,8 +233,6 @@ jobs:
         with:
           context: .
           file: docker/Dockerfile
-          secrets: |
-            PX_KERNEL_BUILD_KEY=${{ secrets.PX_KERNEL_BUILD_KEY }}
           load: true
           push: false
           tags: ${{ steps.reg.outputs.tags }}

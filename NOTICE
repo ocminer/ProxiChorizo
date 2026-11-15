@@ -22,8 +22,3 @@ Windows release archives also include, unmodified, for stratum+ssl:// connection
 - cacert.pem, the Mozilla CA certificate bundle as published by the curl project
   (https://curl.se/docs/caextract.html), Mozilla Public License 2.0.
 On Linux the miner uses the system's OpenSSL and CA store; nothing is bundled.
-
-Kernel payload protection uses Monocypher 4.0.3, unmodified, under its BSD 2-clause
-license (https://monocypher.org/). See LICENSE-Monocypher.txt for the complete
-license and copyright notices. This third-party grant does not change the
-ProxiChorizo License 1.0 for the miner and its kernels.

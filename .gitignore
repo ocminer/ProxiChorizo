@@ -48,8 +48,6 @@ notes/
 *.cubin
 *.fatbin
 *.obj
-kernel_key.h
-*.protection.json
 build/
 dist/
 /tools/vrfvec/vrfvec

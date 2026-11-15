@@ -14,7 +14,7 @@ New-Item -ItemType Directory -Force $stage | Out-Null
 if (!(Test-Path $Exe)) { throw "executable missing: $Exe" }
 Copy-Item $Exe "$stage/$exeName"
 Copy-Item $(if ($amd) { 'windows-amd/*' } else { 'windows/*' }) $stage
-Copy-Item README.md, USAGE.md, LICENSE, LICENSE-Monocypher.txt, NOTICE, PLATFORMS.md, STRATUM-SPEC.md, vectors.json, vectors-txid-blake2b.json $stage
+Copy-Item README.md, USAGE.md, LICENSE, NOTICE, PLATFORMS.md, STRATUM-SPEC.md, vectors.json, vectors-txid-blake2b.json $stage
 Copy-Item -Recurse benchmarks (Join-Path $stage 'benchmarks')
 New-Item -ItemType Directory -Force (Join-Path $stage 'examples') | Out-Null
 Copy-Item examples/README.md (Join-Path $stage 'examples')

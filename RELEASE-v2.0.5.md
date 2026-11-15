@@ -27,5 +27,4 @@ Downloads cover Linux CUDA and OpenCL, HiveOS, mmpOS/SMOS, native Windows NVIDIA
 native Windows AMD. Docker images are `ocminersupr/proxichorizo:2.0.5` / `:latest` and
 `:2.0.5-amd` / `:amd`, mirrored under `ghcr.io/ocminer/proxichorizo`.
 
-Release kernel payloads remain encrypted and authenticated as in 2.0.4. ProxiChorizo
-License 1.0 is unchanged.
+ProxiChorizo License 1.0 is unchanged.

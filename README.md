@@ -47,8 +47,8 @@ existing selection, and AMD hash calculations are unchanged.
 | RTX 5070 Ti | 369 | 300 W | 6.912 | 8.883 | +28.51% | 242 → 297 W |
 
 These are matched A/B/B/A measurements at unchanged clocks and power limits,
-using Linux development builds of the kernels selected for 2.0.4. Protection
-packaging is validated separately; measured binary hashes are retained. The 5080 and
+using Linux development builds of the kernels selected for 2.0.4. Measured binary
+hashes are retained. The 5080 and
 5070 Ti use more of their available power with the faster kernel. The
 [measurement CSV](benchmarks/hash-blackwell-development-2026-11-15.csv) records
 run lengths, clocks, drivers and the measured binary hash. Hashrate depends on
@@ -59,12 +59,6 @@ Its first startup can take longer. If driver compilation is unavailable, the
 miner retains its native kernel; a hash-check failure stops startup. Set
 `PX_TXID_BW=0` to disable the new path for diagnosis. Windows GPU performance
 has not been measured in this development session.
-
-Production builds encrypt and authenticate all embedded CUDA images (including
-Blackwell PTX) and both OpenCL kernel sources. They are decoded in memory;
-corrupted payloads stop startup. Linux, Windows and Docker use the same checked
-build path. This protects distributed payloads; it is not a claim that code
-running on a user's machine is impossible to inspect. Source licensing is unchanged.
 
 On the tested RX 7900 XTX Linux host, ROCm consumed approximately one CPU core
 with both v2.0.3 and v2.0.4. Profiling located this in its async-event runtime;
@@ -277,7 +271,7 @@ Measured (1.0.5, `--bench`, platform defaults): RTX 5090 ≈ 78.6 MH/s at 600 W 
 **AMD / other OpenCL GPUs:** `cd opencl && make && ./proxichorizo-cl --selftest && ./proxichorizo-cl --proxi ... --token ...` — needs an OpenCL ICD and headers (ROCm or `ocl-icd-opencl-dev opencl-headers`); the kernels are compiled by the driver at start-up (about a minute) and checked against the embedded test vectors before mining. Version 1.0.6 adds faster measured profiles for RX 7900 XTX, RX 7600 XT and MI50; see the [AMD benchmarks](#amd-106-benchmarks) below. Remove old `--groups`/`--iters` overrides to use the automatic profiles. Same options as the CUDA miner (`--groups` instead of `--blocks`). See the AMD section of PLATFORMS.md for rates.
 
 ```bash
-make                 # protected build; needs Python3 + PyNaCl; all generations, slow
+make                 # needs Python3; all generations, slow
 make ARCHS="-gencode arch=compute_86,code=sm_86"   # just your card, fast
 make test            # self-test against the Go reference vectors, random field test, cross-variant verify
 ```

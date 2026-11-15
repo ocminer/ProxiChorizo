@@ -8,19 +8,9 @@ import re
 import subprocess
 import tarfile
 import zipfile
-import importlib.util
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 ARCHS = [75, 80, 86, 89, 90, 120]
-_spec = importlib.util.spec_from_file_location("px_protect", ROOT / "scripts/protect-kernels.py")
-_protect = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_protect)
-
-def check_kernels(files):
-    for name in ["proxichorizo", "proxichorizo.exe", "proxichorizo-cl", "proxichorizo-cl.exe"]:
-        if name in files:
-            _protect.inspect_bytes(files[name], "opencl" if "-cl" in name else "cuda")
-    assert not any(name.endswith((".ptx", ".cubin", ".fatbin", ".cl", "kernel_key.h")) for name in files), "unprotected build material in package"
 
 
 def text(data):
@@ -28,7 +18,7 @@ def text(data):
 
 
 def check_notices(files, version, release_notes=True):
-    names = ["LICENSE", "LICENSE-Monocypher.txt", "NOTICE", "README.md", "USAGE.md", "vectors.json", "vectors-txid-blake2b.json", "STRATUM-SPEC.md",
+    names = ["LICENSE", "NOTICE", "README.md", "USAGE.md", "vectors.json", "vectors-txid-blake2b.json", "STRATUM-SPEC.md",
              "PLATFORMS.md", "benchmarks/amd-20261106.csv", "benchmarks/amd-1.0.6.csv", "benchmarks/nvidia-1.0.6.csv"]
     names += [p.relative_to(ROOT).as_posix() for p in sorted((ROOT / "benchmarks").glob("*.csv")) if p.relative_to(ROOT).as_posix() not in names]
     if release_notes:
@@ -62,7 +52,6 @@ def read_archive(path):
 
 def verify_archive(path, version, commit):
     files = read_archive(path)
-    check_kernels(files)
     check_notices(files, version)
     info = json.loads(text(files["BUILD-INFO.json"]))
     assert info["version"] == version and info["source_commit"] == commit
@@ -124,7 +113,6 @@ def main():
         files = {p.relative_to(args.directory).as_posix(): p.read_bytes()
                  for p in args.directory.rglob("*") if p.is_file()}
         check_notices(files, args.version, release_notes=False)
-        check_kernels(files)
         assert files[args.binary].startswith(b"\x7fELF")
         print("verified container contents and notices against source", commit)
     for archive in args.archives:

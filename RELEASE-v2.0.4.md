@@ -24,13 +24,8 @@ AMD hash calculations and all existing native NVIDIA kernels are retained.
 The tested RX 7900 XTX host still consumes approximately one CPU core in the
 ROCm async-event runtime, as v2.0.3 did; that driver behavior remains unresolved.
 
-Release CUDA images, Blackwell PTX and OpenCL source payloads are encrypted and
-authenticated, decoded only in memory, and checked before packaging. Corrupted
-payloads fail closed. The default build uses the protected path.
-
 Downloads cover Linux CUDA and OpenCL, HiveOS, mmpOS/SMOS, native Windows NVIDIA
 and native Windows AMD. Docker images are `ocminersupr/proxichorizo:2.0.4` /
 `:latest` and `:2.0.4-amd` / `:amd`, mirrored under `ghcr.io/ocminer/proxichorizo`.
 
-ProxiChorizo License 1.0 is unchanged. Packages also include the preserved
-Monocypher BSD 2-clause license for the new payload protection dependency.
+ProxiChorizo License 1.0 is unchanged.
