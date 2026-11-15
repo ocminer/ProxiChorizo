@@ -24,6 +24,13 @@ pool URL, worker and token. Hash rates are in GH/s and depend on the job's messa
 the historical 600-byte synthetic test measured RTX 5090 ≈ 16.1 GH/s at 450 W, 17.3 at 575 W. See
 [2.0 hash benchmarks](#20-hash-work-txid-blake2b).
 
+### 2.0.5 setup examples — 2026-11-15
+
+Version 2.0.5 ships ready-to-edit setups for mining at suprnova.cc in [`examples/`](examples/README.md)
+(Linux, Windows NVIDIA and AMD, HiveOS, mmpOS, SMOS, Docker, systemd), included in every
+package. The launchers no longer print the outdated "no SEED/KEY_FILE" notice: current jobs
+need only the pool token. Mining kernels and hash rates are unchanged from 2.0.4.
+
 ### 2.0.4 RTX 50 hash improvements — 2026-11-15
 
 Version 2.0.4 adds a separately compiled Blackwell hash path for the
@@ -178,9 +185,9 @@ distribution); the Windows archive brings its own. The pool's certificate is che
   token, password empty for Blake2b. Worker name = the rig name.
 * **MMPOS / SMOS:** the same tarball, launchers `mmpos-run.sh` / `smos-run.sh`; pool URL as
   above, user = token, password empty for Blake2b (see [USAGE.md](USAGE.md)).
-* **Docker (NVIDIA):** `ocminersupr/proxichorizo:2.0.4` with `TOKEN`
+* **Docker (NVIDIA):** `ocminersupr/proxichorizo:2.0.5` with `TOKEN`
   and optionally `POOL_URL` (default `stratum+tcp://proxi.suprnova.cc:3355`); see `docker/README.md`.
-* **Docker (AMD):** `ocminersupr/proxichorizo:2.0.4-amd` (also `:amd`), the OpenCL miner with AMD's
+* **Docker (AMD):** `ocminersupr/proxichorizo:2.0.5-amd` (also `:amd`), the OpenCL miner with AMD's
   ROCm OpenCL runtime inside; the host needs only the amdgpu driver (`--device /dev/kfd --device /dev/dri`).
 
 ### Is it working?
