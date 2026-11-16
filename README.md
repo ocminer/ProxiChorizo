@@ -254,6 +254,30 @@ and `--iters` override the defaults. The startup line reports the selected kerne
 launch shape. After changing power or clocks, run `--autotune` again to compare kernels
 under the new settings. The miner does not change power limits or clocks.
 
+### Memory clock advisory (hash work)
+
+The txid-blake2b hash search uses no VRAM bandwidth. When a card runs at its power limit, a lower
+memory clock leaves more of that budget to the core. This is optional and set by you, not the miner
+(Linux, as root; `nvidia-smi -rmc` undoes it):
+
+```
+sudo nvidia-smi -i 0 -lmc 810,810    # GPU 0: memory at 810 MHz while mining
+sudo nvidia-smi -i 0 -rmc            # back to automatic
+```
+
+Measured with 2.0.5, 369-byte jobs, A/B/B/A ([all readings](benchmarks/memclock-hash-2026-11-15.csv)):
+
+| GPU | Power limit | Memory 810 MHz | Memory 7001 MHz |
+|---|---:|---|---|
+| RTX 5090 | 450 W (power-limited) | **+1.7 %** (core 2152 → 2197 MHz) | +0.8 % |
+| RTX 5080 | 360 W (not at its limit) | same hashrate, 10 W less | same hashrate, 8 W less |
+| RTX 3070 | 240 W (not at its limit) | same hashrate, 15 W less | same hashrate (5001 MHz), 7 W less |
+
+The gain appears only where the power limit actually holds the core clock down; otherwise the lower
+clock only saves power. **Never use the lowest memory clock (405 MHz):** the driver then also holds the
+core near 870 MHz (RTX 5090: −60 %). Other models were not measured. The older clock observations
+further below were taken with the VRF work of 1.0.6 and do not apply to hash jobs.
+
 A100 and H100 retain their separate measured profiles. The CMP 170HX, tested RTX 3070,
 4070 Ti SUPER, 5070 Ti, 5080, 5090 and RTX PRO 6000 models retain the NVIDIA ladder
 kernel. Other models and MIG partitions use the applicable fallback and tuning rules;
@@ -508,7 +532,8 @@ claim that every possible clock combination was tested.
 The 420 W 5090 memory change was confirmed by A/B/B/A: **+1.63%** at the same
 power. On the 5070 Ti, 7001 MHz memory reduced power but also reduced hashrate
 by 0.68%. At 810 MHz memory every tested NVIDIA model lost hashrate. No automatic
-memory lock is enabled by this release. [All NVIDIA sweep rows and exact readings](benchmarks/clocks-nvidia-2026-11-06.csv).
+memory lock is enabled by this release. These are VRF-work (1.0.6) observations; for the current
+hash work see the memory clock advisory above. [All NVIDIA sweep rows and exact readings](benchmarks/clocks-nvidia-2026-11-06.csv).
 
 ### NVIDIA 1.0.6 checks
 
@@ -623,7 +648,7 @@ from the development comparison above:
 
 The CMP 170HX and the RTX 4070 Ti SUPER each shared the card with another program that stayed idle during the runs
 (not a material effect on the rates). At a reduced power cap an RTX 5090 gains a little from `nvidia-smi -lmc 7001,7001` (+1.4 % at 420 W,
-nothing measurable at 600 W); never lock the memory below 7001 MHz.
+nothing measurable at 600 W); never lock the memory below 7001 MHz. (VRF work; for hash jobs see the memory clock advisory above.)
 
 Earlier releases (1.0.0 table, the same `--bench` method against 0.5.9; history in PLATFORMS.md rounds 10 and 11):
 
