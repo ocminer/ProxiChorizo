@@ -4034,9 +4034,21 @@ static void expire_job(Shared &sh) {
     log_warn(msg);
 }
 // the connection: subscribe, authorize, then jobs in and shares out until it breaks; reconnects with backoff
+static bool request_aligned_tail_for(const std::vector<Shared::GpuStat> &gpus) {
+    if (const char *e = getenv("PX_ALIGNED_TAIL")) {
+        if (!strcmp(e, "0")) return false;
+        if (!strcmp(e, "1")) return true; // explicit development/benchmark override
+    }
+    // GTX 1080 Ti measurements favor ordinary jobs. One connection carries one
+    // layout for the whole rig, so preserve ordinary jobs if it includes Pascal.
+    for (const auto &g : gpus) if (g.arch == "sm_61") return false;
+    return true;
+}
 static void stratum_client(Shared &sh) {
     int backoff = 1;
-    bool request_aligned_tail = true;
+    bool request_aligned_tail;
+    { std::lock_guard<std::mutex> l(sh.mu); request_aligned_tail = request_aligned_tail_for(sh.gpus); }
+    if (!request_aligned_tail && sh.con.verbose) logln("stratum: ordinary job layout retained for this rig");
     while (!sh.stop) {
         std::string err;
         sock_t fd = tcp_connect(sh.url, 10, err);
@@ -4257,7 +4269,7 @@ struct GpuCfg { int dev; int blocks; int threads; int iters; const VariantOps *o
 // extranonce2 range, never repeating an extranonce2 within a job (the cursor survives a job's re-send).
 struct TxidWorker {
     Shared &sh; int ordinal; unsigned grid; uint32_t iters = 64; float last_ms = 0;
-    txid::Params p; txid::AlignedSearch aligned_cache; bool aligned_job = false, zero_tail_job = false; uint64_t job = 0; uint16_t en1 = 0; int k = -1; uint64_t cur = 0, lo = 0, hi = 0; bool exhausted = false;
+    txid::Params p; txid::AlignedSearch aligned_cache; bool aligned_job = false, zero_tail_job = false, padded_job = false; uint64_t job = 0; uint16_t en1 = 0; int k = -1; uint64_t cur = 0, lo = 0, hi = 0; bool exhausted = false;
     std::map<std::pair<uint64_t, uint16_t>, uint64_t> cursors;
     txid::BlackwellChoice kernel_choice;
     txid::HitRec *d_hits = nullptr; unsigned *d_n = nullptr; std::vector<txid::HitRec> hits; cudaEvent_t e0, e1;
@@ -4275,6 +4287,7 @@ struct TxidWorker {
             if (job) { cursors[{job, en1}] = cur; if (cursors.size() > 256) cursors.clear(); }
             job = j.id; en1 = j.en1; k = j.k; exhausted = false;
             txid::prepare(j.hprefix.data(), (int)j.hprefix.size(), k, p);
+            padded_job = txid::is_zero_tail(p);
             int mode = kernel_choice.select(p, (int)j.hprefix.size(), grid, d_hits, d_n, fail);
             if (mode < 0) return false;
             zero_tail_job = mode == 6; aligned_job = mode > 0 && mode < 6; aligned_cache.fast = mode == 2; aligned_cache.platform = mode > 2 && mode < 6 ? mode - 2 : 0; aligned_cache.reset();
@@ -4287,18 +4300,20 @@ struct TxidWorker {
             idle(10); return true;
         }
         uint64_t per = (uint64_t)grid * TXID_TPB * iters, count = std::min<uint64_t>(per, hi - cur);
-        if (aligned_job) count = txid::aligned_count(cur, count);
+        uint64_t nbase = ((uint64_t)en1 << 48) | cur;
+        if (padded_job && !txid::zero_tail_nonce_base(en1, cur, lo, hi, nbase)) { fail = "unsupported padded-job GPU nonce range"; return false; }
+        if (aligned_job || padded_job) count = txid::aligned_count(nbase, count);
 #define TX_TRY(x) if (cudaError_t e_ = (x)) { fail = std::string(cudaGetErrorString(e_)) + " in " #x; return false; }
         TX_TRY(cudaMemsetAsync(d_n, 0, sizeof(unsigned)));
         TX_TRY(cudaEventRecord(e0));
-        if (zero_tail_job) txid::launch_zero_tail(grid, TXID_TPB, 0, p, ((uint64_t)en1 << 48) | cur, count, iters, d_hits, d_n);
-        else if (aligned_job) txid::launch_aligned(grid, TXID_TPB, 0, p, (int)j.hprefix.size(), ((uint64_t)en1 << 48) | cur, count, d_hits, d_n, aligned_cache);
-        else txid::launch(grid, TXID_TPB, 0, p, ((uint64_t)en1 << 48) | cur, count, iters, d_hits, d_n);
+        if (zero_tail_job) txid::launch_zero_tail(grid, TXID_TPB, 0, p, nbase, count, iters, d_hits, d_n);
+        else if (aligned_job) txid::launch_aligned(grid, TXID_TPB, 0, p, (int)j.hprefix.size(), nbase, count, d_hits, d_n, aligned_cache);
+        else txid::launch(grid, TXID_TPB, 0, p, nbase, count, iters, d_hits, d_n);
         TX_TRY(cudaGetLastError());
         TX_TRY(cudaEventRecord(e1));
         { cudaError_t q0 = cudaEventQuery(e1); if (q0 != cudaSuccess && q0 != cudaErrorNotReady) { TX_TRY(q0); } }   // flush (WDDM)
         // sleep through most of the launch, then poll: no CPU core spins
-        float wait_ms = aligned_job && count != per ? last_ms * (float)((double)count / per) : last_ms;
+        float wait_ms = (aligned_job || padded_job) && count != per ? last_ms * (float)((double)count / per) : last_ms;
         if (wait_ms > 3.0f) std::this_thread::sleep_for(std::chrono::microseconds((int64_t)((wait_ms - 1.5f) * 1000.0f)));
         for (;;) { cudaError_t q = cudaEventQuery(e1); if (q == cudaSuccess) break; if (q != cudaErrorNotReady) { TX_TRY(q); } std::this_thread::sleep_for(std::chrono::microseconds(200)); }
         float ms = 0; TX_TRY(cudaEventElapsedTime(&ms, e0, e1));

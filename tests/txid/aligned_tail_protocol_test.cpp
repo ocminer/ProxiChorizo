@@ -38,20 +38,24 @@ static void sendline(int fd, const std::string &s) {
     while(off<wire.size()){auto n=send(fd,wire.data()+off,wire.size()-off,MSG_NOSIGNAL);assert(n>0);off+=n;}
 }
 static JV json(const std::string &s) { JV v; size_t off=0; assert(jparse(s,off,v)); return v; }
-static void session(const std::string &ack, bool accepted, bool closes, bool late_ack = false) {
+static void session(const std::string &ack, bool accepted, bool closes, bool late_ack = false, bool pascal = false) {
     int listener=socket(AF_INET,SOCK_STREAM,0); assert(listener>=0);
     sockaddr_in a{}; a.sin_family=AF_INET; a.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
     assert(bind(listener,(sockaddr*)&a,sizeof a)==0); assert(listen(listener,2)==0);
     socklen_t len=sizeof a; assert(getsockname(listener,(sockaddr*)&a,&len)==0);
     Shared sh; sh.have_key=false; sh.user="test.worker"; sh.token="x";
+    if(pascal){Shared::GpuStat g{};g.arch="sm_61";sh.gpus.push_back(g);}
+    const bool configure=request_aligned_tail_for(sh.gpus);
     assert(parse_url("stratum+tcp://127.0.0.1:"+std::to_string(ntohs(a.sin_port)),sh.url));
     std::thread client(stratum_client,std::ref(sh));
     auto accept_one = [&] { assert(sock_readable(listener,5000)); int fd=accept(listener,nullptr,nullptr);assert(fd>=0);sock_timeout(fd,5);return fd; };
     int fd=accept_one(); auto request=json(line(fd));
-    assert(request.get("method")->s=="mining.configure");
-    assert(request.get("params")->at(0)->at(0)->s=="proxima.aligned-tail.v1");
+    if(configure) {
+        assert(request.get("method")->s=="mining.configure");
+        assert(request.get("params")->at(0)->at(0)->s=="proxima.aligned-tail.v1");
+    }
     if(closes) { sock_close(fd); fd=accept_one(); }
-    auto subscribe=json(line(fd)), authorize=json(line(fd));
+    auto subscribe=configure?json(line(fd)):request, authorize=json(line(fd));
     assert(subscribe.get("method")->s=="mining.subscribe");
     assert(authorize.get("method")->s=="mining.authorize");
     assert(authorize.get("params")->at(0)->s==sh.user);
@@ -100,6 +104,13 @@ static void session(const std::string &ack, bool accepted, bool closes, bool lat
     assert(!sh.aligned_tail_accepted && sh.job.id==0 && sh.invalid==0);
 }
 int main() {
+    unsetenv("PX_ALIGNED_TAIL");
+    Shared::GpuStat old{},modern{};old.arch="sm_61";modern.arch="sm_89";
+    assert(!request_aligned_tail_for({old}));assert(!request_aligned_tail_for({modern,old}));
+    assert(request_aligned_tail_for({modern}));
+    setenv("PX_ALIGNED_TAIL","1",1);assert(request_aligned_tail_for({old}));
+    setenv("PX_ALIGNED_TAIL","0",1);assert(!request_aligned_tail_for({modern}));
+    unsetenv("PX_ALIGNED_TAIL");
     session("{\"id\":3,\"result\":{\"proxima.aligned-tail.v1\":true},\"error\":null}",true,false);
     session("{\"id\":3,\"result\":{\"proxima.aligned-tail.v1\":false},\"error\":null}",false,false);
     session("{\"id\":3,\"result\":null,\"error\":[-32601,\"Method not found\",null]}",false,false);
@@ -108,5 +119,7 @@ int main() {
     session("",false,false);
     session("",false,true);
     session("{\"id\":3,\"result\":{\"proxima.aligned-tail.v1\":true},\"error\":null}",true,false,true);
-    puts("PASS: capability accept/decline/error/malformed/absent/legacy disconnect/late acknowledgement; 32 CPU-verified shares over normal/aligned layout transitions with shared wire IDs across connections; reconnect state cleared");
+    session("",false,false,false,true);
+    setenv("PX_ALIGNED_TAIL","0",1);session("",false,false);unsetenv("PX_ALIGNED_TAIL");
+    puts("PASS: capability accept/decline/error/malformed/absent/legacy disconnect/late acknowledgement/Pascal default/explicit opt-out; 40 CPU-verified shares over normal/aligned layout transitions with shared wire IDs across connections; reconnect state cleared");
 }

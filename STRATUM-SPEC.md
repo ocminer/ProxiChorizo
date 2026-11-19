@@ -355,6 +355,12 @@ against them; `tests/txid/` has the CPU test with a Python `hashlib` cross-check
 
 ### 9.7 Optional aligned-tail jobs (development extension)
 
+The miner requests this extension automatically, except on CUDA rigs containing
+Pascal (`sm_61`), where measured ordinary jobs remain faster. `PX_ALIGNED_TAIL=0`
+keeps ordinary jobs on any rig; `PX_ALIGNED_TAIL=1` explicitly requests the extension
+for testing. A mixed rig receives one layout per connection. This preference does
+not bypass per-job byte checks or CPU verification of shares.
+
 This extension changes transaction layout, not BLAKE2b, difficulty, job lifetime or
 share accounting. It is optional and must coexist with §9.2's ordinary jobs. A client
 requests it before its normal subscribe and authorize messages:

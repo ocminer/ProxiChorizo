@@ -12,6 +12,29 @@ static inline bool is_zero_tail(const ParamsCore &p) {
     return nonzero == 0;
 }
 
+// Padded jobs may mix native sequential and aligned-permuted search on one rig.
+// At offset 120 the aligned mapping swaps extranonce2's first two bytes and
+// reverses its last four. Partition by XOR of the first bytes' high GPU bits:
+// that domain is invariant under BOTH enumerations. Every GPU retains exactly
+// its previous-sized search space, and single-GPU enumeration is unchanged.
+// A batch must end before the low 32-bit counter wraps.
+static inline bool zero_tail_nonce_base(uint16_t en1, uint64_t cursor,
+        uint64_t lo, uint64_t hi, uint64_t &out) {
+    if (hi <= lo || cursor < lo || cursor >= hi) return false;
+    const uint64_t span = hi - lo;
+    if (span > (1ULL << 48) || span < (1ULL << 40) || (span & (span - 1)) || lo % span) return false;
+    unsigned bits = 0;
+    for (uint64_t n = span; n < (1ULL << 48); n <<= 1) ++bits;
+    const uint64_t gpu = lo / span, local = cursor - lo;
+    if (gpu >= (1ULL << bits)) return false;
+    const unsigned second = (unsigned)((local >> 32) & 255);
+    const unsigned first = (unsigned)(local >> 40) |
+            ((unsigned)(gpu ^ (second >> (8 - bits))) << (8 - bits));
+    out = ((uint64_t)en1 << 48) | ((uint64_t)first << 40) |
+            ((uint64_t)second << 32) | (local & 0xffffffffULL);
+    return true;
+}
+
 // Literal zero message words disappear from the native integer additions.
 // Only word 15 is variable. Keep round 0's existing exact precomputation.
 TXQ uint64_t zero_tail_h3(const ParamsCore &p, uint64_t X) {
