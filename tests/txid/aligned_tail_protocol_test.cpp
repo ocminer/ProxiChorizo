@@ -38,7 +38,7 @@ static void sendline(int fd, const std::string &s) {
     while(off<wire.size()){auto n=send(fd,wire.data()+off,wire.size()-off,MSG_NOSIGNAL);assert(n>0);off+=n;}
 }
 static JV json(const std::string &s) { JV v; size_t off=0; assert(jparse(s,off,v)); return v; }
-static void session(const std::string &ack, bool accepted, bool closes) {
+static void session(const std::string &ack, bool accepted, bool closes, bool late_ack = false) {
     int listener=socket(AF_INET,SOCK_STREAM,0); assert(listener>=0);
     sockaddr_in a{}; a.sin_family=AF_INET; a.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
     assert(bind(listener,(sockaddr*)&a,sizeof a)==0); assert(listen(listener,2)==0);
@@ -55,12 +55,12 @@ static void session(const std::string &ack, bool accepted, bool closes) {
     assert(subscribe.get("method")->s=="mining.subscribe");
     assert(authorize.get("method")->s=="mining.authorize");
     assert(authorize.get("params")->at(0)->s==sh.user);
-    if(!ack.empty() && !closes) sendline(fd,ack);
+    if(!ack.empty() && !closes && !late_ack) sendline(fd,ack);
     sendline(fd,"{\"id\":1,\"result\":[[],\"a1b2\",6],\"error\":null}");
     sendline(fd,"{\"id\":2,\"result\":true,\"error\":null}");
     sendline(fd,"{\"method\":\"mining.set_difficulty\",\"params\":[8]}");
     await([&]{std::lock_guard<std::mutex> l(sh.wmu);return sh.subscribed;});
-    { std::lock_guard<std::mutex> l(sh.wmu); assert(sh.en1==0xa1b2 && sh.aligned_tail_accepted==accepted); }
+    { std::lock_guard<std::mutex> l(sh.wmu); assert(sh.en1==0xa1b2 && sh.aligned_tail_accepted==(accepted && !late_ack)); }
     // Switching layouts never changes the nonce split or share serialization.
     unsigned job_id=0xabc;
     for(int plen : {369,504,632,375}) {
@@ -86,6 +86,15 @@ static void session(const std::string &ack, bool accepted, bool closes) {
         unsigned id=(unsigned)submission.get("id")->n;assert(id>=100);
         sendline(fd,"{\"id\":"+std::to_string(id)+",\"result\":true,\"error\":null}");
         await([&]{std::lock_guard<std::mutex> l(sh.wmu);return sh.pending.empty();});
+        if(late_ack && plen==369) {
+            // An acknowledgement never changes the already-issued job. The
+            // pool applies the layout preference to a later job, independently
+            // for every connection (the same wire IDs are used by each session).
+            sendline(fd,ack);
+            await([&]{std::lock_guard<std::mutex> l(sh.wmu);return sh.aligned_tail_accepted;});
+            std::lock_guard<std::mutex> l(sh.mu);
+            assert(sh.job.jid==jid && sh.job.hprefix==prefix);
+        }
     }
     sh.stop=true;shutdown(fd,SHUT_RDWR);sock_close(fd);client.join();sock_close(listener);
     assert(!sh.aligned_tail_accepted && sh.job.id==0 && sh.invalid==0);
@@ -98,5 +107,6 @@ int main() {
     session("{\"id\":3,\"result\":{\"proxima.aligned-tail.v1\":true},\"error\":[1,\"denied\",null]}",false,false);
     session("",false,false);
     session("",false,true);
-    puts("PASS: capability accept/decline/error/malformed/absent/legacy disconnect; 28 CPU-verified shares over normal/aligned layout transitions; reconnect state cleared");
+    session("{\"id\":3,\"result\":{\"proxima.aligned-tail.v1\":true},\"error\":null}",true,false,true);
+    puts("PASS: capability accept/decline/error/malformed/absent/legacy disconnect/late acknowledgement; 32 CPU-verified shares over normal/aligned layout transitions with shared wire IDs across connections; reconnect state cleared");
 }

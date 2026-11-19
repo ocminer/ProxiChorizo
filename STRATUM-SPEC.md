@@ -395,6 +395,14 @@ The subscribe response, two-byte extranonce1, six-byte extranonce2, seven-field
 the native `login`/`job` dialect, but must not mix that dialect's messages into this
 connection. ProxiChorizo's implementation here uses the normal Stratum dialect.
 
+The ordinary and padded templates of one round may use the **same job ID across
+different connections**. The pool must retain the template actually sent to each
+connection and validate its submissions against that template. A late configure
+request changes the preference for the next issued job; it must not replace the
+current connection's template retroactively. If padding construction fails for a
+round, a supporting pool may send an ordinary job to an opted-in client. The miner
+selects its kernel from each job's bytes, never from the capability flag alone.
+
 Testing: `tests/txid/aligned_tail_protocol_test.cpp` covers negotiation, legacy fallback,
 layout changes and the unchanged submission format. `zero_tail_test.cpp`,
 `zero_tail_gpu_test.cu` and `zero_tail_opencl_test.cpp` cover exact hash words, hit sets,
