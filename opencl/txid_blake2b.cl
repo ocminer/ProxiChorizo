@@ -124,3 +124,15 @@ TXA(8, 4, 0) TXA(9, 4, 1) TXA(10, 5, 0) TXA(11, 5, 1) TXA(12, 6, 0) TXA(13, 6, 1
 TXA(16, 8, 0) TXA(17, 8, 1) TXA(18, 9, 0) TXA(19, 9, 1) TXA(20, 10, 0) TXA(21, 10, 1) TXA(22, 11, 0) TXA(23, 11, 1)
 TXA(24, 12, 0) TXA(25, 12, 1) TXA(26, 13, 0) TXA(27, 13, 1) TXA(28, 14, 0) TXA(29, 14, 1) TXA(30, 15, 0)
 TX_KERNEL(31, TX_H3_B(X, h3))
+
+
+// The caller proves that the final block is 120 zero bytes followed by the
+// nonce. Literal zeros let the OpenCL compiler delete the message additions.
+#define TX_H3_ZERO(X, out) { \
+    ulong m[16], v[16]; \
+    _Pragma("unroll") for (int i = 0; i < 15; ++i) m[i] = 0; \
+    m[15] = (X); \
+    TX_ROUND0(15, 0) \
+    TX_ROUNDS(1) \
+    out = P[P_H + 3] ^ v[3] ^ v[11]; }
+TX_KERNEL(32, TX_H3_ZERO(X, h3))

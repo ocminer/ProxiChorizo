@@ -1,6 +1,7 @@
 // ProxiChorizo - Copyright (c) 2026 suprnova.cc. ProxiChorizo License 1.0; see LICENSE.
 #pragma once
 #include "txid_aligned.cuh"
+#include "txid_zero_tail.cuh"
 #include <array>
 #include <cstdio>
 
@@ -53,14 +54,14 @@ static inline int bw_selfcheck(const cudaDeviceProp &p, std::string &why) {
 struct BlackwellChoice {
     std::array<int,128> choices;
     bool enabled = false, legacy_device = false, legacy_all = false;
-    int device = -1, platform = 0;
+    int device = -1, platform = 0, zero_choice = -1;
     explicit BlackwellChoice(const cudaDeviceProp &p) {
         choices.fill(-1); cudaGetDevice(&device);
         enabled = bw_device(p) && device >= 0 && device < 128 && bw_verified[device];
         legacy_device = aligned_device(p); legacy_all = aligned_all_layouts(p);
         platform = platform_profile(p);
     }
-    int select(const Params &input, int plen, unsigned grid, HitRec *hits, unsigned *nhit, std::string &why) {
+    int select_generic(const Params &input, int plen, unsigned grid, HitRec *hits, unsigned *nhit, std::string &why) {
         if (platform && plen > 0 && plen % 128 == 113) return 2 + platform;
         const int native = legacy_device && aligned_shape(plen, legacy_all) ? 1 : 0;
         if (!enabled || !aligned_placeable(plen)) return native;
@@ -115,5 +116,59 @@ struct BlackwellChoice {
             device, plen % 128, chosen == 2 ? "Blackwell" : "native", a * 0.5f, b * 0.5f);
         return chosen;
     }
+    // Mode 6 is the zero-tail kernel. Calibrate against the existing selection
+    // on this GPU; never let a new layout replace another platform's fast path.
+    int select(const Params &input, int plen, unsigned grid, HitRec *hits, unsigned *nhit, std::string &why) {
+        const int baseline = select_generic(input, plen, grid, hits, nhit, why);
+        if (baseline < 0 || !is_zero_tail(input)) return baseline;
+        const char *force = getenv("PX_TXID_ZERO_TAIL");
+        if (force && !strcmp(force, "0")) return baseline;
+        if (zero_choice >= 0) return zero_choice;
+        if (force && !strcmp(force, "1")) return zero_choice = 6; // diagnostic; startup checks still run
+        Params p = input; p.mask = ~0ULL;
+        const uint64_t stride = (uint64_t)grid * TXID_TPB;
+        if (!stride || stride > (1ULL << 30)) return baseline;
+        const uint32_t iters = (uint32_t)std::min<uint64_t>(256, (1ULL << 31) / stride);
+        const uint64_t count = stride * iters, first = 0xa1b2000000000000ULL;
+        cudaEvent_t begin = nullptr, end = nullptr;
+        cudaError_t err = cudaEventCreate(&begin);
+        if (err == cudaSuccess) err = cudaEventCreateWithFlags(&end, cudaEventBlockingSync);
+        auto sample = [&](int mode, float &ms) {
+            AlignedSearch cache; cache.fast = mode == 2; cache.platform = mode >= 3 && mode <= 5 ? mode - 2 : 0;
+            for (int phase = 0; phase < 2 && err == cudaSuccess; ++phase) {
+                float total = 0; unsigned samples = 0;
+                do {
+                    err = cudaMemset(nhit, 0, sizeof(unsigned));
+                    if (err == cudaSuccess) err = cudaEventRecord(begin);
+                    if (err != cudaSuccess) break;
+                    if (mode == 6) launch_zero_tail(grid, TXID_TPB, 0, p, first, count, iters, hits, nhit);
+                    else if (mode) launch_aligned(grid, TXID_TPB, 0, p, plen, first, count, hits, nhit, cache);
+                    else launch(grid, TXID_TPB, 0, p, first, count, iters, hits, nhit);
+                    err = cudaGetLastError();
+                    if (err == cudaSuccess) err = cudaEventRecord(end);
+                    if (err == cudaSuccess) err = cudaEventSynchronize(end);
+                    float elapsed = 0;
+                    if (err == cudaSuccess) err = cudaEventElapsedTime(&elapsed, begin, end);
+                    if (err != cudaSuccess) break;
+                    if (!(elapsed > 0)) { err = cudaErrorUnknown; break; }
+                    total += elapsed; ++samples;
+                } while (total < 75.0f);
+                if (phase && samples) ms = total / samples;
+            }
+        };
+        float a = 0, b = 0;
+        for (int mode : {baseline, 6, 6, baseline}) {
+            float ms = 0; sample(mode, ms);
+            if (mode == 6) b += ms; else a += ms;
+        }
+        if (begin) cudaEventDestroy(begin);
+        if (end) cudaEventDestroy(end);
+        if (err != cudaSuccess || !(a > 0 && b > 0)) { why = err == cudaSuccess ? "invalid zero-tail calibration" : cudaGetErrorString(err); return -1; }
+        zero_choice = b < a * 0.98f ? 6 : baseline;
+        fprintf(stderr, "GPU %d: aligned-tail job selects %s (existing %.3f ms, zero-tail %.3f ms)\n",
+                device, zero_choice == 6 ? "zero-tail" : "existing kernel", a * .5f, b * .5f);
+        return zero_choice;
+    }
+
 };
 } // namespace txid

@@ -53,3 +53,33 @@ python3 scripts/generate-txid-plan.py --check
 `fake_pool.py --prefix-lens 369 --hash-seed example` provides identical synthetic
 job prefixes for full-miner comparisons. Every submitted hash is independently
 checked with Python hashlib. This is a protocol test, not on-chain confirmation.
+
+The optional `proxima.aligned-tail.v1` extension has host-only regression tests:
+
+```sh
+(cd opencl && python3 gen_host.py)
+g++ -O2 -std=c++17 tests/txid/zero_tail_test.cpp -o /tmp/proxi-zero-tail
+/tmp/proxi-zero-tail
+g++ -O2 -std=c++17 tests/txid/aligned_tail_protocol_test.cpp -pthread -ldl -o /tmp/proxi-tail-protocol
+/tmp/proxi-tail-protocol
+```
+
+The first checks exact zero-tail compression and rejects mutated final blocks or
+incompatible shapes. The second uses the actual miner client and a loopback pool:
+capability acceptance, refusal, missing reply, malformed reply, unknown-method
+disconnect/reconnect, ordinary/padded layout changes and CPU-verified submissions.
+
+`zero_tail_gpu_test.cu` and `zero_tail_opencl_test.cpp` check the new GPU path with
+41,000 reference candidates, two 5,000-hit overflow cases, partial launches and
+32-/64-bit nonce wrap. Their stdout contains nonce and hash-word pairs for an
+independent hashlib check; the diagnostic prefix is `(i*37+11)&255` for its first
+384 bytes, followed by 120 zero bytes. The OpenCL test takes the selected PCI bus
+number as its sole argument and creates only that device's context.
+
+For controlled layout comparisons use `--hash-bench 30 --hash-prefix-len 504
+--hash-zero-tail`. `PX_TXID_ZERO_TAIL=0` retains the previous kernel on the same
+zero-tail input; `=1` forces the new path for diagnostics, with startup checks
+still required. Without an override, the miner compares both paths on the card
+and keeps the previous kernel unless the new one clears the timing margin.
+Do not compare an ordinary random 504-byte benchmark with a zero-tail result
+and label it a same-input speedup. Normal jobs and hashrate accounting are unchanged.

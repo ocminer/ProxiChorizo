@@ -3464,6 +3464,7 @@ struct Shared {
     void *ssl = nullptr;               // the TLS session for stratum+ssl:// (reads and writes under wmu)
     uint16_t en1 = 0;
     bool subscribed = false;
+    bool aligned_tail_accepted = false; // protected by wmu, reset on every connection
     uint64_t next_rpc = 100;
     struct Pending { int ordinal; uint64_t job; bool txid = false; int work = 0; };
     std::map<uint64_t, Pending> pending;
@@ -4035,6 +4036,7 @@ static void expire_job(Shared &sh) {
 // the connection: subscribe, authorize, then jobs in and shares out until it breaks; reconnects with backoff
 static void stratum_client(Shared &sh) {
     int backoff = 1;
+    bool request_aligned_tail = true;
     while (!sh.stop) {
         std::string err;
         sock_t fd = tcp_connect(sh.url, 10, err);
@@ -4071,9 +4073,11 @@ static void stratum_client(Shared &sh) {
         // recv wakes every second to see sh.stop; a TLS read happens under wmu (an OpenSSL
         // session is not shared between threads) only once data is there, so it is short
         sock_timeout_ms(fd, ssl ? 200 : 1000);
-        { std::lock_guard<std::mutex> l(sh.wmu); sh.sfd = fd; sh.ssl = ssl; sh.subscribed = false; sh.pending.clear(); }
+        { std::lock_guard<std::mutex> l(sh.wmu); sh.sfd = fd; sh.ssl = ssl; sh.subscribed = false; sh.aligned_tail_accepted = false; sh.pending.clear(); }
         auto connected_at = std::chrono::steady_clock::now();
         logln(std::string("stratum: connected to ") + sh.url.host + ":" + std::to_string(sh.url.port) + (ssl ? " (TLS)" : ""));
+        const bool configure_sent = request_aligned_tail; bool subscribe_received = false;
+        if (configure_sent) stratum_send(sh, "{\"id\":3,\"method\":\"mining.configure\",\"params\":[[\"proxima.aligned-tail.v1\"],{}]}");
         stratum_send(sh, "{\"id\":1,\"method\":\"mining.subscribe\",\"params\":[\"ProxiChorizo/" PX_VERSION "\"]}");
         stratum_send(sh, "{\"id\":2,\"method\":\"mining.authorize\",\"params\":[" + jstr(sh.user) + "," + jstr(sh.token) + "]}");
         int cur_k = 0, pending_k = -1; bool authFailed = false, reconnect = false;
@@ -4143,7 +4147,14 @@ static void stratum_client(Shared &sh) {
                 uint64_t id = idv && idv->t == JV::NUM ? (uint64_t)idv->n : 0;
                 const JV *res = msg.get("result"), *er = msg.get("error");
                 std::string why; if (er && er->t == JV::ARR) { if (const JV *m = er->at(1)) why = m->s; }
-                if (id == 1) {
+                if (id == 3) {
+                    const JV *cap = res ? res->get("proxima.aligned-tail.v1") : nullptr;
+                    const bool accepted = (!er || er->t == JV::NUL) && cap && cap->t == JV::BOOL && cap->b;
+                    { std::lock_guard<std::mutex> l(sh.wmu); sh.aligned_tail_accepted = accepted; }
+                    if (accepted) logln("stratum: aligned-tail jobs enabled");
+                    else { request_aligned_tail = false; if (sh.con.verbose) logln("stratum: pool keeps normal jobs"); }
+                } else if (id == 1) {
+                    subscribe_received = true;
                     const JV *en1 = res ? res->at(1) : nullptr, *n2 = res ? res->at(2) : nullptr;
                     if (!en1 || en1->t != JV::STR || en1->s.size() != 4 || !n2 || (int)n2->n != 6) { log_err("stratum: subscribe refused or unsupported" + (why.empty() ? "" : ": " + why)); reconnect = true; break; }
                     std::lock_guard<std::mutex> l(sh.wmu);
@@ -4158,7 +4169,10 @@ static void stratum_client(Shared &sh) {
                 }
             }
         }
-        { std::lock_guard<std::mutex> l(sh.wmu); sh.sfd = SOCK_INVALID; tls::close(sh.ssl); sh.ssl = nullptr; sh.subscribed = false; sh.pending.clear(); }
+        // Some older pools close on an unknown method. Retry their original
+        // handshake once; never make the optional extension a mining requirement.
+        if (configure_sent && !subscribe_received) request_aligned_tail = false;
+        { std::lock_guard<std::mutex> l(sh.wmu); sh.sfd = SOCK_INVALID; tls::close(sh.ssl); sh.ssl = nullptr; sh.subscribed = false; sh.aligned_tail_accepted = false; sh.pending.clear(); }
         sock_close(fd);
         { std::lock_guard<std::mutex> l(sh.mu); sh.job = Job(); }
         if (sh.stop) break;
@@ -4243,7 +4257,7 @@ struct GpuCfg { int dev; int blocks; int threads; int iters; const VariantOps *o
 // extranonce2 range, never repeating an extranonce2 within a job (the cursor survives a job's re-send).
 struct TxidWorker {
     Shared &sh; int ordinal; unsigned grid; uint32_t iters = 64; float last_ms = 0;
-    txid::Params p; txid::AlignedSearch aligned_cache; bool aligned_job = false; uint64_t job = 0; uint16_t en1 = 0; int k = -1; uint64_t cur = 0, lo = 0, hi = 0; bool exhausted = false;
+    txid::Params p; txid::AlignedSearch aligned_cache; bool aligned_job = false, zero_tail_job = false; uint64_t job = 0; uint16_t en1 = 0; int k = -1; uint64_t cur = 0, lo = 0, hi = 0; bool exhausted = false;
     std::map<std::pair<uint64_t, uint16_t>, uint64_t> cursors;
     txid::BlackwellChoice kernel_choice;
     txid::HitRec *d_hits = nullptr; unsigned *d_n = nullptr; std::vector<txid::HitRec> hits; cudaEvent_t e0, e1;
@@ -4263,7 +4277,7 @@ struct TxidWorker {
             txid::prepare(j.hprefix.data(), (int)j.hprefix.size(), k, p);
             int mode = kernel_choice.select(p, (int)j.hprefix.size(), grid, d_hits, d_n, fail);
             if (mode < 0) return false;
-            aligned_job = mode != 0; aligned_cache.fast = mode == 2; aligned_cache.platform = mode > 2 ? mode - 2 : 0; aligned_cache.reset();
+            zero_tail_job = mode == 6; aligned_job = mode > 0 && mode < 6; aligned_cache.fast = mode == 2; aligned_cache.platform = mode > 2 && mode < 6 ? mode - 2 : 0; aligned_cache.reset();
             txid_range(sh, ordinal, lo, hi);
             auto it = cursors.find({job, en1}); cur = it != cursors.end() ? it->second : lo;
         } else if (j.k != k) { k = j.k; p.mask = txid::mask_for_k(k); }
@@ -4277,7 +4291,8 @@ struct TxidWorker {
 #define TX_TRY(x) if (cudaError_t e_ = (x)) { fail = std::string(cudaGetErrorString(e_)) + " in " #x; return false; }
         TX_TRY(cudaMemsetAsync(d_n, 0, sizeof(unsigned)));
         TX_TRY(cudaEventRecord(e0));
-        if (aligned_job) txid::launch_aligned(grid, TXID_TPB, 0, p, (int)j.hprefix.size(), ((uint64_t)en1 << 48) | cur, count, d_hits, d_n, aligned_cache);
+        if (zero_tail_job) txid::launch_zero_tail(grid, TXID_TPB, 0, p, ((uint64_t)en1 << 48) | cur, count, iters, d_hits, d_n);
+        else if (aligned_job) txid::launch_aligned(grid, TXID_TPB, 0, p, (int)j.hprefix.size(), ((uint64_t)en1 << 48) | cur, count, d_hits, d_n, aligned_cache);
         else txid::launch(grid, TXID_TPB, 0, p, ((uint64_t)en1 << 48) | cur, count, iters, d_hits, d_n);
         TX_TRY(cudaGetLastError());
         TX_TRY(cudaEventRecord(e1));
@@ -4790,6 +4805,7 @@ static void usage() {
         "  --bench [SECS]     measure the hashrate of the chosen variant and exit\n"
         "txid-blake2b hash work (Proxima library upgrade 6, from slot 197000; needs no key, so --key-file is optional with a stratum pool):\n"
         "  --hash-selftest    check the hash kernels on every selected GPU against the upgrade-6 vectors and the CPU, then exit\n"
+        "  --hash-zero-tail   benchmark the padded layout (use --hash-prefix-len 504)\n"
         "  --hash-bench [SECS] measure the hash rate (GH/s) on every selected GPU and exit (--hash-prefix-len N, default 600)\n"
         "  --hash-launch-ms N target length of one hash launch (default 40)\n", CONSOLE_USAGE);
 }
@@ -4837,7 +4853,7 @@ int main(int argc, char **argv) {
     setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID", 0);
 #endif
     int blocks = 0, threads = 0, iters = 0; double bench = 0, autotuneSecs = 0; bool fetest = false, listVariants = false, verify = false;
-    double txidBench = 0; bool txidSelftest = false; int txidPrefix = 600, txidLaunchMs = 40;
+    double txidBench = 0; bool txidSelftest = false, txidZeroTail = false; int txidPrefix = 600, txidLaunchMs = 40;
     ConsoleOpts con;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
@@ -4868,11 +4884,13 @@ int main(int argc, char **argv) {
         else if (a == "--autotune") autotuneSecs = optnum(6);
         else if (a == "--hash-bench") txidBench = optnum(20);
         else if (a == "--hash-selftest") txidSelftest = true;
+        else if (a == "--hash-zero-tail") txidZeroTail = true;
         else if (a == "--hash-prefix-len") { std::string s; next(s); txidPrefix = atoi(s.c_str()); }
         else if (a == "--hash-launch-ms") { std::string s; next(s); txidLaunchMs = std::max(5, std::min(1000, atoi(s.c_str()))); }
         else if (parse_console_opt(a, i, argc, argv, con)) {}
         else { fprintf(stderr, "unknown option %s\n\n", a.c_str()); usage(); return 1; }
     }
+    if (txidZeroTail && (txidBench <= 0 || txidPrefix < 120 || txidPrefix > 65536 || txidPrefix % 128 != 120)) { fprintf(stderr, "--hash-zero-tail needs --hash-bench and a prefix length congruent to 120 modulo 128\n"); return 1; }
     console_setup(con);
     if (!checkPool.empty()) return check_pool(checkPool);
     if (listVariants) { for (int v = 0; v < NVARIANTS; v++) fprintf(stderr, "%s\n", VARIANTS[v]->name); return 0; }
@@ -4900,6 +4918,7 @@ int main(int argc, char **argv) {
             if (!r && txid::bw_device(prop)) {
                 std::string extra; r = txid::bw_selfcheck(prop, extra); why += "; " + extra;
             }
+            if (!r) { std::string extra; r = txid::cuda_zero_tail_selfcheck(extra); why += "; " + extra; }
             double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
             if (r || !quiet) fprintf(stderr, "GPU %d %s: txid-blake2b self-check %s: %s (%.1f s)\n", d, prop.name, r ? "FAILED" : "passed", why.c_str(), secs);
             rc |= r;
@@ -4912,6 +4931,7 @@ int main(int argc, char **argv) {
         for (int d : devs) {
             CUDA_CHECK(cudaSetDevice(d)); cudaDeviceProp prop; CUDA_CHECK(cudaGetDeviceProperties(&prop, d));
             std::vector<uint8_t> prefix((size_t)std::max(0, txidPrefix)); for (size_t i = 0; i < prefix.size(); i++) prefix[i] = (uint8_t)(i * 31 + 7);
+            if (txidZeroTail) std::fill(prefix.end() - 120, prefix.end(), 0);
             txid::Params p; txid::Shape shp = txid::prepare(prefix.data(), (int)prefix.size(), 40, p);
             bool aligned = txid::aligned_device(prop) && txid::aligned_shape((int)prefix.size(), txid::aligned_all_layouts(prop)); txid::AlignedSearch aligned_cache;
             txid::HitRec *dh; unsigned *dn; CUDA_CHECK(cudaMalloc(&dh, sizeof(txid::HitRec) * TXID_MAX_HITS)); CUDA_CHECK(cudaMalloc(&dn, 4)); CUDA_CHECK(cudaMemset(dn, 0, 4));
@@ -4919,7 +4939,7 @@ int main(int argc, char **argv) {
             txid::BlackwellChoice choice(prop); std::string choice_error;
             int mode = choice.select(p, (int)prefix.size(), grid, dh, dn, choice_error);
             if (mode < 0) { fprintf(stderr, "hash calibration failed: %s\n", choice_error.c_str()); cudaFree(dh); cudaFree(dn); return 1; }
-            aligned = mode != 0; aligned_cache.fast = mode == 2; aligned_cache.platform = mode > 2 ? mode - 2 : 0;
+            const bool zero_tail = mode == 6; aligned = mode > 0 && mode < 6; aligned_cache.fast = mode == 2; aligned_cache.platform = mode > 2 && mode < 6 ? mode - 2 : 0;
             uint32_t it = 64; uint64_t n = 0x0102000000000000ULL, total = 0; double kms = 0; int launches = 0;
             cudaEvent_t e0, e1; cudaEventCreate(&e0); cudaEventCreate(&e1);
             auto t0 = std::chrono::steady_clock::now(), last = t0; uint64_t lastTotal = 0;
@@ -4927,7 +4947,8 @@ int main(int argc, char **argv) {
                 uint64_t per = (uint64_t)grid * TXID_TPB * it;
                 uint64_t count = aligned ? txid::aligned_count(n, per) : per;
                 cudaEventRecord(e0);
-                if (aligned) txid::launch_aligned(grid, TXID_TPB, 0, p, (int)prefix.size(), n, count, dh, dn, aligned_cache);
+                if (zero_tail) txid::launch_zero_tail(grid, TXID_TPB, 0, p, n, count, it, dh, dn);
+                else if (aligned) txid::launch_aligned(grid, TXID_TPB, 0, p, (int)prefix.size(), n, count, dh, dn, aligned_cache);
                 else txid::launch(grid, TXID_TPB, 0, p, n, count, it, dh, dn);
                 cudaEventRecord(e1); CUDA_CHECK(cudaEventSynchronize(e1));
                 float ms = 0; cudaEventElapsedTime(&ms, e0, e1); kms += ms; launches++; n += count; total += count;
@@ -4943,7 +4964,7 @@ int main(int argc, char **argv) {
             const unsigned launch_block = (aligned_cache.fast || aligned_cache.platform >= 2) ? 512u : TXID_TPB;
             const unsigned launch_grid = (unsigned)(((uint64_t)grid * TXID_TPB + launch_block - 1) / launch_block);
             fprintf(stderr, "GPU %d %s: txid-blake2b %d-byte prefix (kernel %d%s): %.3f GH/s over %.0f s (%.3f GH/s kernel time, %d launches of %.1f ms, %ux%dx%u)\n",
-                    d, prop.name, txidPrefix, shp.kernel, aligned_cache.fast ? ", Blackwell" : aligned ? ", aligned32" : "", total / el / 1e9, el, total / (kms / 1e3) / 1e9, launches, kms / launches, launch_grid, launch_block, it);
+                    d, prop.name, txidPrefix, shp.kernel, zero_tail ? ", zero-tail" : aligned_cache.fast ? ", Blackwell" : aligned ? ", aligned32" : "", total / el / 1e9, el, total / (kms / 1e3) / 1e9, launches, kms / launches, launch_grid, launch_block, it);
             cudaFree(dh); cudaFree(dn);
         }
         return 0;

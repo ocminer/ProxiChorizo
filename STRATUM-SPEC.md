@@ -296,7 +296,7 @@ A client MUST NOT treat an unknown `params[1]` as a VRF job.
 |---|---|---|
 | 0 | job id | string; submitted back exactly as sent |
 | 1 | `"txid-blake2b"` | the job type |
-| 2 | prefix | hex: the transaction-ID preimage without its last 8 bytes (about 600 bytes) |
+| 2 | prefix | hex: the transaction-ID preimage without its last 8 bytes; length varies with the serialized transaction |
 | 3 | prefix_len | number: the prefix length in bytes (a check of field 2) |
 | 4 | slot | number: the ledger slot of the job |
 | 5 | ttl | number: milliseconds the job stays valid; a client SHOULD NOT search a job past it |
@@ -352,3 +352,51 @@ helps to find a mismatch. Answers and error codes as in §7 (`23` = work below k
 `0102`, extranonce2 `030405060708`, with the expected hash, its work and the first
 extranonce2 counting up from 0 with at least 12 zero bits. `--hash-selftest` checks a GPU
 against them; `tests/txid/` has the CPU test with a Python `hashlib` cross-check.
+
+### 9.7 Optional aligned-tail jobs (development extension)
+
+This extension changes transaction layout, not BLAKE2b, difficulty, job lifetime or
+share accounting. It is optional and must coexist with §9.2's ordinary jobs. A client
+requests it before its normal subscribe and authorize messages:
+
+```json
+{"id":3,"method":"mining.configure","params":[["proxima.aligned-tail.v1"],{}]}
+```
+
+A supporting pool explicitly accepts it for that connection:
+
+```json
+{"id":3,"result":{"proxima.aligned-tail.v1":true},"error":null}
+```
+
+Only a boolean `true` with no error acknowledges the capability. Without that
+acknowledgement, the pool sends ordinary jobs. A client does not wait for the optional
+reply before subscribing and authorizing; if an older server closes on the unknown
+method, it reconnects with the original subscribe/authorize handshake. Pool selection
+must be based on the explicit capability, not the user-agent name or version.
+
+An aligned-tail job has prefix length `L % 128 == 120`, with all of its final 120
+bytes zero. The usual eight-byte nonce follows it. The final BLAKE2b block therefore
+contains fifteen zero 64-bit words and the nonce as word 15. Earlier blocks are fixed
+and can be compressed once per job. Prefixes of 504 and 632 bytes are examples; neither
+504 nor 600 is a required length. A client must verify the actual bytes before selecting
+an optimized kernel and must continue to accept ordinary layouts on the same connection.
+
+The pool constructs this layout with a **canonical serialized inline-data constraint**
+immediately before the final nonce constraint. It must serialize and sign the real
+transaction with that constraint, retaining the exact template and padding for later
+submissions. Appending raw bytes to a preimage does not produce a valid transaction.
+Find padding by serializing candidate transactions, including all inline-data and
+outer length prefixes; confirm that replacing the nonce changes exactly the final
+eight preimage bytes. Validate the resulting signed transaction against the node.
+
+The subscribe response, two-byte extranonce1, six-byte extranonce2, seven-field
+`mining.notify` and §9.4 `mining.submit` are unchanged. A pool may separately support
+the native `login`/`job` dialect, but must not mix that dialect's messages into this
+connection. ProxiChorizo's implementation here uses the normal Stratum dialect.
+
+Testing: `tests/txid/aligned_tail_protocol_test.cpp` covers negotiation, legacy fallback,
+layout changes and the unchanged submission format. `zero_tail_test.cpp`,
+`zero_tail_gpu_test.cu` and `zero_tail_opencl_test.cpp` cover exact hash words, hit sets,
+nonce boundaries and overflow. Pool-side node acceptance and crediting must be checked
+on a staging endpoint before enabling padded templates in production.

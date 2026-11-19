@@ -82,6 +82,10 @@ jobs:
           python3 scripts/test-launchers.py
           g++ -O2 -std=c++17 -pthread tests/txid/solo_host_test.cpp -ldl -o /tmp/test-solo-host
           /tmp/test-solo-host
+          g++ -O2 -std=c++17 tests/txid/zero_tail_test.cpp -o /tmp/test-zero-tail
+          /tmp/test-zero-tail
+          g++ -O2 -std=c++17 -pthread tests/txid/aligned_tail_protocol_test.cpp -ldl -o /tmp/test-tail-protocol
+          /tmp/test-tail-protocol
           ./proxichorizo --help
           ./opencl/proxichorizo-cl --help
       - name: stratum and stratum+ssl against the live pool (system OpenSSL, no GPU)
