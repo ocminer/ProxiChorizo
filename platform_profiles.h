@@ -10,8 +10,16 @@ static const Platform PLATFORMS[] = {
     {  8,  6, "fe32x_mlsp_c",     256, 1, 256, false, "Ampere GA10x: select a kernel on this GPU model" },
     {  8,  0, "fe32x_mlsp_c",     256, 1, 256, false, "Ampere GA100: select a kernel on this GPU model" },
     {  7,  5, "fe32x_wnaf_s32_c", 256, 1, 128, false, "Turing: not measured here, tuned on first start" },
+    {  6,  1, "fe51_w4_lb1",     256, 1, 128, true,  "Pascal: verified fe51 compatibility path; Blake2b uses separate hash profiles" },
     { -1, -1, "fe32x_wnaf_s32_c", 256, 1, 128, false, "unknown generation: tuned on first start" },
 };
+
+// The legacy fe32 carry-chain variants fail constant derivation on SM61 with
+// the release toolchain. Keep them out of startup, tuning and diagnostics on
+// Pascal; the independently verified fe51 path and Blake2b kernels work there.
+static bool platformVariantSupported(int major, int minor, const char *variant) {
+    return major != 6 || minor != 1 || (variant && !std::strcmp(variant, "fe51_w4_lb1"));
+}
 
 // Do not infer that a Ti, SUPER, laptop or lower-SM model has been measured
 // from another card's architecture. Device names have an optional vendor prefix.

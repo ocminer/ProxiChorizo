@@ -4615,7 +4615,8 @@ static GpuCfg autotune(int dev, const uint8_t scalar[32], const uint8_t pk[32], 
     const int ngeo = quick ? sizeof(geoQuick)/sizeof(geoQuick[0]) : sizeof(geoAll)/sizeof(geoAll[0]);
     fprintf(stderr, "autotune GPU %d %s (sm_%d%d), %.0fs per trial:\n", dev, prop.name, prop.major, prop.minor, seconds);
     for (int v = 0; v < NVARIANTS; v++) {
-        if (quick && strcmp(VARIANTS[v]->name, "fe32x_mlsp_c") != 0 && strcmp(VARIANTS[v]->name, "fe32x_wnaf_s32_c") != 0 && strcmp(VARIANTS[v]->name, "fe32w_wnaf_s16_c") != 0 && strcmp(VARIANTS[v]->name, "fe32c_wnaf_s16_c") != 0 && strcmp(VARIANTS[v]->name, "fe32_wnaf_lb2_c") != 0 && strcmp(VARIANTS[v]->name, "fe32_w4_lb2_c") != 0) continue;
+        if (!platformVariantSupported(prop.major, prop.minor, VARIANTS[v]->name)) continue;
+        if (quick && strcmp(VARIANTS[v]->name, pl.variant) != 0 && strcmp(VARIANTS[v]->name, "fe32x_mlsp_c") != 0 && strcmp(VARIANTS[v]->name, "fe32x_wnaf_s32_c") != 0 && strcmp(VARIANTS[v]->name, "fe32w_wnaf_s16_c") != 0 && strcmp(VARIANTS[v]->name, "fe32c_wnaf_s16_c") != 0 && strcmp(VARIANTS[v]->name, "fe32_wnaf_lb2_c") != 0 && strcmp(VARIANTS[v]->name, "fe32_w4_lb2_c") != 0) continue;
         uint8_t pk2[32];
         if (VARIANTS[v]->init(scalar, pk2) != 1 || memcmp(pk2, pk, 32) != 0) { fprintf(stderr, "  %-12s: init failed, skipped\n", VARIANTS[v]->name); continue; }
         for (int gi = 0; gi < ngeo; gi++) {
@@ -4655,7 +4656,7 @@ static bool loadTuned(const cudaDeviceProp &prop, int dev, GpuCfg &cfg) {
         std::string v; int b = 0, t = 0, it = 0;
         if (!(ss >> v >> b >> t >> it) || b <= 0 || t <= 0 || it <= 0) return false;
         const VariantOps *ops = variantByName(v);
-        if (!ops) return false;
+        if (!ops || !platformVariantSupported(prop.major, prop.minor, ops->name)) return false;
         cfg = GpuCfg{dev, b, t, it, ops};
         return true;
     }
@@ -4970,15 +4971,26 @@ int main(int argc, char **argv) {
 
     if (verify) {
         CUDA_CHECK(cudaSetDevice(devs[0]));
+        cudaDeviceProp prop; CUDA_CHECK(cudaGetDeviceProperties(&prop, devs[0]));
+        if (prop.major == 6 && prop.minor == 1) {
+            fprintf(stderr, "Pascal supports one legacy variant: use --variant fe51_w4_lb1 --selftest vectors.json or --fetest; use --hash-selftest for Blake2b. Multi-variant --verify requires SM75 or newer.\n");
+            return 2;
+        }
         uint8_t pk2[32]; if (VARIANTS[0]->init(scalar, pk2) != 1) { fprintf(stderr, "init failed\n"); return 2; }
         int edge_rc = run_pipeline_edges(pk2, devs[0]);
         return edge_rc | run_verify(pk2, devs[0]);
     }
     if (!selftest.empty() || fetest) {
         CUDA_CHECK(cudaSetDevice(devs[0]));
+        cudaDeviceProp prop; CUDA_CHECK(cudaGetDeviceProperties(&prop, devs[0]));
         int rc = 0;
         for (int v = 0; v < NVARIANTS; v++) {
             if (forced && VARIANTS[v] != forced) continue;
+            if (!platformVariantSupported(prop.major, prop.minor, VARIANTS[v]->name)) {
+                fprintf(stderr, "[%s] unsupported on sm_%d%d, %s\n", VARIANTS[v]->name, prop.major, prop.minor, forced ? "refused" : "skipped");
+                if (forced) rc = 2;
+                continue;
+            }
             uint8_t pk2[32]; int ok = VARIANTS[v]->init(scalar, pk2);
             if (ok != 1) { fprintf(stderr, "[%s] constant derivation FAILED (%s)\n", VARIANTS[v]->name, ok == -2 ? "fe_sq != fe_mul" : "sqrt(-1) check"); rc = 1; continue; }
             if (!selftest.empty()) rc |= run_selftest(VARIANTS[v], selftest);
@@ -5000,6 +5012,10 @@ int main(int argc, char **argv) {
         { char busid[32] = "?"; cudaDeviceGetPCIBusId(busid, sizeof busid, d); int bn = (int)strtol(busid + 5, nullptr, 16);
           gstats.push_back(Shared::GpuStat{d, (int)cfgs.size(), prop.name, busid, bn, 0.0}); }
         const Platform &pl = platformFor(prop);
+        if (forced && !platformVariantSupported(prop.major, prop.minor, forced->name)) {
+            fprintf(stderr, "device %d: legacy variant %s is unsupported on sm_%d%d; use the automatic profile\n", d, forced->name, prop.major, prop.minor);
+            return 2;
+        }
         GpuCfg cfg{d, blocks > 0 ? blocks : prop.multiProcessorCount * pl.blocksPerSM, threads > 0 ? threads : pl.threads, iters > 0 ? iters : pl.iters, forced ? forced : variantByName(pl.variant)};
         cfg.ordinal = (int)cfgs.size();
         if (!cfg.ops) cfg.ops = VARIANTS[0];

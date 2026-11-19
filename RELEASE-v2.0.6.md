@@ -30,10 +30,23 @@ includes binary hashes, sampled power/clocks and measurement details. These init
 comparisons used platform-specific CUDA validation builds and the integrated
 OpenCL candidate; they are not guaranteed pool rates or Windows measurements.
 
+The integrated CUDA build also retained Blackwell performance in the same
+45-second ABBA check; all previously shipped native GPU functions and the
+Blackwell PTX kernels retain identical instructions. Differences below are
+within the observed run variation, not additional speed improvements:
+
+| GPU | Full allowance | 2.0.5 GH/s | 2.0.6 check GH/s | Difference |
+|---|---:|---:|---:|---:|
+| RTX 5090 | 600 W | 19.949 | 19.867 | -0.41% |
+| RTX 5080 | 400 W | 10.665 | 10.665 | 0.00% |
+| RTX 5070 Ti | 350 W | 8.901 | 8.888 | -0.14% |
+
 **GTX 1080 Ti support:** the CUDA packages now include SM61. A tested GTX 1080 Ti
 reached **3.256 GH/s** at its 330 W allowance (about 304 W drawn). Its new profile
 was 2.85% faster than the generic path in the same candidate. Version 2.0.5 did
 not contain an SM61 image, so this is new support, not a 2.0.5 speed comparison.
+Pascal automatically uses the verified fe51 compatibility path for legacy
+initialization; unsupported legacy fe32 overrides are refused.
 
 **Optional low-CPU OpenCL mode:** on the RX 7900 XTX, setting
 `PX_OPENCL_LOW_CPU=1` reduced CPU use from 100.2% to 6.4% of one core in a matched

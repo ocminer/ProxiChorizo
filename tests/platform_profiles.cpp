@@ -5,6 +5,8 @@
 int main() {
     struct Case {int major,minor;const char *name;bool measured;const char *variant;};
     const Case cases[]={
+        {6,1,"NVIDIA GeForce GTX 1080 Ti",true,"fe51_w4_lb1"},
+        {6,1,"NVIDIA GeForce GTX 1070",true,"fe51_w4_lb1"},
         {8,6,"NVIDIA GeForce RTX 3070",true,"fe32x_mlsp_c"},
         {8,6,"NVIDIA GeForce RTX 3060",false,"fe32x_mlsp_c"},
         {8,6,"NVIDIA GeForce RTX 3060 Ti",false,"fe32x_mlsp_c"},
@@ -39,6 +41,11 @@ int main() {
     assert(&platformFor(9,0,"NVIDIA H100 80GB HBM3 MIG 1g.10gb")!=&h);
     assert(!platformFor(8,6,"NVIDIA RTX A1000").measured);
     assert(!platformFor(13,0,"unmeasured future GPU").measured);
+    assert(platformVariantSupported(6,1,"fe51_w4_lb1"));
+    assert(!platformVariantSupported(6,1,"fe32x_mlsp_c"));
+    assert(!platformVariantSupported(6,1,"fe32_w0_lb2"));
+    assert(!platformVariantSupported(6,1,nullptr));
+    assert(platformVariantSupported(8,6,"fe32x_mlsp_c"));
     for(const auto &c:cases){const auto&p=platformFor(c.major,c.minor,c.name);assert(p.measured==c.measured);assert(!std::strcmp(p.variant,c.variant));}
     std::printf("PASS: %zu model profiles, including 3060/Ti and laptop separation\n",sizeof cases/sizeof cases[0]);
 }

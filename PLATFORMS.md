@@ -820,3 +820,16 @@ throughput cost. The default retains the faster marker-callback path.
 
 See the README and 2.0.6 CSV for measurements and the short AMD thermal limits.
 No clocks, power limits or fan settings are written by the miner.
+
+
+## Pascal compatibility in 2.0.6
+
+The universal CUDA build includes SM61. GTX 1080 Ti Blake2b uses its separately
+qualified 512-thread profile on 369-byte jobs; other layouts use the generic
+exact-integer hash path. Legacy fe32 constant derivation fails on the tested
+Pascal card with the release toolchain, so SM61 automatically selects
+`fe51_w4_lb1` for legacy initialization and never tunes into fe32. Explicit
+unsupported legacy overrides are refused; self-tests skip unsupported variants.
+Legacy multi-variant `--verify` is unavailable on Pascal; use `--selftest
+vectors.json --fetest` for its fe51 path and `--hash-selftest` for Blake2b.
+This compatibility selection does not change other generations or GPU math.
