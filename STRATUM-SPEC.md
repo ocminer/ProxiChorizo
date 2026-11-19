@@ -382,9 +382,10 @@ and can be compressed once per job. Prefixes of 504 and 632 bytes are examples; 
 504 nor 600 is a required length. A client must verify the actual bytes before selecting
 an optimized kernel and must continue to accept ordinary layouts on the same connection.
 
-The pool constructs this layout with a **canonical serialized inline-data constraint**
-immediately before the final nonce constraint. It must serialize and sign the real
-transaction with that constraint, retaining the exact template and padding for later
+The pool constructs this layout by enlarging the final nonce constraint's payload
+to **zero padding followed by the same eight-byte nonce**, encoded with the canonical
+inline-data serializer. It must serialize and sign the real transaction with that
+constraint, retaining the exact template and padding for later
 submissions. Appending raw bytes to a preimage does not produce a valid transaction.
 Find padding by serializing candidate transactions, including all inline-data and
 outer length prefixes; confirm that replacing the nonce changes exactly the final
