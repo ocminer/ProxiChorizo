@@ -3,7 +3,7 @@
 ProxiChorizo is a CUDA miner ("nonce seeker") for the Proxima fair-launch mine chain.
 It works with a **pool** (the pool runs the wallet side and pays you per share) or
 **solo** against your own Proxima node and `proxi node mine`. One NVIDIA GPU of the
-Turing, Ampere, Ada or Blackwell generation is enough; several GPUs in one rig are fine.
+Pascal SM61, Turing, Ampere, Ada, Hopper or Blackwell generation is enough; several GPUs in one rig are fine.
 
 Requirements: NVIDIA driver 550 or newer (CUDA 12.x capable), Linux x64 or Windows 10/11
 x64. Nothing else is installed by the miner.

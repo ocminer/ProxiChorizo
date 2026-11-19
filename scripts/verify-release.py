@@ -10,7 +10,7 @@ import tarfile
 import zipfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-ARCHS = [75, 80, 86, 89, 90, 120]
+ARCHS = [61, 75, 80, 86, 89, 90, 120]
 
 
 def text(data):

@@ -20,6 +20,8 @@ ap.add_argument('--out', default='')
 ap.add_argument('--hash-seconds', type=float, default=60)
 ap.add_argument('--vrf-seconds', type=float, default=20)
 ap.add_argument('--pause-seconds', type=float, default=20)
+ap.add_argument('--prefix-lens', default='', help='comma-separated fixed hash message lengths for repeatable tests')
+ap.add_argument('--hash-seed', default='', help='deterministic test prefix seed; not for production mining')
 ap.add_argument('--kmin', type=int, default=27)
 ap.add_argument('--kmax', type=int, default=31)
 ap.add_argument('--slot-seconds', type=float, default=4.0)
@@ -182,7 +184,8 @@ def vrf_job(slot):
     state['cur_job'] = msg; stats['vrf_jobs'] += 1
     broadcast(msg)
 
-PLENS = [600, 600, 603, 607, 633, 600, 640, 512, 520, 600]
+PLENS = [int(x) for x in args.prefix_lens.split(',')] if args.prefix_lens else [600, 600, 603, 607, 633, 600, 640, 512, 520, 600]
+assert all(0 < n <= 4096 for n in PLENS)
 def hash_job(slot, i, clean=True, resend=False):
     if clean:
         state['gen'] += 1
@@ -191,7 +194,7 @@ def hash_job(slot, i, clean=True, resend=False):
         broadcast({'id': None, 'method': 'mining.set_difficulty', 'params': [2 ** state['diff_k']]})
     plen = PLENS[i % len(PLENS)]
     jid = '%x' % (0x700000 + slot * 16 + (i & 15))
-    prefix = os.urandom(plen)
+    prefix = hashlib.shake_256((args.hash_seed + ':' + str(i)).encode()).digest(plen) if args.hash_seed else os.urandom(plen)
     jobs[jid] = {'type': 'hash', 'prefix': prefix, 'k': state['diff_k'], 'gen': state['gen']}
     msg = {'id': None, 'method': 'mining.notify', 'params': [jid, 'txid-blake2b', prefix.hex(), plen, slot, int(args.slot_seconds * 1000 * 1.5), clean]}
     state['cur_job'] = msg; stats['hash_jobs'] += 1; stats['prefix_lens'].append(plen); stats['k_values'].append(state['diff_k'])

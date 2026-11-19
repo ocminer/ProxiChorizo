@@ -29,7 +29,7 @@ static int run_pipeline_edges(const uint8_t scalar[32], const uint8_t pk[32], in
             uint64_t stride = (c / count) % 2 == 0 ? ((nitems + 255) / 256) * 256 : 256;
             uint64_t base = c % 3 ? 0xabcdef0000ULL + c * 1009 : UINT64_MAX - nitems / 2;
             prog_mine(pr, job, base, stride, 1, hitsbuf, nbuf, sc);
-            CL_CHECK(mining_wait(d.q));
+            CL_CHECK(mining_wait(d.q, nbuf));
             cl_uint n = 0; CL_CHECK(clEnqueueReadBuffer(d.q, nbuf, CL_TRUE, 0, sizeof n, &n, 0, nullptr, nullptr));
             if (n > MAX_HITS) {
                 fprintf(stderr, "[%s] pipeline verification output overflow\n", pr->v->name);

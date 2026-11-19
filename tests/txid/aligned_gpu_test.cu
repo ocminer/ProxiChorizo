@@ -10,8 +10,9 @@
 #define CK(x) do { auto e=(x); if(e!=cudaSuccess){fprintf(stderr,"CUDA %s: %s\n",#x,cudaGetErrorString(e));return 2;} } while(0)
 int main(int argc,char**argv) {
     CK(cudaSetDevice(0));cudaDeviceProp prop;CK(cudaGetDeviceProperties(&prop,0));
-    if(prop.major!=12||prop.minor!=0){fprintf(stderr,"This kernel test requires SM120\n");return 2;}
-    std::string why;int rc=txid::aligned_selfcheck(why);printf("%s: %s\n",rc?"FAIL":"PASS",why.c_str());if(rc)return rc;
+    const int profile=txid::platform_profile(prop);
+    if(!profile && (prop.major!=12||prop.minor!=0)){fprintf(stderr,"This kernel test requires SM120 or a qualified aligned platform profile\n");return 2;}
+    std::string why;int rc=txid::aligned_selfcheck(why,false,false,profile);fprintf(stderr,"%s: %s\n",rc?"FAIL":"PASS",why.c_str());if(rc)return rc;
     unsigned cases=argc>1?atoi(argv[1]):40;
     uint64_t seed=0xd31e7b49a1c4f652ULL,total=0,hits=0;
     auto rnd=[&](){seed^=seed<<13;seed^=seed>>7;seed^=seed<<17;return seed;};
@@ -19,13 +20,13 @@ int main(int argc,char**argv) {
     unsigned block=TXID_TPB,grid=prop.multiProcessorCount*16;
     int offsets[]={52,97,108,113};
     for(unsigned c=0;c<cases;c++) {
-        int plen=(rnd()%6)*128+offsets[c%4],k=12+(c%3);
+        int plen=(rnd()%6)*128+(profile ? 113 : offsets[c%4]),k=12+(c%3);
         std::vector<uint8_t> prefix(plen);for(auto&v:prefix)v=(uint8_t)rnd();
         uint64_t first=rnd(),count=(1ULL<<20)+(rnd()%(1ULL<<18));
         if(c%4==0)first=(first&0xffffffff00000000ULL)|0xfff80000ULL;
         if(c%4==1)count=(uint64_t)grid*block*2;
         if(c%4==2)first&=0xffffffff00000000ULL;
-        txid::Params p;txid::prepare(prefix.data(),plen,k,p);txid::AlignedSearch cache;
+        txid::Params p;txid::prepare(prefix.data(),plen,k,p);txid::AlignedSearch cache;cache.platform=profile;
         std::vector<txid::HitRec> got,want;
         for(uint64_t done=0;done<count;) {
             uint64_t nb=first+done,n=txid::aligned_count(nb,count-done);
@@ -48,8 +49,13 @@ int main(int argc,char**argv) {
         auto less=[](const txid::HitRec&a,const txid::HitRec&b){return a.n<b.n;};std::sort(got.begin(),got.end(),less);std::sort(want.begin(),want.end(),less);
         bool same=got.size()==want.size();for(size_t i=0;same&&i<got.size();i++)same=got[i].n==want[i].n&&got[i].h3==want[i].h3;
         if(!same){fprintf(stderr,"FAIL case %u plen%d count%llu CPU%zu GPU%zu\n",c,plen,(unsigned long long)count,want.size(),got.size());return 1;}
+        for(const auto &h:got) {
+            std::string pre;static const char hex[]="0123456789abcdef";
+            for(uint8_t b:prefix){pre+=hex[b>>4];pre+=hex[b&15];}
+            printf("{\"prefix\":\"%s\",\"nonce\":\"%016llx\",\"h3\":\"%016llx\"}\n",pre.c_str(),(unsigned long long)h.n,(unsigned long long)h.h3);
+        }
         total+=count;hits+=got.size();
     }
-    printf("PASS: %u randomized cases, %llu nonces, %llu hits, all four aligned layouts, partial launches and 2^32 carries\n",cases,(unsigned long long)total,(unsigned long long)hits);
+    fprintf(stderr,"PASS: %u randomized cases, %llu nonces, %llu hits, qualified aligned layouts, partial launches and 2^32 carries\n",cases,(unsigned long long)total,(unsigned long long)hits);
     cudaFree(dh);cudaFree(dn);return 0;
 }

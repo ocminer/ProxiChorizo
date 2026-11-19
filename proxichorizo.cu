@@ -21,7 +21,7 @@
 #include <map>
 #include <cmath>
 #include <cerrno>
-#define PX_VERSION "2.0.5"
+#define PX_VERSION "2.0.6"
 #include <signal.h>
 // sockets: POSIX or Winsock behind four helpers
 #ifdef _WIN32
@@ -4263,7 +4263,7 @@ struct TxidWorker {
             txid::prepare(j.hprefix.data(), (int)j.hprefix.size(), k, p);
             int mode = kernel_choice.select(p, (int)j.hprefix.size(), grid, d_hits, d_n, fail);
             if (mode < 0) return false;
-            aligned_job = mode != 0; aligned_cache.fast = mode == 2; aligned_cache.reset();
+            aligned_job = mode != 0; aligned_cache.fast = mode == 2; aligned_cache.platform = mode > 2 ? mode - 2 : 0; aligned_cache.reset();
             txid_range(sh, ordinal, lo, hi);
             auto it = cursors.find({job, en1}); cur = it != cursors.end() ? it->second : lo;
         } else if (j.k != k) { k = j.k; p.mask = txid::mask_for_k(k); }
@@ -4890,6 +4890,9 @@ int main(int argc, char **argv) {
         for (int d : devs) {
             CUDA_CHECK(cudaSetDevice(d)); cudaDeviceProp prop; CUDA_CHECK(cudaGetDeviceProperties(&prop, d));
             std::string why; auto t0 = std::chrono::steady_clock::now(); int r = txid::cuda_selfcheck(why);
+            if (!r && txid::platform_profile(prop)) {
+                std::string extra; r = txid::aligned_selfcheck(extra, false, false, txid::platform_profile(prop)); why += "; platform " + extra;
+            }
             if (!r && txid::aligned_device(prop)) {
                 std::string extra; r = txid::aligned_selfcheck(extra, txid::aligned_all_layouts(prop)); why += "; " + extra;
             }
@@ -4915,7 +4918,7 @@ int main(int argc, char **argv) {
             txid::BlackwellChoice choice(prop); std::string choice_error;
             int mode = choice.select(p, (int)prefix.size(), grid, dh, dn, choice_error);
             if (mode < 0) { fprintf(stderr, "hash calibration failed: %s\n", choice_error.c_str()); cudaFree(dh); cudaFree(dn); return 1; }
-            aligned = mode != 0; aligned_cache.fast = mode == 2;
+            aligned = mode != 0; aligned_cache.fast = mode == 2; aligned_cache.platform = mode > 2 ? mode - 2 : 0;
             uint32_t it = 64; uint64_t n = 0x0102000000000000ULL, total = 0; double kms = 0; int launches = 0;
             cudaEvent_t e0, e1; cudaEventCreate(&e0); cudaEventCreate(&e1);
             auto t0 = std::chrono::steady_clock::now(), last = t0; uint64_t lastTotal = 0;
@@ -4936,7 +4939,7 @@ int main(int argc, char **argv) {
                 }
             }
             double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-            const unsigned launch_block = aligned_cache.fast ? 512u : TXID_TPB;
+            const unsigned launch_block = (aligned_cache.fast || aligned_cache.platform >= 2) ? 512u : TXID_TPB;
             const unsigned launch_grid = (unsigned)(((uint64_t)grid * TXID_TPB + launch_block - 1) / launch_block);
             fprintf(stderr, "GPU %d %s: txid-blake2b %d-byte prefix (kernel %d%s): %.3f GH/s over %.0f s (%.3f GH/s kernel time, %d launches of %.1f ms, %ux%dx%u)\n",
                     d, prop.name, txidPrefix, shp.kernel, aligned_cache.fast ? ", Blackwell" : aligned ? ", aligned32" : "", total / el / 1e9, el, total / (kms / 1e3) / 1e9, launches, kms / launches, launch_grid, launch_block, it);

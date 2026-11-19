@@ -155,7 +155,7 @@ Selection: `PLATFORMS[]` in proxichorizo.cu maps compute capability → variant 
 geometry (12.x → fe32_w4_lb2; 8.x/7.5 → fe32_w0_lb2); `--variant NAME` forces one
 for all GPUs; `--autotune [secs]` measures every variant × {256×2, 128×4, 256×4} on
 each GPU and takes the best; `--list-variants`, `--selftest` and `--fetest` run all.
-Distribution build: `-gencode` for sm_75, sm_80, sm_86, sm_89, sm_120 plus
+Distribution build: `-gencode` for sm_61, sm_75, sm_80, sm_86, sm_89, sm_90, sm_120 plus
 compute_120 PTX for newer cards. Adding a platform = a row in `PLATFORMS[]`;
 adding a kernel idea = a macro in proxichorizo_device.cuh and a namespace block.
 
@@ -796,3 +796,27 @@ The README and benchmark CSVs record the new matched published-1.0.1 versus
 published-1.0.6 regression audit separately from the 1.0.7 qualification. Clocks and
 power sweeps include actual driver readings, configured caps and efficiency; they
 are measurements of specific boards and settings, not universal overclock presets.
+
+## 2.0.6 Blake2b profiles
+
+For prefix lengths congruent to 113 modulo 128, the measured RTX 3070 profile
+uses 512-thread blocks and the RTX 4070 Ti SUPER profile uses 256-thread blocks.
+Both move fixed nonce bytes out of the inner loop and use an aligned 32-bit
+counter. The GTX 1080 Ti profile uses 512 threads plus exact partial evaluation
+of the first two rounds. Other model names and message layouts keep the old
+selection. Blackwell's optimized PTX and native fallback remain unchanged.
+
+OpenCL uses an exact first-two-round plan and a 32-bit inner loop for kernel 29
+on the measured RX 7600 XT (gfx1102, 16 CUs) and MI50 (gfx906, 60 CUs). Dispatches
+split at low-word wrap to retain the complete 64-bit nonce interval. The other
+32 original kernel implementations remain available; `PX_TXID_PLAN=0` disables
+the new plan for diagnosis. `PX_TXID_PLATFORM=0` similarly disables the new CUDA
+profiles without changing older Blackwell selection.
+
+`PX_OPENCL_LOW_CPU=1` opts into waiting on the result-read completion callback.
+Every kernel event is still checked for failure. This cut one tested ROCr/XTX
+process from a full CPU core to about 6.4% of a core, at a measured 0.44%
+throughput cost. The default retains the faster marker-callback path.
+
+See the README and 2.0.6 CSV for measurements and the short AMD thermal limits.
+No clocks, power limits or fan settings are written by the miner.

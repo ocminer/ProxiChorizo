@@ -10,7 +10,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 ARCHS = ' '.join('-gencode arch=compute_%d,code=sm_%d' % (x, x)
-                 for x in [75, 80, 86, 89, 90, 120])
+                 for x in [61, 75, 80, 86, 89, 90, 120])
 ARCHS += ' -gencode arch=compute_120,code=compute_120'
 
 

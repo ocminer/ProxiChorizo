@@ -4,6 +4,16 @@
 #include <cstdlib>
 
 namespace txid {
+// Qualified word-14 layout profiles. Other cards and layouts keep their old
+// kernels; a family name alone is not evidence that a profile is faster.
+static inline int platform_profile(const cudaDeviceProp &p) {
+    if (const char *e = getenv("PX_TXID_PLATFORM")) if (!strcmp(e, "0")) return 0;
+    const std::string name(p.name);
+    if (p.major == 8 && p.minor == 9 && name.find("RTX 4070 Ti SUPER") != std::string::npos) return 1;
+    if (p.major == 8 && p.minor == 6 && (name == "NVIDIA GeForce RTX 3070" || name == "GeForce RTX 3070")) return 2;
+    if (p.major == 6 && p.minor == 1 && name.find("GTX 1080 Ti") != std::string::npos) return 3;
+    return 0;
+}
 #ifdef PX_BW_PTX
 extern "C" void txid_bw_launch(int, unsigned, unsigned, cudaStream_t, const ParamsCore &,
     uint32_t, uint64_t, uint32_t, uint32_t, HitRec *, unsigned *, uint32_t, const Plan01 &);
@@ -52,6 +62,7 @@ static inline uint64_t aligned_count(uint64_t nbase, uint64_t count) {
 struct AlignedSearch {
     ParamsCore p{};
     bool fast = false;
+    int platform = 0;
     Plan01 plan{};
     uint64_t window = ~0ULL, fixed = 0;
     void reset() { window = ~0ULL; }
@@ -74,13 +85,35 @@ struct AlignedSearch {
             g1(p.vhd[a], p.vhd[b], p.vhd[cc], p.vhd[d], p.m[8+2*j]);
             gf(p.vr[a], p.vr[b], p.vr[cc], p.vr[d], p.m[8+2*j], p.m[9+2*j]);
         }
-        if (fast) {
+        if (fast || platform == 3) {
             Params tmp; static_cast<ParamsCore &>(tmp) = p;
             plan_snap(tmp, (off + aligned_offset(plen)) / 8, false);
             plan = tmp.q;
         }
     }
 };
+
+// A 32-bit aligned counter removes repeated nonce assembly from the hot loop.
+// The fixed bytes and prefix work are prepared once per counter window.
+template <bool PLAN, int BLOCK> __global__ void __launch_bounds__(BLOCK, 1)
+platform_kernel(const ParamsCore p, const Plan01 q, uint32_t low, uint64_t fixed,
+                uint32_t full, uint32_t tail, HitRec *hits, unsigned *nhit) {
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 610 || __CUDA_ARCH__ == 860 || __CUDA_ARCH__ == 890)
+    const uint32_t gid = blockIdx.x * blockDim.x + threadIdx.x, stride = gridDim.x * blockDim.x;
+    uint32_t n = low + gid, limit = full + (gid < tail);
+    for (uint32_t i = 0; i < limit; ++i, n += stride) {
+        uint64_t m[16], v[16];
+#pragma unroll
+        for (int j = 0; j < 16; ++j) m[j] = p.m[j];
+        m[14] |= (uint64_t)n << 32;
+        if constexpr (PLAN) { rounds01<14, false>(v, p, q, m); rounds<2>(v, m); }
+        else { round0<14, false>(v, p, m); rounds<1>(v, m); }
+        const uint64_t h3 = p.h[3] ^ v[3] ^ v[11];
+        if ((h3 & p.mask) == 0)
+            record(fixed | ((uint64_t)__byte_perm(n, 0, 0x0123) << 8), h3, hits, nhit);
+    }
+#endif
+}
 
 // W: message word holding the counter, HIGH: its upper half, LAST: last non-zero message word (all compile-time).
 template <int W, int HIGH, int LAST> __global__ void __launch_bounds__(TXID_TPB)
@@ -113,6 +146,20 @@ template <int KEY> static inline void aligned_dispatch(int key, unsigned grid, u
 static inline void launch_aligned(unsigned grid, unsigned block, cudaStream_t st, const Params &base, int plen,
                                   uint64_t nbase, uint64_t count, HitRec *hits, unsigned *nhit, AlignedSearch &cache) {
     cache.prepare(base, plen, nbase);
+    if (cache.platform) {
+        const uint64_t count_threads = (uint64_t)grid * block;
+        block = cache.platform == 1 ? 256 : 512;
+        grid = (unsigned)((count_threads + block - 1) / block);
+        const uint64_t stride = (uint64_t)grid * block;
+        const uint32_t full = (uint32_t)(count / stride), tail = (uint32_t)(count % stride);
+        if (cache.platform == 1)
+            platform_kernel<false,256><<<grid,block,0,st>>>(cache.p,cache.plan,(uint32_t)nbase,cache.fixed,full,tail,hits,nhit);
+        else if (cache.platform == 2)
+            platform_kernel<false,512><<<grid,block,0,st>>>(cache.p,cache.plan,(uint32_t)nbase,cache.fixed,full,tail,hits,nhit);
+        else
+            platform_kernel<true,512><<<grid,block,0,st>>>(cache.p,cache.plan,(uint32_t)nbase,cache.fixed,full,tail,hits,nhit);
+        return;
+    }
     uint64_t stride = (uint64_t)grid * block;
     uint32_t full = (uint32_t)(count / stride), tail = (uint32_t)(count % stride);
     const int off = plen % 128, OFF = aligned_offset(plen), W = (off + OFF) / 8, HIGH = ((off + OFF) % 8) / 4, LAST = (off + 7) / 8;
@@ -127,13 +174,14 @@ static inline void launch_aligned(unsigned grid, unsigned block, cudaStream_t st
 
 // Same independent full CPU hash used for ordinary-kernel checks. Exercise
 // fixed-byte changes, partial grids, zero/low masks and 2^32 carry boundaries.
-static inline int aligned_selfcheck(std::string &why, bool all = false, bool fast = false) {
+static inline int aligned_selfcheck(std::string &why, bool all = false, bool fast = false, int platform = 0) {
     HitRec *dh=nullptr; unsigned *dn=nullptr;
     cudaError_t e = cudaMalloc(&dh, TXID_MAX_HITS * sizeof(HitRec));
     if (e == cudaSuccess) e = cudaMalloc(&dn, sizeof(unsigned));
     if (e != cudaSuccess) { cudaFree(dh); why=cudaGetErrorString(e); return 1; }
     int cases=0; uint64_t checked=0;
     std::vector<int> offs{52,97,108,113};
+    if (platform) offs = {113};
     const char *fe = getenv("PX_TXID_SELFTEST_FULL"); const bool every = all && fe && !strcmp(fe, "1");
     if (all) { offs.clear(); int seen[64] = {0};
         for (int off = 0; off <= 120; off++) { if (!aligned_placeable(128 + off)) continue;
@@ -143,7 +191,7 @@ static inline int aligned_selfcheck(std::string &why, bool all = false, bool fas
         if (blocks==0 && off==0) continue;   // an empty prefix is not a job
         int plen=blocks*128+off, k=test%3==0 ? 0 : test%3==1 ? 3 : 12;
         std::vector<uint8_t> prefix(plen); for (int i=0; i<plen; i++) prefix[i]=(uint8_t)(i*31+test*19);
-        Params p; prepare(prefix.data(), plen, k, p); AlignedSearch cache; cache.fast = fast;
+        Params p; prepare(prefix.data(), plen, k, p); AlignedSearch cache; cache.fast = fast; cache.platform = platform;
         uint64_t first=0xa1b27856ffffff00ULL+(uint64_t)test*0x123450011ULL;
         if (test==7) first=0xfffffffffffffeffULL;
         uint64_t count=513+test*17; std::vector<HitRec> got,want;

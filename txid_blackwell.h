@@ -53,13 +53,15 @@ static inline int bw_selfcheck(const cudaDeviceProp &p, std::string &why) {
 struct BlackwellChoice {
     std::array<int,128> choices;
     bool enabled = false, legacy_device = false, legacy_all = false;
-    int device = -1;
+    int device = -1, platform = 0;
     explicit BlackwellChoice(const cudaDeviceProp &p) {
         choices.fill(-1); cudaGetDevice(&device);
         enabled = bw_device(p) && device >= 0 && device < 128 && bw_verified[device];
         legacy_device = aligned_device(p); legacy_all = aligned_all_layouts(p);
+        platform = platform_profile(p);
     }
     int select(const Params &input, int plen, unsigned grid, HitRec *hits, unsigned *nhit, std::string &why) {
+        if (platform && plen > 0 && plen % 128 == 113) return 2 + platform;
         const int native = legacy_device && aligned_shape(plen, legacy_all) ? 1 : 0;
         if (!enabled || !aligned_placeable(plen)) return native;
         int &chosen = choices[plen % 128];

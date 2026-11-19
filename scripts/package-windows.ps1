@@ -37,7 +37,7 @@ $info = @{
     windows_gpu_hardware_test = $false
 }
 if ($amd) { $info.gpu = 'amd-opencl'; $info.opencl = $true; $info.opencl_runtime = 'OpenCL.dll from the AMD GPU driver (delay-loaded)' }
-else { $info.gpu = 'nvidia-cuda'; $info.cuda = $Cuda; $info.architectures = @(75,80,86,89,90,120) }
+else { $info.gpu = 'nvidia-cuda'; $info.cuda = $Cuda; $info.architectures = @(61,75,80,86,89,90,120) }
 $info | ConvertTo-Json | Set-Content "$stage/BUILD-INFO.json"
 # cudart / the MSVC runtime are linked statically and OpenCL.dll is delay-loaded: a clean --help proves the
 # executable starts (no GPU on the runner).

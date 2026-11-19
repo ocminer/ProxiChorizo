@@ -20,7 +20,7 @@ vec = open('../vectors.json', 'rb').read()
 with open('kernel_blob.h', 'w') as f:
     f.write('// GENERATED from proxichorizo.cl and ../vectors.json\nstatic const unsigned char CL_SRC[] = {')
     f.write(','.join(str(b) for b in cl)); f.write(',0};\nstatic const unsigned CL_SRC_LEN = %d;\n' % len(cl))
-    tx = open('txid_blake2b.cl', 'rb').read()
+    tx = open('txid_blake2b.cl', 'rb').read() + b'\n' + open('txid_plan29.cl', 'rb').read()
     f.write('static const unsigned char TXID_CL_SRC[] = {'); f.write(','.join(str(b) for b in tx)); f.write(',0};\nstatic const unsigned TXID_CL_SRC_LEN = %d;\n' % len(tx))
     f.write('static const unsigned char VEC_SRC[] = {'); f.write(','.join(str(b) for b in vec)); f.write(',0};\nstatic const unsigned VEC_SRC_LEN = %d;\n' % len(vec))
 print('host_common.inc: %d lines; kernel_blob.h: %d bytes' % (len(out), len(cl)))

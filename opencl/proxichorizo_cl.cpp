@@ -27,6 +27,7 @@
 #include <cerrno>
 #include <ctime>
 #include <condition_variable>
+#include <set>
 
 #include "../txid_blake2b.h"   // txid-blake2b work of library upgrade 6: CPU reference and per-job precomputation
 #include "host_common.inc"
@@ -51,7 +52,7 @@ struct Hit { uint64_t nonce; uint8_t beta[64]; };
 
 // ---- devices -------------------------------------------------------------------
 struct ClDev {
-    cl_platform_id plat; cl_device_id id; cl_context ctx; cl_command_queue q;
+    cl_platform_id plat; cl_device_id id; cl_context ctx = nullptr; cl_command_queue q = nullptr;
     std::string name, board, platname, tuning_id, driver; cl_uint cus; int bus = 0; size_t maxwg = 256;
 };
 static std::vector<ClDev> g_devs;
@@ -62,8 +63,6 @@ static cl_int enqueue_mining_kernel(cl_command_queue q, cl_kernel kernel, size_t
     if (rc == CL_SUCCESS) mining_events[q].push_back(event);
     return rc;
 }
-// Wait for a flushed end marker without spinning a CPU core. The callback
-// also reports negative execution status; failed work never becomes a share.
 struct ClCompletion {
     std::mutex mu;
     std::condition_variable cv;
@@ -79,7 +78,7 @@ static void CL_CALLBACK mining_complete(cl_event, cl_int status, void *opaque) {
     // until the callback has finished accessing it.
     c->cv.notify_one();
 }
-static cl_int mining_wait(cl_command_queue q) {
+static cl_int mining_callback_wait(cl_command_queue q, cl_mem counter, cl_uint *result) {
     cl_event event = nullptr;
     cl_int rc = clEnqueueMarkerWithWaitList(q, 0, nullptr, &event);
     if (rc == CL_SUCCESS) rc = clFlush(q);
@@ -102,7 +101,62 @@ static cl_int mining_wait(cl_command_queue q) {
     }
     mining_events[q].clear();
     if (event) clReleaseEvent(event);
+    if (rc == CL_SUCCESS && result) rc = clEnqueueReadBuffer(q, counter, CL_TRUE, 0, sizeof(*result), result, 0, nullptr, nullptr);
     return rc;
+}
+// Wait on an asynchronous result read, then check every dispatch status.
+// On ROCr, polling a kernel event can itself keep the runtime's helper thread
+// busy. A read-completion event lets it sleep while the GPU hashes.
+static cl_int mining_read_wait(cl_command_queue q, cl_mem counter, cl_uint *result) {
+    cl_event read_done = nullptr;
+    // Keep a failed/pending DMA destination alive until process shutdown.
+    // Normal completion frees it immediately; callers fail closed on errors.
+    cl_uint *completion = new cl_uint(0);
+    cl_int rc = clEnqueueReadBuffer(q, counter, CL_FALSE, 0, sizeof(*completion),
+                                   completion, 0, nullptr, &read_done);
+    bool enqueued = rc == CL_SUCCESS;
+    cl_int state = CL_QUEUED;
+    if (enqueued) rc = clFlush(q);
+    if (rc == CL_SUCCESS) {
+        ClCompletion done;
+        rc = clSetEventCallback(read_done, CL_COMPLETE, mining_complete, &done);
+        if (rc == CL_SUCCESS) {
+            std::unique_lock<std::mutex> lock(done.mu);
+            done.cv.wait(lock, [&] { return done.done; });
+            rc = done.status;
+        }
+        cl_int query_state = CL_QUEUED;
+        const cl_int query = clGetEventInfo(read_done, CL_EVENT_COMMAND_EXECUTION_STATUS,
+                                          sizeof query_state, &query_state, nullptr);
+        if (query == CL_SUCCESS) state = query_state;
+        if (rc == CL_SUCCESS)
+            rc = query != CL_SUCCESS ? query : state < 0 ? state : state != CL_COMPLETE ? CL_INVALID_OPERATION : CL_SUCCESS;
+    }
+    const cl_uint count = state == CL_COMPLETE ? *completion : 0;
+    if (!enqueued || state <= CL_COMPLETE) delete completion;
+    if (read_done) clReleaseEvent(read_done);
+    for (cl_event event : mining_events[q]) {
+        cl_int status = CL_QUEUED;
+        cl_int query = clGetEventInfo(event, CL_EVENT_COMMAND_EXECUTION_STATUS, sizeof status, &status, nullptr);
+        if (rc == CL_SUCCESS) rc = query != CL_SUCCESS ? query : status < 0 ? status : status != CL_COMPLETE ? CL_INVALID_OPERATION : CL_SUCCESS;
+        clReleaseEvent(event);
+    }
+    mining_events[q].clear();
+    if (rc == CL_SUCCESS && result) *result = count;
+    return rc;
+}
+static std::set<cl_command_queue> read_wait_queues; // initialized before worker threads
+static void configure_wait(const ClDev &d) {
+    bool enable = false; // preserve the fastest default; optional ROCr CPU tradeoff
+    if (const char *e = getenv("PX_OPENCL_LOW_CPU")) enable = !strcmp(e, "1");
+    if (const char *e = getenv("PX_TXID_READ_WAIT")) {
+        if (!strcmp(e, "0")) enable = false;
+        if (!strcmp(e, "1")) enable = true;
+    }
+    if (enable) read_wait_queues.insert(d.q);
+}
+static cl_int mining_wait(cl_command_queue q, cl_mem counter, cl_uint *result = nullptr) {
+    return read_wait_queues.count(q) ? mining_read_wait(q, counter, result) : mining_callback_wait(q, counter, result);
 }
 static void enumerate_devices() {
     cl_uint np = 0; clGetPlatformIDs(0, nullptr, &np);
@@ -129,8 +183,6 @@ static void enumerate_devices() {
                 c.tuning_id = std::string(host) + ":pci:" + std::to_string(c.bus) + ":" +
                     std::to_string((unsigned char)topo.device) + ":" + std::to_string((unsigned char)topo.function);
             }
-            cl_int err; c.ctx = clCreateContext(nullptr, 1, &d, nullptr, nullptr, &err); CL_CHECK(err);
-            c.q = clCreateCommandQueue(c.ctx, d, 0, &err); CL_CHECK(err);
             g_devs.push_back(c);
         }
     }
@@ -423,7 +475,9 @@ static cl_mem make_job(ClDev &d, JobDev jd) { prepare_job(jd); cl_int err; cl_me
 
 // ---- txid-blake2b (library upgrade 6): the hash search kernels of txid_blake2b.cl -------------------
 #define TX_WG 256
-struct TxProg { cl_program p = nullptr; cl_kernel k[32] = {}; ClDev *dev = nullptr; };
+static_assert(sizeof(txid::ParamsCore) == 107 * sizeof(uint64_t), "OpenCL parameter ABI");
+static_assert(sizeof(txid::Params) == 267 * sizeof(uint64_t), "OpenCL plan ABI");
+struct TxProg { cl_program p = nullptr; cl_kernel k[32] = {}, plan29 = nullptr; ClDev *dev = nullptr; bool use_plan29 = false; };
 static std::map<cl_device_id, TxProg *> g_txprogs;
 static TxProg *get_txprog(ClDev &dev) {
     std::lock_guard<std::mutex> l(g_prog_mu);
@@ -440,33 +494,54 @@ static TxProg *get_txprog(ClDev &dev) {
         fprintf(stderr, "[txid-blake2b] build failed on %s:\n%s\n", dev.name.c_str(), log.c_str()); exit(2);
     }
     for (int i = 0; i < 32; i++) { char nm[32]; snprintf(nm, sizeof nm, "txid_k%d", i); tp->k[i] = clCreateKernel(tp->p, nm, &err); CL_CHECK(err); }
+    tp->plan29 = clCreateKernel(tp->p, "txid_plan29", &err); CL_CHECK(err);
+    tp->use_plan29 = (dev.name == "gfx1102" && dev.cus == 16 && dev.board.find("7600 XT") != std::string::npos) ||
+                     (dev.name.rfind("gfx906", 0) == 0 && dev.cus == 60 && dev.board.find("MI50") != std::string::npos);
+    if (const char *e = getenv("PX_TXID_PLAN")) {
+        if (!strcmp(e, "0")) tp->use_plan29 = false;
+        if (!strcmp(e, "1")) tp->use_plan29 = true; // diagnostics; startup CPU checks still mandatory
+    }
     logln("[txid-blake2b] built for " + dev.name + " in " + std::to_string((int)(std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() * 1000)) + " ms");
     g_txprogs[dev.id] = tp;
     return tp;
 }
 static cl_int tx_enqueue(TxProg *tp, cl_mem params, int kernel, uint64_t nbase, uint64_t count, cl_uint iters, cl_mem hits, cl_mem nhit, size_t groups) {
-    cl_kernel k = tp->k[kernel & 31]; cl_ulong nb = nbase, cn = count;
-    clSetKernelArg(k, 0, sizeof params, &params); clSetKernelArg(k, 1, sizeof nb, &nb); clSetKernelArg(k, 2, sizeof cn, &cn);
-    clSetKernelArg(k, 3, sizeof iters, &iters); clSetKernelArg(k, 4, sizeof hits, &hits); clSetKernelArg(k, 5, sizeof nhit, &nhit);
-    return enqueue_mining_kernel(tp->dev->q, k, groups * TX_WG, TX_WG);
+    if (!count) return CL_SUCCESS;
+    if (!groups || groups > UINT32_MAX / TX_WG) return CL_INVALID_GLOBAL_WORK_SIZE;
+    const bool planned = tp->use_plan29 && kernel == 29;
+    cl_kernel k = planned ? tp->plan29 : tp->k[kernel & 31];
+    // Preserve the exact nonce interval, including a partial group or a 64-bit wrap.
+    // The optimized loop needs no 64-bit carry in its per-nonce hot path.
+    do {
+        cl_ulong nb = nbase, cn = planned ? std::min<uint64_t>(count, (1ULL << 32) - (uint32_t)nbase) : count;
+        cl_int err = CL_SUCCESS;
+        err |= clSetKernelArg(k, 0, sizeof params, &params); err |= clSetKernelArg(k, 1, sizeof nb, &nb);
+        err |= clSetKernelArg(k, 2, sizeof cn, &cn); err |= clSetKernelArg(k, 3, sizeof iters, &iters);
+        err |= clSetKernelArg(k, 4, sizeof hits, &hits); err |= clSetKernelArg(k, 5, sizeof nhit, &nhit);
+        if (err != CL_SUCCESS) return err;
+        err = enqueue_mining_kernel(tp->dev->q, k, groups * TX_WG, TX_WG);
+        if (err != CL_SUCCESS) return err;
+        nbase += cn; count -= cn;
+    } while (count);
+    return CL_SUCCESS;
 }
 // a synchronous search for the self-check
 struct ClTxSearch {
     TxProg *tp; cl_mem params, hits, nhit;
     explicit ClTxSearch(ClDev &d) : tp(get_txprog(d)) {
         cl_int err;
-        params = clCreateBuffer(d.ctx, CL_MEM_READ_ONLY, sizeof(txid::ParamsCore), nullptr, &err); CL_CHECK(err);
+        params = clCreateBuffer(d.ctx, CL_MEM_READ_ONLY, sizeof(txid::Params), nullptr, &err); CL_CHECK(err);
         hits = clCreateBuffer(d.ctx, CL_MEM_READ_WRITE, sizeof(txid::HitRec) * TXID_MAX_HITS, nullptr, &err); CL_CHECK(err);
         nhit = clCreateBuffer(d.ctx, CL_MEM_READ_WRITE, 4, nullptr, &err); CL_CHECK(err);
     }
     ~ClTxSearch() { clReleaseMemObject(params); clReleaseMemObject(hits); clReleaseMemObject(nhit); }
     std::vector<txid::HitRec> operator()(const txid::Params &p, uint64_t nbase, uint64_t count) {
         std::vector<txid::HitRec> out; cl_command_queue q = tp->dev->q; cl_uint zero = 0;
-        CL_CHECK(clEnqueueWriteBuffer(q, params, CL_TRUE, 0, sizeof(txid::ParamsCore), &p, 0, nullptr, nullptr));
+        CL_CHECK(clEnqueueWriteBuffer(q, params, CL_TRUE, 0, sizeof(txid::Params), &p, 0, nullptr, nullptr));
         CL_CHECK(clEnqueueWriteBuffer(q, nhit, CL_TRUE, 0, 4, &zero, 0, nullptr, nullptr));
         cl_uint iters = 4; size_t groups = (size_t)((count + (uint64_t)TX_WG * iters - 1) / ((uint64_t)TX_WG * iters));
-        if (tx_enqueue(tp, params, (int)p.kernel, nbase, count, iters, hits, nhit, groups) != CL_SUCCESS || mining_wait(q) != CL_SUCCESS) { out.push_back(txid::HitRec{~0ULL, 0}); return out; }
-        cl_uint n = 0; CL_CHECK(clEnqueueReadBuffer(q, nhit, CL_TRUE, 0, 4, &n, 0, nullptr, nullptr));
+        cl_uint n = 0;
+        if (tx_enqueue(tp, params, (int)p.kernel, nbase, count, iters, hits, nhit, groups) != CL_SUCCESS || mining_wait(q, nhit, &n) != CL_SUCCESS) { out.push_back(txid::HitRec{~0ULL, 0}); return out; }
         n = std::min<cl_uint>(n, TXID_MAX_HITS); out.resize(n);
         if (n) CL_CHECK(clEnqueueReadBuffer(q, hits, CL_TRUE, 0, sizeof(txid::HitRec) * n, out.data(), 0, nullptr, nullptr));
         return out;
@@ -482,7 +557,7 @@ struct ClTxidWorker {
     ClTxidWorker(Shared &s, int ord, ClDev &dev) : sh(s), ordinal(ord), d(dev), tp(get_txprog(dev)), hits(TXID_MAX_HITS) {
         groups = (size_t)dev.cus * 32; if (const char *e = getenv("PX_TXID_GROUPS")) groups = (size_t)atoi(e);
         cl_int err;
-        params = clCreateBuffer(d.ctx, CL_MEM_READ_ONLY, sizeof(txid::ParamsCore), nullptr, &err); CL_CHECK(err);
+        params = clCreateBuffer(d.ctx, CL_MEM_READ_ONLY, sizeof(txid::Params), nullptr, &err); CL_CHECK(err);
         d_hits = clCreateBuffer(d.ctx, CL_MEM_READ_WRITE, sizeof(txid::HitRec) * TXID_MAX_HITS, nullptr, &err); CL_CHECK(err);
         d_n = clCreateBuffer(d.ctx, CL_MEM_READ_WRITE, 4, nullptr, &err); CL_CHECK(err);
     }
@@ -502,17 +577,16 @@ struct ClTxidWorker {
         }
         auto t0 = std::chrono::steady_clock::now();
         cl_uint zero = 0;
-        if (dirty) { CL_CHECK(clEnqueueWriteBuffer(d.q, params, CL_FALSE, 0, sizeof(txid::ParamsCore), &p, 0, nullptr, nullptr)); dirty = false; }
+        if (dirty) { CL_CHECK(clEnqueueWriteBuffer(d.q, params, CL_FALSE, 0, sizeof(txid::Params), &p, 0, nullptr, nullptr)); dirty = false; }
         CL_CHECK(clEnqueueFillBuffer(d.q, d_n, &zero, 4, 0, 4, 0, nullptr, nullptr));
         uint64_t per = (uint64_t)groups * TX_WG * iters, count = std::min<uint64_t>(per, hi - cur);
         CL_CHECK(tx_enqueue(tp, params, (int)p.kernel, ((uint64_t)en1 << 48) | cur, count, iters, d_hits, d_n, groups));
-        CL_CHECK(mining_wait(d.q));
+        cl_uint n = 0; CL_CHECK(mining_wait(d.q, d_n, &n));
         double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
         cur += count;
         if (count == per && ms > 0) { double want = (double)iters * sh.txid_launch_ms / ms; iters = (cl_uint)std::max(1.0, std::min(65536.0, iters * 0.5 + want * 0.5)); }
         sh.attempts += count;
         { std::lock_guard<std::mutex> l(sh.mu); auto &g = sh.gpus[ordinal]; g.win_attempts += count; g.win_kernel_ms += ms; g.win_launches++; g.hash = true; }
-        cl_uint n = 0; CL_CHECK(clEnqueueReadBuffer(d.q, d_n, CL_TRUE, 0, 4, &n, 0, nullptr, nullptr));
         if (n) {
             n = std::min<cl_uint>(n, TXID_MAX_HITS);
             CL_CHECK(clEnqueueReadBuffer(d.q, d_hits, CL_TRUE, 0, sizeof(txid::HitRec) * n, hits.data(), 0, nullptr, nullptr));
@@ -559,13 +633,12 @@ static void gpu_worker(Shared &sh, GpuCfg cfg) {
         CL_CHECK(clEnqueueWriteBuffer(d.q, d_job, CL_FALSE, 0, sizeof jd, &jd, 0, nullptr, nullptr));
         cl_uint zero = 0; CL_CHECK(clEnqueueFillBuffer(d.q, d_n, &zero, 4, 0, 4, 0, nullptr, nullptr));
         prog_mine(pr, d_job, nonce, stride, cfg.iters, d_hits, d_n, sc);
-        CL_CHECK(mining_wait(d.q));
+        cl_uint n = 0; CL_CHECK(mining_wait(d.q, d_n, &n));
         double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - k0).count();
         uint64_t done = stride * cfg.iters;
         nonce += done;
         sh.attempts += done;
         { std::lock_guard<std::mutex> l(sh.mu); auto &g = sh.gpus[cfg.ordinal]; g.win_attempts += done; g.win_kernel_ms += ms; g.win_launches++; g.hash = false; }
-        cl_uint n = 0; CL_CHECK(clEnqueueReadBuffer(d.q, d_n, CL_TRUE, 0, 4, &n, 0, nullptr, nullptr));
         if (n > 0) {
             if (n > MAX_HITS) n = MAX_HITS;
             CL_CHECK(clEnqueueReadBuffer(d.q, d_hits, CL_TRUE, 0, sizeof(Hit) * n, hits.data(), 0, nullptr, nullptr));
@@ -595,7 +668,7 @@ static bool pipeline_vector_ok(Prog *pr, JobDev jd, uint64_t nonce,
     Scratch *sc = scratch_alloc(pr, 1);
     cl_uint n = 0; CL_CHECK(clEnqueueWriteBuffer(d.q, nhits, CL_TRUE, 0, sizeof n, &n, 0, nullptr, nullptr));
     prog_mine(pr, job, nonce, pr->v->wg, 1, hits, nhits, sc);
-    CL_CHECK(mining_wait(d.q));
+    CL_CHECK(mining_wait(d.q, nhits));
     CL_CHECK(clEnqueueReadBuffer(d.q, nhits, CL_TRUE, 0, sizeof n, &n, 0, nullptr, nullptr));
     bool ok = n == (counter < PX_MAX_PASSES ? 1u : 0u);
     if (ok && n) {
@@ -661,13 +734,13 @@ static double run_bench(Prog *pr, const uint8_t pk[32], int groups, int iters, d
     cl_mem d_n = clCreateBuffer(d.ctx, CL_MEM_READ_WRITE, 4, nullptr, &err); CL_CHECK(err);
     uint64_t stride = (uint64_t)groups * pr->v->wg, total = 0, nonce = 0x123456789ULL; cl_uint zero = 0;
     Scratch *sc = scratch_alloc(pr, stride * (size_t)iters);
-    CL_CHECK(clEnqueueFillBuffer(d.q, d_n, &zero, 4, 0, 4, 0, nullptr, nullptr)); prog_mine(pr, d_job, nonce, stride, iters, d_hits, d_n, sc); CL_CHECK(mining_wait(d.q));
+    CL_CHECK(clEnqueueFillBuffer(d.q, d_n, &zero, 4, 0, 4, 0, nullptr, nullptr)); prog_mine(pr, d_job, nonce, stride, iters, d_hits, d_n, sc); CL_CHECK(mining_wait(d.q, d_n));
     auto t0 = std::chrono::steady_clock::now();
     std::clock_t cpu0 = std::clock();
     while (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < seconds) {
         CL_CHECK(clEnqueueFillBuffer(d.q, d_n, &zero, 4, 0, 4, 0, nullptr, nullptr));
         prog_mine(pr, d_job, nonce, stride, iters, d_hits, d_n, sc);
-        CL_CHECK(mining_wait(d.q));
+        CL_CHECK(mining_wait(d.q, d_n));
         nonce += stride * iters; total += stride * iters;
     }
     double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
@@ -754,7 +827,7 @@ static int run_verify(const uint8_t scalar[32], const uint8_t pk[32], int dev) {
         Scratch *sc = scratch_alloc(pr, stride * (size_t)iters);
         for (int l = 0; l < launches; l++) {
             CL_CHECK(clEnqueueFillBuffer(d.q, d_n, &zero, 4, 0, 4, 0, nullptr, nullptr));
-            prog_mine(pr, d_job, nonce, stride, iters, d_hits, d_n, sc); CL_CHECK(mining_wait(d.q));
+            prog_mine(pr, d_job, nonce, stride, iters, d_hits, d_n, sc); CL_CHECK(mining_wait(d.q, d_n));
             cl_uint n = 0; CL_CHECK(clEnqueueReadBuffer(d.q, d_n, CL_TRUE, 0, 4, &n, 0, nullptr, nullptr)); if (n > MAX_HITS) n = MAX_HITS;
             std::vector<Hit> hits(n); if (n) CL_CHECK(clEnqueueReadBuffer(d.q, d_hits, CL_TRUE, 0, sizeof(Hit) * n, hits.data(), 0, nullptr, nullptr));
             for (auto &h : hits) found[v].push_back({h.nonce, hexs(h.beta, 64)});
@@ -782,6 +855,7 @@ static void usage() {
         "  --tls-insecure     stratum+ssl:// without checking the pool's certificate (private pools only)\n"
         "  --check-pool URL   connect to a stratum pool, subscribe, print the answer and exit (no GPU needed)\n"
         "  --token T          the account token from the pool registration (stratum password; --pass and -p are the same)\n"
+        "  --token-file FILE  read the token from FILE (first line), or PROXI_TOKEN in the environment\n"
         "  --key-file FILE    unencrypted proxima.key (or --seed-hex HEX / NONCE_SEEKER_SEED)\n"
         "  --seed-hex HEX     32-byte seed\n"
         "  --name NAME        seeker name in the pool's statistics (default proxichorizo-<pid>)\n"
@@ -834,7 +908,7 @@ static void on_signal(int) {
 }
 
 int main(int argc, char **argv) {
-    std::string proxi, token, keyfile, seedhex, name, selftest, gpus, variant, apiBind, kernelFile, user, checkPool;
+    std::string proxi, token, tokenFile, keyfile, seedhex, name, selftest, gpus, variant, apiBind, kernelFile, user, checkPool;
     int groups = 0, iters = 0; double bench = 0, autotuneSecs = 0; bool fetest = false, listVariants = false, listDevices = false, verify = false, verifyPipeline = false;
     double txidBench = 0; bool txidSelftest = false; int txidPrefix = 600, txidLaunchMs = 40;
     ConsoleOpts con;
@@ -850,6 +924,7 @@ int main(int argc, char **argv) {
         else if (a == "--tls-insecure") tls::insecure = true;
         else if (a == "--check-pool") next(checkPool);
         else if (a == "--token" || a == "--pass" || a == "-p") next(token);
+        else if (a == "--token-file") next(tokenFile);
         else if (a == "--key-file") next(keyfile);
         else if (a == "--seed-hex") next(seedhex);
         else if (a == "--name") next(name);
@@ -879,6 +954,11 @@ int main(int argc, char **argv) {
     console_setup(con);
     if (!checkPool.empty()) return check_pool(checkPool);
     if (listVariants) { for (int v = 0; v < NVARIANTS; v++) printf("%s\n", VARIANTS[v].name); return 0; }
+    if (token.empty() && !tokenFile.empty()) {
+        std::ifstream tf(tokenFile); if (!tf) { fprintf(stderr, "cannot open token file %s\n", tokenFile.c_str()); return 1; }
+        std::getline(tf, token); while (!token.empty() && (token.back() == '\r' || token.back() == '\n' || token.back() == ' ')) token.pop_back();
+    }
+    if (token.empty()) { const char *e = getenv("PROXI_TOKEN"); if (e) token = e; }
     if (!kernelFile.empty()) { std::ifstream f(kernelFile); if (!f) { fprintf(stderr, "cannot open %s\n", kernelFile.c_str()); return 1; } std::stringstream ss; ss << f.rdbuf(); g_kernel_src = ss.str(); }
     else g_kernel_src.assign((const char *)CL_SRC, CL_SRC_LEN);
     enumerate_devices();
@@ -886,6 +966,12 @@ int main(int argc, char **argv) {
     if (listDevices) { for (size_t i = 0; i < g_devs.size(); i++) printf("%zu: %s, %u CUs, bus %d, platform %s\n", i, dev_label(g_devs[i]).c_str(), g_devs[i].cus, g_devs[i].bus, g_devs[i].platname.c_str()); return 0; }
     std::vector<int> devs;
     if (!parse_devices(gpus, (int)g_devs.size(), devs)) return 1;
+    // Create resources only for selected cards. Enumeration must not activate peers.
+    for (int dv : devs) {
+        ClDev &d = g_devs[dv]; cl_int err;
+        d.ctx = clCreateContext(nullptr, 1, &d.id, nullptr, nullptr, &err); CL_CHECK(err);
+        d.q = clCreateCommandQueue(d.ctx, d.id, 0, &err); CL_CHECK(err); configure_wait(d);
+    }
     // txid-blake2b (hash work, library upgrade 6): the self-check on every selected GPU, also before mining
     auto hash_selfcheck = [&]() {
         int rc = 0;
@@ -912,7 +998,7 @@ int main(int argc, char **argv) {
             char bus[32]; snprintf(bus, sizeof bus, "0000:%02x:00.0", d.bus);
             while (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < txidBench) {
                 uint64_t per = (uint64_t)grp * TX_WG * it; auto k0 = std::chrono::steady_clock::now();
-                CL_CHECK(tx_enqueue(tp, params, (int)p.kernel, n, per, it, hb, nb, grp)); CL_CHECK(mining_wait(d.q));
+                CL_CHECK(tx_enqueue(tp, params, (int)p.kernel, n, per, it, hb, nb, grp)); CL_CHECK(mining_wait(d.q, nb));
                 double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - k0).count();
                 n += per; total += per; launches++;
                 if (ms > 0) it = (cl_uint)std::max(1.0, std::min(65536.0, it * 0.5 + it * (double)txidLaunchMs / ms * 0.5));

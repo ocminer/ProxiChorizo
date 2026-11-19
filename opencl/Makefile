@@ -7,7 +7,7 @@ CL_LDLIBS ?= $(if $(wildcard $(CL_LIB)/libOpenCL.so /usr/lib/x86_64-linux-gnu/li
 CXXFLAGS ?= -O2 -std=c++17 -Wall -Wno-unused-function -I$(CL_INC)
 proxichorizo-cl: proxichorizo_cl.cpp pipeline_verify.inc merged_scalar.h job_midstate.h host_common.inc kernel_blob.h ../txid_blake2b.h ../txid_vectors.h ../scripts/build.py
 	CXX="$(CXX)" CL_LDLIBS="$(CL_LDLIBS)" python3 ../scripts/build.py --kind opencl --output $@ --cxx-flags="$(CXXFLAGS)"
-host_common.inc: gen_host.py proxichorizo.cl txid_blake2b.cl ../proxichorizo.cu ../vectors.json
+host_common.inc: gen_host.py proxichorizo.cl txid_blake2b.cl txid_plan29.cl ../proxichorizo.cu ../vectors.json
 	python3 gen_host.py
 kernel_blob.h: host_common.inc
 	@test -f $@ || python3 gen_host.py
