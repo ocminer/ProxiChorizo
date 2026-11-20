@@ -1,4 +1,4 @@
-ProxiChorizo 2.1.0 - native Windows x64 / AMD OpenCL
+ProxiChorizo 2.1.1 - native Windows x64 / AMD OpenCL
 
 OpenCL nonce seeker for Proxima (PROX): pool mining on proxi.suprnova.cc or solo with your
 own proxi node mine. Windows 10/11 x64 with an AMD Radeon or Instinct GPU and the AMD
@@ -13,9 +13,15 @@ Pool (suprnova):
 
 PowerShell examples:
   .\start.ps1 -Token YOUR_TOKEN -Worker rig1
+  .\start.ps1 -Token YOUR_TOKEN -ExtraArgs @("--no-autotune")
   .\start.ps1 -Token YOUR_TOKEN -Devices '0,1'
   .\start.ps1 -Token mine.seeker.token -Pool http://your-node:8200   # Blake2b solo
   .\proxichorizo-cl.exe --list-devices                                # the GPUs OpenCL sees
+
+Startup: --no-autotune skips legacy VRF tuning trials, using a valid cache or the
+platform default. The brief Blake2b comparison and mandatory verification remain.
+Current Blake2b jobs need no Seed/KeyFile. Long jobs are negotiated automatically;
+ordinary jobs continue to work. Do not combine --no-autotune with --autotune.
 
 Solo: set mine.seeker.listen and mine.seeker.token in your wallet's proxi.yaml, run
 `proxi node mine --workers 0`, and start ProxiChorizo with the seeker endpoint and token. Blake2b jobs need no

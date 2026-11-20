@@ -144,8 +144,7 @@ release, miner name `proxichorizo`. Flight sheet:
 
 Hashrate, shares and per-GPU figures come from the miner's stats API on `127.0.0.1:4078`.
 `AUTOTUNE=0` passes `--no-autotune` to either backend. You can also use
-`EXTRA_ARGS="--no-autotune"`. These options are in the development build after
-2.1.0; the published 2.1.0 executable does not recognize the flag.
+`EXTRA_ARGS="--no-autotune"`. These options are available from **2.1.1** on CUDA and OpenCL.
 
 ## 4. MMPOS and SMOS
 

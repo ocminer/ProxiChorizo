@@ -53,6 +53,11 @@ def read_archive(path):
 def verify_archive(path, version, commit):
     files = read_archive(path)
     check_notices(files, version)
+    for packaged, source in [("README-HiveOS.md", "hiveos/README.md"),
+                             ("README-Docker.md", "docker/README.md"),
+                             ("README-mmpOS-SMOS.md", "mmpos/README.md")]:
+        assert packaged in files, "missing platform guide: " + packaged
+        assert text(files[packaged]) == text((ROOT / source).read_bytes()), "platform guide mismatch: " + packaged
     info = json.loads(text(files["BUILD-INFO.json"]))
     assert info["version"] == version and info["source_commit"] == commit
     windows_amd = path.suffix == ".zip" and "proxichorizo-cl.exe" in files

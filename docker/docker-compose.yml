@@ -1,6 +1,6 @@
 services:
   miner:
-    image: ocminersupr/proxichorizo:latest
+    image: ocminersupr/proxichorizo:2.1.1
     restart: unless-stopped
     deploy:
       resources:
@@ -14,5 +14,6 @@ services:
       WORKER: "rig1"
       # POOL_URL defaults to stratum+tcp://proxi.suprnova.cc:3355
       # DEVICES: "0"
+      # EXTRA_ARGS: "--no-autotune"
     ports:
       - "4078:4078"   # statistics JSON (/) and the mmpOS line (/mmpos)

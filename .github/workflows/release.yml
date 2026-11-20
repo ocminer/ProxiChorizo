@@ -91,6 +91,7 @@ jobs:
           /tmp/test-tail-protocol
           ./proxichorizo --help
           ./opencl/proxichorizo-cl --help
+          python3 tests/startup_flags.py ./proxichorizo ./opencl/proxichorizo-cl
       - name: stratum and stratum+ssl against the live pool (system OpenSSL, no GPU)
         run: |
           DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ca-certificates libssl1.1 >/dev/null
@@ -141,6 +142,8 @@ jobs:
           python tests/txid/aligned_tail_vectors.py
           if errorlevel 1 exit /b 1
           proxichorizo.exe --help
+          if errorlevel 1 exit /b 1
+          python tests/startup_flags.py proxichorizo.exe
           if errorlevel 1 exit /b 1
       - name: OpenSSL 3 for the package (stratum+ssl)
         shell: pwsh
@@ -201,6 +204,8 @@ jobs:
           python ../tests/txid/aligned_tail_vectors.py
           if ($LASTEXITCODE -ne 0) { throw 'protocol vectors failed' }
           ./proxichorizo-cl.exe --help; if ($LASTEXITCODE -ne 0) { throw '--help failed' }
+          python ../tests/startup_flags.py ./proxichorizo-cl.exe
+          if ($LASTEXITCODE -ne 0) { throw 'startup flag checks failed' }
           # OpenCL present (the runner has an OpenCL.dll but no GPU): the miner loads it and reports no GPU
           $out = & ./proxichorizo-cl.exe --list-devices 2>&1 | Out-String; $code = $LASTEXITCODE; $out
           if ($code -eq 3 -or $out.Contains('AMD Adrenalin')) { throw "OpenCL.dll on the runner was not loaded (exit $code)" }

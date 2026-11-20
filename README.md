@@ -1,6 +1,26 @@
 # ProxiChorizo — GPU miner for Proxima (PROX)
 
-### Development update: startup control (not yet released)
+A GPU miner for [Proxima](https://lunfardo314.github.io/), by suprnova.cc, for
+NVIDIA (CUDA) and AMD (OpenCL). Current mining uses the transaction's BLAKE2b-256
+hash. **No miner fee.** Pool mining needs only your pool token and worker name;
+no wallet key or legacy seed is needed on the GPU machine.
+
+**Download:** [latest release](https://github.com/ocminer/ProxiChorizo/releases/latest) ·
+**Pool:** https://proxi.suprnova.cc · **Community:** https://discord.gg/29RHZwvVPN
+
+Linux, Windows NVIDIA/AMD, HiveOS, mmpOS, SMOS and Docker are supported.
+TCP (`stratum+tcp://`) and TLS (`stratum+ssl://`) connections, automatic long-job
+negotiation and ordinary-job fallback are available on both GPU backends.
+[Solo mining](USAGE.md#2-solo-mining--your-own-node-and-proxi-node-mine) against your
+own `proxi node mine` controller also supports keyless Blake2b work. Earlier VRF
+work remains available for legacy jobs. All kernels remain readable; the miner
+does not change clocks, power allowances or fans.
+
+Setup: [usage](USAGE.md) · [HiveOS](hiveos/README.md) ·
+[Docker](docker/README.md) · [mmpOS / SMOS](mmpos/README.md) ·
+[ready-to-edit examples](examples/README.md).
+
+### 2.1.1 — faster startup and `--no-autotune` (2026-11-20)
 
 Use `--no-autotune` to skip legacy VRF tuning trials. A valid saved result is
 still used; otherwise the miner uses its platform default. Mandatory correctness
@@ -25,7 +45,7 @@ Legacy VRF users still need their key and an initial driver compilation; cached
 profiles now compile only the selected variant, rather than compiling a default
 variant first. These startup changes do not remove share verification.
 
-### Development update: faster long jobs (not yet released)
+### 2.1.1 — long-job benchmarks
 
 The new Blackwell path removes additions of known zero message words and moves
 fixed work outside the nonce loop. It still evaluates all twelve Blake2b rounds.
@@ -36,7 +56,7 @@ least 2%; ordinary jobs retain their previous paths.
 Linux A/B/B/A measurements against the published **2.1.0** executable, using the
 same synthetic **504-byte prefix ending in 120 zero bytes**:
 
-| GPU | Full firmware allowance | 2.1.0 | Development build | Change |
+| GPU | Full firmware allowance | 2.1.0 | 2.1.1 kernels | Change |
 |---|---:|---:|---:|---:|
 | RTX 5090 | 600 W | 19.802 GH/s | 21.611 GH/s | +9.13% |
 | GTX 1080 Ti, sample 1 | 330 W | 3.146 GH/s | 3.298 GH/s | +4.83% |
@@ -54,14 +74,15 @@ and fan settings were unchanged. The 5090's other miner was compute-paused but
 retained its VRAM allocation; Ada retained an idle application context. No other
 application was hashing on the measured GPU. Cards reserved for NEB tests were
 excluded. The [per-run CSV](benchmarks/long-job-development-2026-11-20.csv) records
-executable hashes, individual arms, actual power draw and clocks. These are
-development measurements, not pool hashrate, earnings or Windows claims.
+executable hashes, individual arms, actual power draw and clocks. These measurements used development executables with the 2.1.1 kernels; their
+hashes are retained in the CSV. They are not pool hashrates, earnings estimates
+or Windows measurements.
 
 AMD retains its existing fast kernels. A separate same-binary comparison of the
 generic and zero-tail paths measured **6.030 → 7.210 GH/s (+19.58%)** on RX 7900 XTX
 and **2.670 → 3.251 GH/s (+21.76%)** on MI50, with the same short-run conditions.
 Those long-job benefits are already present in 2.1.0; they are not new gains in
-this development update. RX 7600 XT passed a bounded correctness/startup check,
+2.1.1. RX 7600 XT passed a bounded correctness/startup check,
 but its test rig did not qualify for a new sustained performance figure.
 
 The final CUDA startup-fix build has identical GPU instructions to the benchmarked
@@ -69,33 +90,9 @@ build. It passed 1,614 independently verified loopback shares across Blackwell,
 Pascal and Ada, plus 27 accepted live TLS pool shares with no rejects or invalid
 hashes. Its 5090 confirmation run measured 21.640 GH/s. OpenCL startup tests also
 passed on XTX, MI50 and RX 7600 XT. The reported ten-card RX 5700 XT configuration
-was not available for a physical startup-time measurement. These remain
-development results; no release or version change is implied by this section.
+was not available for a physical startup-time measurement. The benchmark and validation records retain their original executable hashes;
+release archives identify their own source commit in `BUILD-INFO.json`.
 
-
-A GPU miner for [Proxima](https://lunfardo314.github.io/)'s fair-launch mine chain, for NVIDIA
-(CUDA) and AMD (OpenCL) GPUs, by suprnova.cc. The current proof of work is the mining
-transaction's BLAKE2b-256 hash. The miner searches nonces and reports valid solutions;
-it also retains support for the earlier ECVRF work.
-
-**From 1.0.0 the miner talks stratum** to the pool — one persistent connection, plain
-(`stratum+tcp://`) or encrypted (`stratum+ssl://`) — with its own nonce range and share
-difficulty per connection, as on any NOMP-style pool. Solo mining against your own node
-(`proxi node mine`, HTTP) supports the current Blake2b work without a key file on
-the GPU machine. See the [solo setup and confirmation checks](USAGE.md#2-solo-mining--your-own-node-and-proxi-node-mine).
-
-Built for and used by the Suprnova Proxima pool: https://proxi.suprnova.cc
-
-**2.0 — the new proof of work of library upgrade 6.** On 2026-11-10 Proxima replaces the VRF
-work: from slot 196000 (about 12:03 UTC) VRF jobs end and the ledger pauses mining, and from
-slot 197000 (about 14:54 UTC) the work is the mining transaction's own ID, a BLAKE2b-256 hash
-(RFC 7693) with an 8-byte nonce at its end ("txid-blake2b"). ProxiChorizo 2.0 mines **both**:
-VRF jobs until the switch, hash jobs after it, chosen per job by the pool, without a restart.
-Update to 2.0 before the switch; from slot 196000 the pool accepts only ProxiChorizo 2.0 or
-later. Hash work needs **no key file**: after the switch the miner can run with only the
-pool URL, worker and token. Hash rates are in GH/s and depend on the job's message length;
-the historical 600-byte synthetic test measured RTX 5090 ≈ 16.1 GH/s at 450 W, 17.3 at 575 W. See
-[2.0 hash benchmarks](#20-hash-work-txid-blake2b).
 
 ### 2.1.0 — aligned-tail jobs on NVIDIA and AMD (2026-11-20)
 
@@ -370,9 +367,9 @@ distribution); the Windows archive brings its own. The pool's certificate is che
   token, password empty for Blake2b. Worker name = the rig name.
 * **MMPOS / SMOS:** the same tarball, launchers `mmpos-run.sh` / `smos-run.sh`; pool URL as
   above, user = token, password empty for Blake2b (see [USAGE.md](USAGE.md)).
-* **Docker (NVIDIA):** `ocminersupr/proxichorizo:2.1.0` with `TOKEN`
+* **Docker (NVIDIA):** `ocminersupr/proxichorizo:2.1.1` with `TOKEN`
   and optionally `POOL_URL` (default `stratum+tcp://proxi.suprnova.cc:3355`); see `docker/README.md`.
-* **Docker (AMD):** `ocminersupr/proxichorizo:2.1.0-amd` (also `:amd`), the OpenCL miner with AMD's
+* **Docker (AMD):** `ocminersupr/proxichorizo:2.1.1-amd` (also `:amd`), the OpenCL miner with AMD's
   ROCm OpenCL runtime inside; the host needs only the amdgpu driver (`--device /dev/kfd --device /dev/dri`).
 
 ### Is it working?

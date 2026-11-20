@@ -10,10 +10,10 @@ Wants=network-online.target
 
 [Service]
 User=miner
-WorkingDirectory=/home/miner/proxichorizo-2.1.0
+WorkingDirectory=/home/miner/proxichorizo-2.1.1
 Environment=CUDA_DEVICE_ORDER=PCI_BUS_ID
 # keep the token out of the unit: put it on the first line of pool.token (chmod 600)
-ExecStart=/home/miner/proxichorizo-2.1.0/proxichorizo --proxi stratum+tcp://proxi.suprnova.cc:3355 --token-file pool.token --name rig1 --no-color --api-bind 127.0.0.1:4078
+ExecStart=/home/miner/proxichorizo-2.1.1/proxichorizo --proxi stratum+tcp://proxi.suprnova.cc:3355 --token-file pool.token --name rig1 --no-color --api-bind 127.0.0.1:4078
 Restart=on-failure
 RestartSec=30
 # SIGINT stops the miner cleanly (it finishes the current launch and disconnects)

@@ -27,7 +27,7 @@ Check that the pool is reachable without mining (no GPU needed):
 
 Edit `TOKEN` and `WORKER` at the top, then run it from the unpacked miner directory, e.g.
 `./examples/linux/start-suprnova.sh`. Extra miner options can be appended: `-d 0,1`
-(only these GPUs), `--max-temp 85` (per-GPU pause limit, default 88 °C).
+(only these GPUs), `--no-autotune` (skip legacy VRF tuning trials), `--max-temp 85` (per-GPU pause limit, default 88 °C).
 
 ## Windows
 
@@ -53,7 +53,7 @@ Flight sheet → Coin `PROX` (or any name) → Miner **Custom**:
 | Wallet and worker template | your **pool token** |
 | Pool URL | `stratum+tcp://proxi.suprnova.cc:3355` (or `stratum+ssl://proxi.suprnova.cc:3356`) |
 | Pass | leave empty |
-| Extra config arguments | optional, one per line: `DEVICES=0,1`, `EXTRA_ARGS=--max-temp 85` |
+| Extra config arguments | optional, one per line: `DEVICES=0,1`, `AUTOTUNE=0`, `EXTRA_ARGS="--no-autotune"` |
 
 The HiveOS worker name becomes the pool worker name. AMD rigs use the same package; it picks
 `proxichorizo-cl` automatically when no NVIDIA driver is present.
@@ -69,7 +69,7 @@ and use the external-miner format shipped in it (`mmp-external.conf`, `mmp-launc
 | Pool / URL | `stratum+tcp://proxi.suprnova.cc:3355` |
 | User / wallet | your **pool token** |
 | Password | `x` (or empty) |
-| Extra arguments | optional: `-d 0,1`, `--max-temp 85` |
+| Extra arguments | optional: `-d 0,1`, `--no-autotune`, `--max-temp 85` |
 
 Alternatively start `mmpos-run.sh` with `POOL_URL=stratum+tcp://proxi.suprnova.cc:3355` and
 `TOKEN=<your token>` set in the miner environment.
@@ -78,7 +78,7 @@ Alternatively start `mmpos-run.sh` with `POOL_URL=stratum+tcp://proxi.suprnova.c
 
 Same Linux tarball, launcher `smos-run.sh`. In the miner configuration set
 `POOL_URL=stratum+tcp://proxi.suprnova.cc:3355`, `TOKEN=<your token>` (or put the token as
-the wallet), optionally `WORKER=rig1`, `DEVICES=0,1`.
+the wallet), optionally `WORKER=rig1`, `DEVICES=0,1`, `EXTRA_ARGS="--no-autotune"`.
 
 ## Docker
 
@@ -89,3 +89,8 @@ repository with `TOKEN` and `WORKER` filled in. Images: `ocminersupr/proxichoriz
 ## Solo mining
 
 Solo against your own node with `proxi node mine` is described in `USAGE.md`, section 2.
+
+From 2.1.1, `--no-autotune` skips legacy tuning trials; saved profiles, mandatory
+correctness checks and the brief Blake2b kernel comparison remain. HiveOS also
+accepts `AUTOTUNE=0`. Docker accepts `EXTRA_ARGS="--no-autotune"`. See the current
+[HiveOS guide](../hiveos/README.md) and [Docker guide](../docker/README.md).

@@ -21,7 +21,7 @@
 #include <map>
 #include <cmath>
 #include <cerrno>
-#define PX_VERSION "2.1.0"
+#define PX_VERSION "2.1.1"
 #include <signal.h>
 // sockets: POSIX or Winsock behind four helpers
 #ifdef _WIN32

@@ -1,5 +1,25 @@
 # ProxiChorizo — platform notes and measured optimisations
 
+## Current mining: 2.1.1 / Blake2b
+
+The current proof of work is BLAKE2b-256, not the historical VRF calculation below.
+See the [current release benchmarks](README.md#211--long-job-benchmarks) for
+matched long-job results and [PROTOCOL-UPGRADE](PROTOCOL-UPGRADE.md) for negotiation.
+Blackwell compares specialized zero-tail kernels and Pascal compares 256/512-thread
+launches against the previous choices. Each GPU keeps the previous path unless
+calibration demonstrates a sufficient improvement. Other CUDA and AMD platforms
+retain their existing kernels. All twelve Blake2b rounds and CPU share checks remain.
+
+`--no-autotune` skips legacy VRF tuning trials, using a valid cached result or the
+platform default. It does not disable the brief Blake2b comparison or verification.
+Keyless OpenCL hash mining skips legacy VRF program compilation. Driver compilation
+for the required kernels can still take time. No clock, power or fan settings change.
+
+The following dated research sections include the former VRF algorithm, older
+builds and older job layouts. They are historical records, not current hashrate claims.
+
+## Historical VRF implementation
+
 The work per attempt: 1 SHA-512 + try-and-increment hash-to-curve (≈2 tries,
 each a decompression = one field exponentiation), one 254-bit scalar
 multiplication on Ed25519 (extended coordinates, a = −1), ×8 cofactor, one
