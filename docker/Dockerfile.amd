@@ -5,7 +5,7 @@
 ARG ROCM_VERSION=6.4.3
 FROM ubuntu:20.04 AS build
 # Bootstrap trusted roots over Docker's verified HTTPS before apt installs its own CA package.
-ADD https://curl.se/ca/cacert.pem /etc/ssl/certs/ca-certificates.crt
+ADD --chmod=0644 https://curl.se/ca/cacert.pem /etc/ssl/certs/ca-certificates.crt
 RUN find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) -exec sed -i 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g; s|http://security.ubuntu.com|https://security.ubuntu.com|g' {} + \
     && apt-get -o Acquire::Retries=3 update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       ca-certificates g++ make python3 ocl-icd-opencl-dev opencl-headers && rm -rf /var/lib/apt/lists/*
@@ -16,7 +16,7 @@ COPY scripts/build.py scripts/
 RUN python3 scripts/build.py --kind opencl --output opencl/proxichorizo-cl && strip opencl/proxichorizo-cl
 
 FROM ubuntu:24.04
-ADD https://curl.se/ca/cacert.pem /etc/ssl/certs/ca-certificates.crt
+ADD --chmod=0644 https://curl.se/ca/cacert.pem /etc/ssl/certs/ca-certificates.crt
 ARG ROCM_VERSION
 RUN find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) -exec sed -i 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g; s|http://security.ubuntu.com|https://security.ubuntu.com|g' {} + \
     && apt-get -o Acquire::Retries=3 update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl gnupg \

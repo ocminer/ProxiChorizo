@@ -45,6 +45,10 @@ Offer padded jobs only to connections that explicitly requested and were accepte
 for the extension. Do not infer support solely from a miner name or version. A late
 configure request takes effect from the next issued job; it does not change the
 template underlying a job already sent. Reset negotiation state on reconnect.
+ProxiChorizo requests the capability again on a fresh connection, even after a
+previous refusal. The one immediate legacy-handshake retry described above omits
+configure; later connections negotiate again. A pool upgrade therefore does not
+require a miner restart.
 
 ProxiChorizo 2.1.0 requests the extension by default on **all platforms**, including
 Pascal and mixed-GPU rigs. It selects the fastest valid available kernel separately

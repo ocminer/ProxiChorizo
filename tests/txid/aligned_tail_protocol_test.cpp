@@ -103,6 +103,47 @@ static void session(const std::string &ack, bool accepted, bool closes, bool lat
     sh.stop=true;shutdown(fd,SHUT_RDWR);sock_close(fd);client.join();sock_close(listener);
     assert(!sh.aligned_tail_accepted && sh.job.id==0 && sh.invalid==0);
 }
+static void renegotiate_after_upgrade(bool disconnect_on_configure) {
+    int listener=socket(AF_INET,SOCK_STREAM,0); assert(listener>=0);
+    sockaddr_in a{}; a.sin_family=AF_INET; a.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
+    assert(bind(listener,(sockaddr*)&a,sizeof a)==0); assert(listen(listener,2)==0);
+    socklen_t len=sizeof a; assert(getsockname(listener,(sockaddr*)&a,&len)==0);
+    Shared sh; sh.have_key=false; sh.user="upgrade.worker"; sh.token="x";
+    assert(parse_url("stratum+tcp://127.0.0.1:"+std::to_string(ntohs(a.sin_port)),sh.url));
+    std::thread client(stratum_client,std::ref(sh));
+    auto accept_one=[&] { assert(sock_readable(listener,5000)); int fd=accept(listener,nullptr,nullptr); assert(fd>=0); sock_timeout(fd,5); return fd; };
+    if(disconnect_on_configure) {
+        int fd=accept_one(); auto request=json(line(fd));
+        assert(request.get("method")->s=="mining.configure");
+        shutdown(fd,SHUT_RDWR); sock_close(fd);
+    }
+    for(int upgraded=0; upgraded<2; ++upgraded) {
+        int fd=accept_one(); auto request=json(line(fd));
+        const bool configured=upgraded || !disconnect_on_configure;
+        if(configured) {
+            assert(request.get("method")->s=="mining.configure");
+            assert(request.get("params")->at(0)->at(0)->s=="proxima.aligned-tail.v1");
+            sendline(fd,std::string("{\"id\":3,\"result\":{\"proxima.aligned-tail.v1\":")+(upgraded?"true":"false")+"},\"error\":null}");
+            request=json(line(fd));
+        }
+        assert(request.get("method")->s=="mining.subscribe");
+        assert(json(line(fd)).get("method")->s=="mining.authorize");
+        sendline(fd,"{\"id\":1,\"result\":[[],\"a1b2\",6],\"error\":null}");
+        sendline(fd,"{\"id\":2,\"result\":true,\"error\":null}");
+        sendline(fd,"{\"method\":\"mining.set_difficulty\",\"params\":[8]}");
+        std::vector<uint8_t> prefix(upgraded?504:369,0x53);
+        if(upgraded) std::fill(prefix.end()-120,prefix.end(),0);
+        std::string jid=std::to_string(0x200+upgraded);
+        sendline(fd,"{\"method\":\"mining.notify\",\"params\":[\""+jid+"\",\"txid-blake2b\",\""+hexs(prefix.data(),prefix.size())+"\","+std::to_string(prefix.size())+",230000,10000,true]}");
+        await([&]{std::lock_guard<std::mutex> l(sh.mu);return sh.job.jid==jid && sh.job.hprefix==prefix;});
+        { std::lock_guard<std::mutex> l(sh.wmu); assert(sh.aligned_tail_accepted==bool(upgraded)); }
+        if(upgraded) sh.stop=true;
+        else sendline(fd,"{\"method\":\"client.reconnect\",\"params\":[]}");
+        shutdown(fd,SHUT_RDWR);sock_close(fd);
+    }
+    client.join();sock_close(listener);
+    assert(!sh.aligned_tail_accepted && sh.job.id==0);
+}
 int main() {
     unsetenv("PX_ALIGNED_TAIL");
     Shared::GpuStat old{},modern{};old.arch="sm_61";modern.arch="sm_89";
@@ -121,5 +162,7 @@ int main() {
     session("{\"id\":3,\"result\":{\"proxima.aligned-tail.v1\":true},\"error\":null}",true,false,true);
     session("{\"id\":3,\"result\":{\"proxima.aligned-tail.v1\":true},\"error\":null}",true,false,false,true);
     setenv("PX_ALIGNED_TAIL","0",1);session("",false,false);unsetenv("PX_ALIGNED_TAIL");
-    puts("PASS: capability accept/decline/error/malformed/absent/legacy disconnect/late acknowledgement/all-platform default/explicit opt-out; 40 CPU-verified shares over normal/aligned layout transitions with shared wire IDs across connections; reconnect state cleared");
+    renegotiate_after_upgrade(false);
+    renegotiate_after_upgrade(true);
+    puts("PASS: capability accept/decline/error/malformed/absent/legacy disconnect/late acknowledgement/all-platform default/explicit opt-out; 40 CPU-verified shares over normal/aligned layout transitions with shared wire IDs across connections; reconnect state cleared; pool upgrade renegotiated after refusal and legacy retry");
 }

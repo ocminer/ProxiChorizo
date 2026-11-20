@@ -4048,6 +4048,7 @@ static void stratum_client(Shared &sh) {
     int backoff = 1;
     bool request_aligned_tail;
     { std::lock_guard<std::mutex> l(sh.mu); request_aligned_tail = request_aligned_tail_for(sh.gpus); }
+    bool skip_configure_once = false;
     if (!request_aligned_tail && sh.con.verbose) logln("stratum: ordinary job layout retained for this rig");
     while (!sh.stop) {
         std::string err;
@@ -4088,7 +4089,9 @@ static void stratum_client(Shared &sh) {
         { std::lock_guard<std::mutex> l(sh.wmu); sh.sfd = fd; sh.ssl = ssl; sh.subscribed = false; sh.aligned_tail_accepted = false; sh.pending.clear(); }
         auto connected_at = std::chrono::steady_clock::now();
         logln(std::string("stratum: connected to ") + sh.url.host + ":" + std::to_string(sh.url.port) + (ssl ? " (TLS)" : ""));
-        const bool configure_sent = request_aligned_tail; bool subscribe_received = false;
+        const bool configure_sent = request_aligned_tail && !skip_configure_once;
+        skip_configure_once = false;
+        bool subscribe_received = false;
         if (configure_sent) stratum_send(sh, "{\"id\":3,\"method\":\"mining.configure\",\"params\":[[\"proxima.aligned-tail.v1\"],{}]}");
         stratum_send(sh, "{\"id\":1,\"method\":\"mining.subscribe\",\"params\":[\"ProxiChorizo/" PX_VERSION "\"]}");
         stratum_send(sh, "{\"id\":2,\"method\":\"mining.authorize\",\"params\":[" + jstr(sh.user) + "," + jstr(sh.token) + "]}");
@@ -4164,7 +4167,7 @@ static void stratum_client(Shared &sh) {
                     const bool accepted = (!er || er->t == JV::NUL) && cap && cap->t == JV::BOOL && cap->b;
                     { std::lock_guard<std::mutex> l(sh.wmu); sh.aligned_tail_accepted = accepted; }
                     if (accepted) logln("stratum: aligned-tail jobs enabled");
-                    else { request_aligned_tail = false; if (sh.con.verbose) logln("stratum: pool keeps normal jobs"); }
+                    else if (sh.con.verbose) logln("stratum: pool keeps normal jobs");
                 } else if (id == 1) {
                     subscribe_received = true;
                     const JV *en1 = res ? res->at(1) : nullptr, *n2 = res ? res->at(2) : nullptr;
@@ -4182,8 +4185,9 @@ static void stratum_client(Shared &sh) {
             }
         }
         // Some older pools close on an unknown method. Retry their original
-        // handshake once; never make the optional extension a mining requirement.
-        if (configure_sent && !subscribe_received) request_aligned_tail = false;
+        // handshake once; later fresh connections negotiate again so a pool
+        // upgrade is discovered without restarting the miner.
+        if (configure_sent && !subscribe_received) skip_configure_once = true;
         { std::lock_guard<std::mutex> l(sh.wmu); sh.sfd = SOCK_INVALID; tls::close(sh.ssl); sh.ssl = nullptr; sh.subscribed = false; sh.aligned_tail_accepted = false; sh.pending.clear(); }
         sock_close(fd);
         { std::lock_guard<std::mutex> l(sh.mu); sh.job = Job(); }

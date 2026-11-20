@@ -4,6 +4,8 @@ Automatic support for the optional `proxima.aligned-tail.v1` job format on all
 NVIDIA CUDA and AMD OpenCL platforms, including Pascal and mixed-GPU rigs.
 Each card measures the available kernels and keeps its faster valid path.
 Ordinary jobs and older pools remain compatible, with the same mining command.
+Fresh connections renegotiate after a previous refusal, so a pool upgrade can be
+picked up without restarting the miner.
 
 Padded jobs permit an exact zero-tail Blake2b specialization. Short Linux
 development comparisons on the same 504-byte layout measured RX 7900 XTX
