@@ -6,15 +6,15 @@ a compatible NVIDIA driver for CUDA 12.9 and your GPU. No WSL or Docker needed.
 The CUDA and MSVC runtimes are linked statically.
 
 Pool (suprnova):
-  1. Register at https://proxi.suprnova.cc/StartMining.html with your PROX address
-     and keep the pool token. Current Blake2b jobs do not need a key file.
-  2. Edit start.cmd: set TOKEN to your token.
+  1. Copy your PROX address (64-hex holder ID). No registration or key file is needed.
+     Current setup: https://proxi.suprnova.cc/StartMining.html . Existing tokens still work.
+  2. Edit start.cmd: set TOKEN to your PROX address or existing token.
   3. Double-click start.cmd.
 
 PowerShell examples:
-  .\start.ps1 -Token YOUR_TOKEN -Worker rig1
-  .\start.ps1 -Token YOUR_TOKEN -ExtraArgs @("--no-autotune")
-  .\start.ps1 -Token YOUR_TOKEN -Devices '0,1'
+  .\start.ps1 -Token YOUR_PROX_ADDRESS -Worker rig1
+  .\start.ps1 -Token YOUR_PROX_ADDRESS -ExtraArgs @("--no-autotune")
+  .\start.ps1 -Token YOUR_PROX_ADDRESS -Devices '0,1'
   .\start.ps1 -Token mine.seeker.token -Pool http://your-node:8200   # Blake2b solo
 
 Startup: --no-autotune skips legacy VRF tuning trials, using a valid cache or the

@@ -1,7 +1,7 @@
 # ProxiChorizo — example configurations for suprnova.cc
 
 Ready-to-edit setups for mining Proxima (PROX) on **https://proxi.suprnova.cc**.
-Every example needs only two things from you: your **pool token** and a **worker name**.
+Every example needs only two things from you: your **PROX address** (or existing pool token) and a **worker name**.
 
 ## Pool settings
 
@@ -9,9 +9,9 @@ Every example needs only two things from you: your **pool token** and a **worker
 |---|---|
 | Pool (stratum, TCP) | `stratum+tcp://proxi.suprnova.cc:3355` |
 | Pool (stratum, TLS) | `stratum+ssl://proxi.suprnova.cc:3356` |
-| Token | from https://proxi.suprnova.cc/StartMining.html (register with your PROX address) |
+| Token | set launcher variable `TOKEN` to your PROX address, or an existing token; no registration |
 | Worker | any name, one per rig, e.g. `rig1` |
-| Key file / seed | **not needed** — current Proxima jobs (txid-blake2b) need only the token |
+| Key file / seed | **not needed** — current Proxima jobs (txid-blake2b) need only address login |
 
 Check that the pool is reachable without mining (no GPU needed):
 `./proxichorizo --check-pool stratum+ssl://proxi.suprnova.cc:3356`
@@ -50,7 +50,7 @@ Flight sheet → Coin `PROX` (or any name) → Miner **Custom**:
 | Miner name | `proxichorizo` |
 | Installation URL | `https://github.com/ocminer/ProxiChorizo/releases/latest/download/proxichorizo-hiveos.tar.gz` |
 | Hash algorithm | `txid-blake2b` (display only) |
-| Wallet and worker template | your **pool token** |
+| Wallet and worker template | your **PROX address** (or existing pool token) |
 | Pool URL | `stratum+tcp://proxi.suprnova.cc:3355` (or `stratum+ssl://proxi.suprnova.cc:3356`) |
 | Pass | leave empty |
 | Extra config arguments | optional, one per line: `DEVICES=0,1`, `AUTOTUNE=0`, `EXTRA_ARGS="--no-autotune"` |
@@ -67,17 +67,17 @@ and use the external-miner format shipped in it (`mmp-external.conf`, `mmp-launc
 | Field | Value |
 |---|---|
 | Pool / URL | `stratum+tcp://proxi.suprnova.cc:3355` |
-| User / wallet | your **pool token** |
+| User / wallet | your **PROX address** (or existing pool token) |
 | Password | `x` (or empty) |
 | Extra arguments | optional: `-d 0,1`, `--no-autotune`, `--max-temp 85` |
 
 Alternatively start `mmpos-run.sh` with `POOL_URL=stratum+tcp://proxi.suprnova.cc:3355` and
-`TOKEN=<your token>` set in the miner environment.
+`TOKEN=<your PROX address or existing token>` set in the miner environment.
 
 ## SMOS
 
 Same Linux tarball, launcher `smos-run.sh`. In the miner configuration set
-`POOL_URL=stratum+tcp://proxi.suprnova.cc:3355`, `TOKEN=<your token>` (or put the token as
+`POOL_URL=stratum+tcp://proxi.suprnova.cc:3355`, `TOKEN=<your PROX address or existing token>` (or put the token as
 the wallet), optionally `WORKER=rig1`, `DEVICES=0,1`, `EXTRA_ARGS="--no-autotune"`.
 
 ## Docker

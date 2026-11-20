@@ -1,50 +1,39 @@
 # ProxiChorizo — how to mine Proxima (PROX) with it
 
-ProxiChorizo is a CUDA miner ("nonce seeker") for the Proxima fair-launch mine chain.
+ProxiChorizo is a CUDA / OpenCL miner ("nonce seeker") for the Proxima fair-launch mine chain.
 It works with a **pool** (the pool runs the wallet side and pays you per share) or
 **solo** against your own Proxima node and `proxi node mine`. One NVIDIA GPU of the
 Pascal SM61, Turing, Ampere, Ada, Hopper or Blackwell generation is enough; several GPUs in one rig are fine.
 
-Requirements: NVIDIA driver 550 or newer (CUDA 12.x capable), Linux x64 or Windows 10/11
-x64. Nothing else is installed by the miner.
+Requirements: Linux x64 or Windows 10/11 x64. NVIDIA needs a driver compatible
+with CUDA 12.9 and the selected GPU; AMD needs a working OpenCL driver. Nothing
+is installed by the miner itself.
 
 ---
 
 ## 1. Pool mining — example: suprnova.cc
 
-The pool is https://proxi.suprnova.cc. A Proxima transit is signed with the key that
-mined it, so a pool cannot let you mine with your own wallet key: at registration it
-creates a **mining key** for your account and gives you a **token**. Rewards are credited
-to your PROX address by the pool (PPLNS, 1 % fee) and paid out to it.
+The pool is https://proxi.suprnova.cc (PPLNS, 1% pool fee). It builds and signs
+mining transactions; your wallet key stays with you.
 
-1. Open https://proxi.suprnova.cc/StartMining.html and register with your **PROX
-   address** (the 64-hex holder ID of your wallet, shown by `proxi node balance` as
-   `a/<hex>`; type it without the `a/`).
-2. The page gives you a **token**. That is all the miner needs: current Proxima jobs
-   (txid-blake2b, since library upgrade 6) need no key file or seed.
-3. Start the miner:
+1. Copy your PROX address: the wallet's 64-hex holder ID (the `a/` prefix is optional).
+   No registration, new token or key download is required.
+2. Download the miner for your platform.
+3. Start it using address login:
 
-   Linux
-   ```bash
-   ./proxichorizo --proxi stratum+tcp://proxi.suprnova.cc:3355 --token YOUR_TOKEN --name rig1
+   ```sh
+   ./proxichorizo -o stratum+tcp://proxi.suprnova.cc:3355 -u YOUR_PROX_ADDRESS.rig1 -p x
    ```
-   Windows
-   ```bat
-   proxichorizo.exe --proxi stratum+tcp://proxi.suprnova.cc:3355 --token YOUR_TOKEN --name rig1
-   ```
-   `--name` is the worker name shown on the pool; use a different one per rig/GPU.
-   Ready-to-edit start scripts and flight-sheet values for every platform are in the
-   [`examples/`](examples/README.md) folder of the package.
+
+   Windows: use `proxichorizo.exe`; AMD: `proxichorizo-cl` / `proxichorizo-cl.exe`.
+   The part after the dot is your worker name. For TLS use
+   `stratum+ssl://proxi.suprnova.cc:3356`. Current jobs need no key file or seed.
+   Existing tokens continue to work with `--token YOUR_EXISTING_TOKEN --name rig1`.
+   Packaged launchers retain the variable name `TOKEN`: set it to your PROX
+   address or existing token. See [current quick start](QUICKSTART-v2.1.1.md).
 
 4. The miner prints a start-up banner (version, licence, pool, worker, the GPUs with
    bus id and kernel) and then, every 30 seconds, one line per GPU and a total:
-   ```
-   12:04:31 GPU #0: RTX PRO 6000 Blackwell Server Edition [05:00.0] 63.52 MH/s, 73C, 548 W, core 2422 / mem 13801 MHz, fan n/a
-   12:04:31 GPU #1: RTX PRO 6000 Blackwell Server Edition [06:00.0] 63.47 MH/s, 75C, 555 W, core 2422 / mem 13801 MHz, fan n/a
-   12:04:31 Total: 253.95 MH/s on 4/4 GPUs, 2204 W (0.115 MH/W) | accepted 61, rejected 0, stale 1 | job 1792 k=28 | uptime 00:10:30
-   12:04:33 GPU #2: share accepted (62/63)
-   job 1793: slot 11235, k=28, ttl 9680 ms
-   ```
    Accepted shares are green, rejected ones red, warnings yellow; colours switch off by
    themselves when the output is not a terminal (log files stay plain), or with `--no-color`.
    `--quiet` keeps only the total line, job changes, warnings and errors; `--log-interval 10`
@@ -65,7 +54,9 @@ a yellow log line, and resumes by itself once it has cooled 8 °C below the limi
 
 Legacy VRF jobs (before library upgrade 6) also needed the pool's key, as `--key-file proxima.key`,
 `--seed-hex <first 64 hex chars of "private_key">` or the environment variable `NONCE_SEEKER_SEED`.
-The options remain for compatibility; current jobs ignore them.
+The options remain for compatibility. For keyless hash startup, omit them and
+keep old `proxima.key` files outside the miner working directory; loading a legacy
+key can initialize the legacy code even when the pool supplies hash jobs.
 
 ### Stratum
 
@@ -74,9 +65,9 @@ persistent connection, on which the pool sends the jobs and the share difficulty
 miner sends its shares. The pool gives every connection its own nonce range and its own
 difficulty, starting low and adjusted to about one share every 20 seconds, so a single GPU
 and a large rig both report regularly. The login is `-u ADDRESS.WORKER` (or just the
-worker name; without `-u`, the `--name`), the password is your token. Two rigs may use the
-same worker name; they still search different nonces. The pool's old HTTP port
-(`http://proxi.suprnova.cc:8100`) works with 0.5.x miners until it is switched off.
+worker name for existing-token login; without `-u`, the `--name`). Use `-p x` for
+address login, or your existing token for the legacy route. Two rigs may use the
+same worker name; they still search different nonces. The pool's old HTTP port and 1.x miners are no longer supported; use current Stratum endpoints. HTTP remains available for your own solo seeker.
 
 **Encrypted:** `stratum+ssl://proxi.suprnova.cc:3356` is the same pool over TLS. On Linux the
 miner uses the system's OpenSSL (1.1 or 3; present on HiveOS, MMPOS, SMOS and every current
@@ -138,7 +129,7 @@ release, miner name `proxichorizo`. Flight sheet:
 | Field | Value |
 |---|---|
 | Pool URL | `stratum+tcp://proxi.suprnova.cc:3355` (or your own `proxi node mine` seeker address, `http://HOST:PORT`) |
-| Wallet / template | your pool **token** (or the mine.seeker.token) |
+| Wallet / template | your PROX **address** (an existing pool token also works; solo uses mine.seeker.token) |
 | Pass | leave empty for Blake2b; for legacy VRF only, the first 64 hex characters of `private_key` |
 | Extra config | optional `KEY=VALUE` lines: `DEVICES=0,1`, `API_BIND=127.0.0.1:4078`, `AUTOTUNE=0`, `EXTRA_ARGS=...`; omit geometry overrides to use automatic GPU profiles. `MINER_GROUPS` overrides the block/workgroup count. |
 
@@ -149,17 +140,17 @@ Hashrate, shares and per-GPU figures come from the miner's stats API on `127.0.0
 ## 4. MMPOS and SMOS
 
 The Linux tarball `proxichorizo-<version>.tar.gz` contains `mmpos-run.sh` and `smos-run.sh`:
-set `POOL_URL` (job server) and `TOKEN` (pool or seeker token) in the miner config
+set `POOL_URL` (job server) and `TOKEN` (your PROX address, existing pool token or solo seeker token) in the miner config
 (`WALLET` is an alias for `TOKEN`), optionally `DEVICES`, `VARIANT`, `EXTRA_ARGS`.
 Only legacy VRF needs `SEED` (`PASSWORD` is its alias).
 MMPOS's API-based "external miner" format is served by `mmp-launch.sh` / `mmp-stats.sh` /
-`mmp-external.conf` from the same tarball (pool = job server, user = token, password = `x` or empty).
+`mmp-external.conf` from the same tarball (pool = job server, user = PROX address or existing token, password = `x` or empty).
 
 ## 5. Docker
 
 ```bash
 docker run -d --name proxichorizo --gpus all --restart unless-stopped -p 4078:4078 \
-  -e TOKEN=YOUR_TOKEN -e WORKER=docker1 ocminersupr/proxichorizo:latest
+  -e TOKEN=YOUR_PROX_ADDRESS -e WORKER=docker1 ocminersupr/proxichorizo:latest
 ```
 `POOL_URL` defaults to `stratum+tcp://proxi.suprnova.cc:3355`; for solo, set it to the
 reachable HTTP seeker endpoint. `SEED` or `KEY_FILE` (a mounted key) is needed only for legacy VRF;
@@ -169,7 +160,7 @@ AMD GPUs use the `-amd` image (OpenCL miner + ROCm OpenCL runtime; the host need
 ```bash
 docker run -d --name proxichorizo --device /dev/kfd --device /dev/dri --group-add video --group-add render \
   --restart unless-stopped -p 4078:4078 \
-  -e TOKEN=YOUR_TOKEN -e WORKER=docker1 ocminersupr/proxichorizo:amd
+  -e TOKEN=YOUR_PROX_ADDRESS -e WORKER=docker1 ocminersupr/proxichorizo:amd
 ```
 
 ## 5b. AMD GPUs (OpenCL)
@@ -192,7 +183,7 @@ about half of that). `--iters 8` is the best launch geometry on every AMD card m
 --ca-file FILE       CA certificates (PEM) for stratum+ssl:// in addition to the system store
 --tls-insecure       stratum+ssl:// without checking the pool's certificate (private pools only)
 --check-pool URL     connect to a stratum pool, subscribe, print the answer and exit
---token T            the account token from the pool registration (stratum password; -p, --pass) / mine.seeker.token
+--token T            stratum password (-p, --pass): x for ADDRESS.worker login, or an existing pool token / solo mine.seeker.token
 --token-file FILE    read the token from a file instead (keeps it off the command line); PROXI_TOKEN in the environment works too
 --key-file FILE      unencrypted proxima.key (or --seed-hex HEX, or env NONCE_SEEKER_SEED); VRF jobs only:
                      with a stratum pool the miner runs without a key and then mines the hash jobs only
@@ -261,6 +252,6 @@ to remeasure, or use `--autotune` for a full sweep; it cannot be combined with
 - `GPU #n: CUDA error … this GPU is disabled` — a device error (Xid, fallen off the bus) on
   one card; the others keep mining. Check `dmesg`/`nvidia-smi` and restart the miner once the
   card is back. The process exits with code 2 only when no working GPU is left.
-- Windows: `start.cmd` needs only your token; `examples\start-suprnova*.cmd` are ready-made alternatives (TCP and TLS).
+- Windows: set `TOKEN` in `start.cmd` to your PROX address or existing token; `examples\start-suprnova*.cmd` are ready-made alternatives (TCP and TLS).
 
 The source and issue tracker: https://github.com/ocminer/ProxiChorizo

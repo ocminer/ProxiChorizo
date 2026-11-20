@@ -6,11 +6,14 @@ https://github.com/ocminer/ProxiChorizo/releases/download/v2.1.1/proxichorizo-hi
 | Flight sheet field | Value |
 |---|---|
 | Miner | Custom; name `proxichorizo` |
-| Wallet and worker template | Your pool token from https://proxi.suprnova.cc/StartMining.html |
+| Wallet and worker template | Your PROX address (`%WAL%`); an existing pool token also works |
 | Pool URL | `stratum+tcp://proxi.suprnova.cc:3355` |
 | TLS alternative | `stratum+ssl://proxi.suprnova.cc:3356` |
 | Pass / SEED | Leave empty for current Blake2b jobs |
 | Hash algorithm | `txid-blake2b` (display only) |
+
+No registration or key download is needed. [Current pool setup](https://proxi.suprnova.cc/StartMining.html).
+Keep old legacy keys outside the miner directory for keyless startup.
 
 The HiveOS worker name becomes the pool worker name. The launcher selects CUDA
 when NVIDIA is available, otherwise OpenCL. For an explicit backend use

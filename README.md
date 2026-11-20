@@ -2,7 +2,7 @@
 
 A GPU miner for [Proxima](https://lunfardo314.github.io/), by suprnova.cc, for
 NVIDIA (CUDA) and AMD (OpenCL). Current mining uses the transaction's BLAKE2b-256
-hash. **No miner fee.** Pool mining needs only your pool token and worker name;
+hash. **No miner fee.** Pool mining needs your PROX address and worker name (existing tokens also work);
 no wallet key or legacy seed is needed on the GPU machine.
 
 **Download:** [latest release](https://github.com/ocminer/ProxiChorizo/releases/latest) ·
@@ -16,7 +16,7 @@ own `proxi node mine` controller also supports keyless Blake2b work. Earlier VRF
 work remains available for legacy jobs. All kernels remain readable; the miner
 does not change clocks, power allowances or fans.
 
-Setup: [usage](USAGE.md) · [HiveOS](hiveos/README.md) ·
+Setup: [current quick start](QUICKSTART-v2.1.1.md) · [usage](USAGE.md) · [HiveOS](hiveos/README.md) ·
 [Docker](docker/README.md) · [mmpOS / SMOS](mmpos/README.md) ·
 [ready-to-edit examples](examples/README.md).
 
@@ -197,7 +197,7 @@ encryption or obfuscation. ProxiChorizo License 1.0 is unchanged.
 Version 2.0.5 ships ready-to-edit setups for mining at suprnova.cc in [`examples/`](examples/README.md)
 (Linux, Windows NVIDIA and AMD, HiveOS, mmpOS, SMOS, Docker, systemd), included in every
 package. The launchers no longer print the outdated "no SEED/KEY_FILE" notice: current jobs
-need only the pool token.
+need only pool login details.
 
 The CUDA and OpenCL builds now compile the published kernel sources directly.
 All per-card optimizations from 2.0.4 are retained. Matched Linux A/B/B/A checks
@@ -315,26 +315,25 @@ GPU execution have not been qualified for this development change.
 
 ## How to mine (quick start)
 
-**You need:** an NVIDIA GPU with a bundled architecture (SM61/75/80/86/89/90/120, driver 550+) or an AMD GPU with OpenCL,
+**You need:** an NVIDIA GPU with a bundled architecture (SM61/75/80/86/89/90/120, a compatible CUDA 12.9 driver) or an AMD GPU with OpenCL,
 Linux x86-64 (also HiveOS, MMPOS, SMOS) or Windows 10/11 x64, and a PROX address
 (the 64-hex holder ID your wallet shows as `a/<hex>`).
 
-1. **Register** at https://proxi.suprnova.cc/StartMining.html with your PROX address
-   (without the `a/`). You get a **token** and a **key file**. Save the key file as
-   `proxima.key` next to the miner and keep the token. The key is a mining key the pool
-   made for your account: it can only mine for you and holds no funds. Rewards are paid
-   to your PROX address.
+1. **Use your PROX address** as your login. There is no registration and no key
+   download. Copy the 64-hex holder ID from your wallet (omit the optional `a/`
+   prefix in the command below). Existing pool tokens remain supported. See the
+   [current pool setup](https://proxi.suprnova.cc/StartMining.html).
 2. **Download** the release for your system from
    [GitHub Releases](https://github.com/ocminer/ProxiChorizo/releases) and unpack it.
-3. **Start the miner** with the pool URL, your token and a worker name:
+3. **Start the miner** with the pool URL, your address and a worker name:
 
    Linux
    ```bash
-   ./proxichorizo -o stratum+tcp://proxi.suprnova.cc:3355 -u rig1 -p YOUR_TOKEN
+   ./proxichorizo -o stratum+tcp://proxi.suprnova.cc:3355 -u YOUR_PROX_ADDRESS.rig1 -p x
    ```
    Windows (Command Prompt, in the unpacked folder; or edit and run `start.cmd`)
    ```
-   proxichorizo.exe -o stratum+tcp://proxi.suprnova.cc:3355 -u rig1 -p YOUR_TOKEN
+   proxichorizo.exe -o stratum+tcp://proxi.suprnova.cc:3355 -u YOUR_PROX_ADDRESS.rig1 -p x
    ```
    AMD GPUs: the same with `./proxichorizo-cl` on Linux, or `proxichorizo-cl.exe` from the Windows AMD archive.
 
@@ -350,13 +349,13 @@ distribution); the Windows archive brings its own. The pool's certificate is che
 
 ### Login
 
-* `-u` / `--user`: the **worker name** (`rig1`), or `YOURADDRESS.rig1`. The address part is
-  optional — the token already identifies your account; if you give it, it must match.
-  Without `-u` the miner uses `--name`.
-* `-p` / `--token`: your **token**. `--token-file FILE` (first line) or the environment
-  variable `PROXI_TOKEN` keep it off the command line.
-* `--key-file proxima.key`: the key file from the registration (or `--seed-hex HEX`). It is needed for
-  VRF jobs only (until slot 196000); hash jobs (from slot 197000) need no key.
+* `-u` / `--user`: `YOUR_PROX_ADDRESS.rig1`; `-p x` is the password for address login.
+* Existing token login is still valid: `-u rig1 -p YOUR_EXISTING_TOKEN`. With this
+  legacy route, `--token-file FILE` or `PROXI_TOKEN` can keep the token off the
+  command line; without `-u`, `--name` supplies the worker name.
+* No wallet key, seed or downloaded mining key is needed for current Blake2b jobs.
+  Key options remain for legacy VRF work. Keep old `proxima.key` files outside the
+  miner directory when you only need keyless hash mining.
 * Two rigs may use the same worker name; every connection gets its own nonce range anyway.
   Distinct names show up as separate workers in your statistics.
 
@@ -364,10 +363,10 @@ distribution); the Windows archive brings its own. The pool's certificate is che
 
 * **HiveOS:** custom miner `proxichorizo`, installation URL = the `proxichorizo-hiveos.tar.gz`
   of the release; pool URL `stratum+tcp://proxi.suprnova.cc:3355`, wallet/template = your
-  token, password empty for Blake2b. Worker name = the rig name.
+  PROX address, password empty for Blake2b. Worker name = the rig name. Existing tokens also work.
 * **MMPOS / SMOS:** the same tarball, launchers `mmpos-run.sh` / `smos-run.sh`; pool URL as
-  above, user = token, password empty for Blake2b (see [USAGE.md](USAGE.md)).
-* **Docker (NVIDIA):** `ocminersupr/proxichorizo:2.1.1` with `TOKEN`
+  above, user = PROX address (or existing token), password empty for Blake2b (see [USAGE.md](USAGE.md)).
+* **Docker (NVIDIA):** `ocminersupr/proxichorizo:2.1.1` with `TOKEN=YOUR_PROX_ADDRESS`
   and optionally `POOL_URL` (default `stratum+tcp://proxi.suprnova.cc:3355`); see `docker/README.md`.
 * **Docker (AMD):** `ocminersupr/proxichorizo:2.1.1-amd` (also `:amd`), the OpenCL miner with AMD's
   ROCm OpenCL runtime inside; the host needs only the amdgpu driver (`--device /dev/kfd --device /dev/dri`).
@@ -393,8 +392,8 @@ Your workers and earnings: https://proxi.suprnova.cc (enter your PROX address).
 
 | Message | Cause |
 |---|---|
-| `authorization of … refused … check --token and --user` | wrong token, or an address in `-u` that is not the token's |
-| `the pool sends jobs for key … but this miner holds …` | the key file is not the one from your registration |
+| `authorization of … refused … check --token and --user` | check your address/worker and `-p x`, or your existing token |
+| `the pool sends jobs for key … but this miner holds …` | legacy VRF key mismatch; current Blake2b jobs need no key |
 | `stratum: cannot connect` / reconnecting | network or firewall; the miner retries by itself |
 | `TLS handshake … failed` | old OpenSSL, or a proxy breaking TLS; use `stratum+tcp://` |
 | `share REJECTED (23 low difficulty share)` | should not happen; report it with the log |
@@ -455,18 +454,18 @@ native SM90 code for H100.
 ## Download
 [GitHub Releases](https://github.com/ocminer/ProxiChorizo/releases):
 
-**Mining at suprnova.cc:** ready-to-edit start scripts and flight-sheet values for Linux, Windows, HiveOS, mmpOS, SMOS and Docker are in [`examples/`](examples/README.md) (also inside every package). You only need your pool token and a worker name.
+**Mining at suprnova.cc:** ready-to-edit start scripts and flight-sheet values for Linux, Windows, HiveOS, mmpOS, SMOS and Docker are in [`examples/`](examples/README.md) (also inside every package). You need your PROX address and a worker name; existing tokens also work.
 
-* `proxichorizo-<ver>.tar.gz` — Linux x86-64, built on glibc 2.31. One tarball serves plain Linux, **HiveOS** (`h-run.sh`), **MMPOS** (`mmpos-run.sh`) and **SMOS** (`smos-run.sh`) — pick the launcher for your OS and set the pool URL and your pool token in the flight sheet (no key seed needed). Ready-made suprnova.cc setups for every platform are in `examples/`.
+* `proxichorizo-<ver>.tar.gz` — Linux x86-64, built on glibc 2.31. One tarball serves plain Linux, **HiveOS** (`h-run.sh`), **MMPOS** (`mmpos-run.sh`) and **SMOS** (`smos-run.sh`) — pick the launcher for your OS and set the pool URL and your PROX address (or existing token) in the flight sheet (no key seed needed). Ready-made suprnova.cc setups for every platform are in `examples/`.
 * `proxichorizo-hiveos.tar.gz` — the same package under the directory name HiveOS's custom-miner installer requires (miner name `proxichorizo`).
-* `proxichorizo-<ver>-windows-x86_64.zip` — native **Windows** x64 for **NVIDIA** (CUDA), with the OpenSSL DLLs and `cacert.pem` for `stratum+ssl://`. Set your token in `start.cmd` and run it.
+* `proxichorizo-<ver>-windows-x86_64.zip` — native **Windows** x64 for **NVIDIA** (CUDA), with the OpenSSL DLLs and `cacert.pem` for `stratum+ssl://`. Set `TOKEN` to your PROX address or existing token in `start.cmd` and run it.
 * `proxichorizo-<ver>-windows-amd-x86_64.zip` — native **Windows** x64 for **AMD** (OpenCL, `proxichorizo-cl.exe`), same layout; needs the AMD Adrenalin driver, which provides `OpenCL.dll`. Windows does not expose AMD temperatures to the miner, so watch them in AMD Software.
 * Docker: `ocminersupr/proxichorizo:<ver>` for NVIDIA, `ocminersupr/proxichorizo:<ver>-amd` for AMD (`docker/README.md`).
 * `SHA256SUMS` and one `.sha256` per asset; every archive carries its own `SHA256SUMS.txt` and `BUILD-INFO.json`.
 
 ## Usage
 ```
-./proxichorizo --proxi stratum+tcp://proxi.suprnova.cc:3355 --token YOUR_TOKEN --name rig1   # pool, stratum (or --token-file FILE); every GPU, one process
+./proxichorizo --proxi stratum+tcp://proxi.suprnova.cc:3355 -u YOUR_PROX_ADDRESS.rig1 -p x   # pool; every GPU, one process
 ./proxichorizo ... -d 0,2                   # only these GPUs (PCI bus order, as nvidia-smi numbers them)
 ./proxichorizo --proxi http://your-node:8200 --token SEEKER_TOKEN                                               # Blake2b solo, see USAGE.md
 ./proxichorizo --autotune --bench 10        # fastest kernel variant per GPU, then its hashrate
@@ -475,12 +474,12 @@ native SM90 code for H100.
 ./proxichorizo ... --max-temp 85 --log-interval 10 --quiet   # thermal limit per GPU (default 88 C, pauses only that card), console cadence
 ```
 Without a GPU argument the miner takes every GPU in the machine in one process; a GPU that overheats pauses alone and resumes when cool, a GPU with a device error is disabled alone. The console shows a start-up banner, per-GPU lines with temperature, power and clock, share results per GPU and a total line (colours on a terminal, plain text in logs).
-Measured (1.0.5, `--bench`, platform defaults): RTX 5090 ≈ 78.6 MH/s at 600 W / ≈ 67 at 420 W, RTX 5080 ≈ 39.4–40.2 MH/s, RTX 3070 ≈ 14.8–15.1 MH/s, RTX 4070 Ti SUPER ≈ 31.3 MH/s, CMP 170HX ≈ 17.0 MH/s; unchanged from earlier releases: RTX PRO 6000 ≈ 43 MH/s (0.5.6), H100 SXM ≈ 21.6 MH/s (0.5.7), A100 ≈ 12.7 MH/s (0.5.7), RTX A6000 ≈ 12 MH/s (0.5.6); one CPU core of the reference seeker ≈ 37 kH/s. See the [benchmarks](#benchmarks) below.
-**[USAGE.md](USAGE.md)** has the full guide: registering at the pool, solo mining with `proxi node mine`, HiveOS / MMPOS / SMOS flight sheets, Docker, Windows, every option, troubleshooting.
+Historical VRF measurements (1.0.5, `--bench`, platform defaults; not current Blake2b rates): RTX 5090 ≈ 78.6 MH/s at 600 W / ≈ 67 at 420 W, RTX 5080 ≈ 39.4–40.2 MH/s, RTX 3070 ≈ 14.8–15.1 MH/s, RTX 4070 Ti SUPER ≈ 31.3 MH/s, CMP 170HX ≈ 17.0 MH/s; unchanged from earlier releases: RTX PRO 6000 ≈ 43 MH/s (0.5.6), H100 SXM ≈ 21.6 MH/s (0.5.7), A100 ≈ 12.7 MH/s (0.5.7), RTX A6000 ≈ 12 MH/s (0.5.6); one CPU core of the reference seeker ≈ 37 kH/s. See the [benchmarks](#benchmarks) below.
+**[USAGE.md](USAGE.md)** has the full guide: address login at the pool, solo mining with `proxi node mine`, HiveOS / MMPOS / SMOS flight sheets, Docker, Windows, every option, troubleshooting.
 
 ## Build
 
-**AMD / other OpenCL GPUs:** `cd opencl && make && ./proxichorizo-cl --selftest && ./proxichorizo-cl --proxi ... --token ...` — needs an OpenCL ICD and headers (ROCm or `ocl-icd-opencl-dev opencl-headers`); the kernels are compiled by the driver at start-up (about a minute) and checked against the embedded test vectors before mining. Version 1.0.6 adds faster measured profiles for RX 7900 XTX, RX 7600 XT and MI50; see the [AMD benchmarks](#amd-106-benchmarks) below. Remove old `--groups`/`--iters` overrides to use the automatic profiles. Same options as the CUDA miner (`--groups` instead of `--blocks`). See the AMD section of PLATFORMS.md for rates.
+**AMD / other OpenCL GPUs:** `cd opencl && make && ./proxichorizo-cl --selftest && ./proxichorizo-cl --proxi ... --token ...` — needs an OpenCL ICD and headers (ROCm or `ocl-icd-opencl-dev opencl-headers`); the kernels are compiled by the driver at start-up (time depends on the driver and card) and checked against the embedded test vectors before mining. Version 1.0.6 adds faster measured profiles for RX 7900 XTX, RX 7600 XT and MI50; see the [AMD benchmarks](#amd-106-benchmarks) below. Remove old `--groups`/`--iters` overrides to use the automatic profiles. Same options as the CUDA miner (`--groups` instead of `--blocks`). See the AMD section of PLATFORMS.md for rates.
 
 ```bash
 make                 # needs Python3; all generations, slow

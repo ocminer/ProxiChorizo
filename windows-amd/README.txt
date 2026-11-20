@@ -6,15 +6,15 @@ Adrenalin (or PRO) driver, which provides OpenCL.dll. No WSL or Docker needed. T
 runtime is linked statically. For NVIDIA GPUs use the windows-x86_64 (CUDA) package.
 
 Pool (suprnova):
-  1. Register at https://proxi.suprnova.cc/StartMining.html with your PROX address
-     and keep the pool token. Current Blake2b jobs do not need a key file.
-  2. Edit start.cmd: set TOKEN to your token.
+  1. Copy your PROX address (64-hex holder ID). No registration or key file is needed.
+     Current setup: https://proxi.suprnova.cc/StartMining.html . Existing tokens still work.
+  2. Edit start.cmd: set TOKEN to your PROX address or existing token.
   3. Double-click start.cmd.
 
 PowerShell examples:
-  .\start.ps1 -Token YOUR_TOKEN -Worker rig1
-  .\start.ps1 -Token YOUR_TOKEN -ExtraArgs @("--no-autotune")
-  .\start.ps1 -Token YOUR_TOKEN -Devices '0,1'
+  .\start.ps1 -Token YOUR_PROX_ADDRESS -Worker rig1
+  .\start.ps1 -Token YOUR_PROX_ADDRESS -ExtraArgs @("--no-autotune")
+  .\start.ps1 -Token YOUR_PROX_ADDRESS -Devices '0,1'
   .\start.ps1 -Token mine.seeker.token -Pool http://your-node:8200   # Blake2b solo
   .\proxichorizo-cl.exe --list-devices                                # the GPUs OpenCL sees
 

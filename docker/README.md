@@ -1,11 +1,13 @@
 # Docker deployment
 
 `ocminersupr/proxichorizo:2.1.1` (also `:latest`; mirrored as `ghcr.io/ocminer/proxichorizo`).
-Install the NVIDIA Container Toolkit on the host.
+Install the NVIDIA Container Toolkit on the host. `TOKEN` is the launcher
+variable name: set it to your PROX address, or keep an existing pool token.
+No registration or wallet key is required for current pool mining.
 
 ```sh
 docker run -d --name proxichorizo --gpus '"device=0"' --restart unless-stopped -p 4078:4078 \
-  -e TOKEN='YOUR_POOL_TOKEN' -e WORKER=rig1 \
+  -e TOKEN='YOUR_PROX_ADDRESS' -e WORKER=rig1 \
   ocminersupr/proxichorizo:2.1.1
 ```
 
@@ -24,7 +26,7 @@ The host needs only the amdgpu kernel driver; no ROCm install and no container t
 ```sh
 docker run -d --name proxichorizo --device /dev/kfd --device /dev/dri --group-add video --group-add render \
   --restart unless-stopped -p 4078:4078 \
-  -e TOKEN='YOUR_POOL_TOKEN' -e WORKER=rig1 \
+  -e TOKEN='YOUR_PROX_ADDRESS' -e WORKER=rig1 \
   ocminersupr/proxichorizo:2.1.1-amd
 ```
 
