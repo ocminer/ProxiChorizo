@@ -140,9 +140,12 @@ release, miner name `proxichorizo`. Flight sheet:
 | Pool URL | `stratum+tcp://proxi.suprnova.cc:3355` (or your own `proxi node mine` seeker address, `http://HOST:PORT`) |
 | Wallet / template | your pool **token** (or the mine.seeker.token) |
 | Pass | leave empty for Blake2b; for legacy VRF only, the first 64 hex characters of `private_key` |
-| Extra config | optional `KEY=VALUE` lines: `DEVICES=0,1`, `API_BIND=127.0.0.1:4078`, `EXTRA_ARGS=...`; omit geometry overrides to use automatic GPU profiles. `MINER_GROUPS` overrides the block/workgroup count. |
+| Extra config | optional `KEY=VALUE` lines: `DEVICES=0,1`, `API_BIND=127.0.0.1:4078`, `AUTOTUNE=0`, `EXTRA_ARGS=...`; omit geometry overrides to use automatic GPU profiles. `MINER_GROUPS` overrides the block/workgroup count. |
 
 Hashrate, shares and per-GPU figures come from the miner's stats API on `127.0.0.1:4078`.
+`AUTOTUNE=0` passes `--no-autotune` to either backend. You can also use
+`EXTRA_ARGS="--no-autotune"`. These options are in the development build after
+2.1.0; the published 2.1.0 executable does not recognize the flag.
 
 ## 4. MMPOS and SMOS
 
@@ -204,7 +207,8 @@ about half of that). `--iters 8` is the best launch geometry on every AMD card m
 --quiet              only the total line, job changes, warnings and errors
 --verbose            kernel occupancy and idle diagnostics on the per-GPU lines
 --no-color           plain output (automatic when stderr is not a terminal or NO_COLOR is set)
---autotune [SECS]    try every kernel variant on each GPU first, use the fastest (6 s per trial)
+--autotune [SECS]    try every legacy VRF kernel variant on each GPU first (6 s per trial)
+--no-autotune        skip legacy VRF tuning trials; use a valid cached profile or platform default
 --variant NAME       force one kernel variant (--list-variants); default: per-GPU-generation table
 --threads N --iters N --blocks N   launch geometry (defaults from the table)
 --bench [SECS]       measure the hashrate and exit      --selftest vectors.json   verify the math
@@ -228,11 +232,19 @@ work is pure integer ALU; memory, PCIe link width and risers do not matter.
 
 ## 6b. Kernel choice per card
 
-Measured generations (RTX 30xx/50xx, PRO 6000, A100/CMP 170HX; RX 7900 XTX, MI50) start with their
-measured kernel at once. Any other card is measured on first start (~15 s, two candidate kernels) and
-the result kept in `proxichorizo-autotune.cache` in the directory the miner runs from (HiveOS: the
-miner directory); delete the file to re-measure, or pass `--autotune` for the full sweep. The start-up
-line shows the kernel, the launch shape and the reason.
+Current Blake2b work uses its own per-card kernel comparison and mandatory
+correctness checks. These brief checks remain enabled with `--no-autotune`.
+Keyless OpenCL pool mining skips legacy VRF compilation and tuning entirely.
+
+For legacy VRF work, measured generations start with their platform profile.
+Unmeasured cards normally run a bounded first-start comparison and keep its result
+in `proxichorizo-autotune.cache` in the miner's working directory (HiveOS: the
+miner directory). Driver compilation can take much longer than the timed trials.
+`--no-autotune` suppresses those trials, uses a valid saved profile when available,
+and otherwise keeps the platform default. Cached profiles are selected before
+compilation so the unused default variant is not compiled first. Delete the cache
+to remeasure, or use `--autotune` for a full sweep; it cannot be combined with
+`--no-autotune`. The startup line reports the chosen kernel and launch shape.
 
 ## 7. Troubleshooting
 

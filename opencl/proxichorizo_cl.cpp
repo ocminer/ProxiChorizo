@@ -642,7 +642,7 @@ struct ClTxidWorker {
 struct GpuCfg { int dev; int groups; int iters; const Variant *v; int ordinal = 0; };
 static void gpu_worker(Shared &sh, GpuCfg cfg) {
     ClDev &d = g_devs[cfg.dev];
-    Prog *pr = get_prog(d, cfg.v);
+    Prog *pr = sh.have_key ? get_prog(d, cfg.v) : nullptr;
     cl_int err;
     cl_mem d_job = clCreateBuffer(d.ctx, CL_MEM_READ_ONLY, sizeof(JobDev), nullptr, &err); CL_CHECK(err);
     cl_mem d_hits = clCreateBuffer(d.ctx, CL_MEM_READ_WRITE, sizeof(Hit) * MAX_HITS, nullptr, &err); CL_CHECK(err);
@@ -651,9 +651,10 @@ static void gpu_worker(Shared &sh, GpuCfg cfg) {
     std::mt19937_64 rng(std::random_device{}() ^ (uint64_t)cfg.dev * 0x9E3779B97F4A7C15ULL);
     uint64_t working = 0, nonce = 0;
     uint64_t stride = (uint64_t)cfg.groups * cfg.v->wg;
-    Scratch *sc = scratch_alloc(pr, stride * (size_t)cfg.iters);
+    Scratch *sc = pr ? scratch_alloc(pr, stride * (size_t)cfg.iters) : nullptr;
     ClTxidWorker tw(sh, cfg.ordinal, d);
-    logln("GPU " + std::to_string(cfg.dev) + " " + dev_label(d) + ": variant " + cfg.v->name + ", " + std::to_string(cfg.groups) + "x" + std::to_string(cfg.v->wg) + " work-items, " + std::to_string(cfg.iters) + " nonces/item/launch");
+    if (pr) logln("GPU " + std::to_string(cfg.dev) + " " + dev_label(d) + ": variant " + cfg.v->name + ", " + std::to_string(cfg.groups) + "x" + std::to_string(cfg.v->wg) + " work-items, " + std::to_string(cfg.iters) + " nonces/item/launch");
+    else logln("GPU " + std::to_string(cfg.dev) + " " + dev_label(d) + ": txid-blake2b hash worker");
     while (!sh.stop) {
         if (!thermal_gate(sh, cfg.ordinal)) {
             { std::lock_guard<std::mutex> l(sh.mu); sh.gpus[cfg.ordinal].win_idle_ms += 1000; }
@@ -665,6 +666,10 @@ static void gpu_worker(Shared &sh, GpuCfg cfg) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10)); continue;
         }
         if (j.txid) { tw.step(j); continue; }
+        if (!pr) {
+            if (j.id != working) { working = j.id; log_warn("legacy VRF job requires --key-file; no work submitted"); }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100)); continue;
+        }
         if (j.id != working) { working = j.id; nonce = j.has_base ? (j.nonce_base | ((uint64_t)(cfg.ordinal & 0xff) << 40)) : rng(); }
         auto k0 = std::chrono::steady_clock::now();
         JobDev jd; memset(&jd, 0, sizeof jd);
@@ -906,6 +911,7 @@ static void usage() {
         "  -d 0,1,2,3         GPUs to use; without it every GPU mines in one process (--list-devices shows them; --gpus/--devices are the same)\n"
         "  --variant NAME     kernel variant for all GPUs (default: per-GPU table; --list-variants)\n"
         "  --autotune [SECS]  measure every variant and iteration count on each GPU first (default 6s per trial)\n"
+        "  --no-autotune      skip legacy VRF tuning trials; use a valid saved result or the platform default\n"
         "  --groups N --iters N   work-groups per launch (default 8 per compute unit) and nonces per work-item\n"
         "  --kernel-file F    read the OpenCL source from F instead of the embedded copy; --build-opts \"...\" extra compiler flags\n"
         "  --selftest [FILE]  verify every variant against the embedded test vectors (or FILE) and exit\n"
@@ -953,7 +959,7 @@ static void on_signal(int) {
 
 int main(int argc, char **argv) {
     std::string proxi, token, tokenFile, keyfile, seedhex, name, selftest, gpus, variant, apiBind, kernelFile, user, checkPool;
-    int groups = 0, iters = 0; double bench = 0, autotuneSecs = 0; bool fetest = false, listVariants = false, listDevices = false, verify = false, verifyPipeline = false;
+    int groups = 0, iters = 0; double bench = 0, autotuneSecs = 0; bool noAutotune = false; bool fetest = false, listVariants = false, listDevices = false, verify = false, verifyPipeline = false;
     double txidBench = 0; bool txidSelftest = false, txidZeroTail = false; int txidPrefix = 600, txidLaunchMs = 40;
     ConsoleOpts con;
     sock_init();
@@ -988,6 +994,7 @@ int main(int argc, char **argv) {
         else if (a == "--iters") { std::string s; next(s); iters = atoi(s.c_str()); }
         else if (a == "--bench") bench = optnum(20);
         else if (a == "--autotune") autotuneSecs = optnum(6);
+        else if (a == "--no-autotune") noAutotune = true;
         else if (a == "--hash-bench") txidBench = optnum(20);
         else if (a == "--hash-selftest") txidSelftest = true;
         else if (a == "--hash-zero-tail") txidZeroTail = true;
@@ -996,6 +1003,7 @@ int main(int argc, char **argv) {
         else if (parse_console_opt(a, i, argc, argv, con)) {}
         else { fprintf(stderr, "unknown option %s\n\n", a.c_str()); usage(); return 1; }
     }
+    if (noAutotune && autotuneSecs > 0) { fprintf(stderr, "--no-autotune conflicts with --autotune\n"); return 1; }
     if (txidZeroTail && (txidBench <= 0 || txidPrefix < 120 || txidPrefix > 65536 || txidPrefix % 128 != 120)) { fprintf(stderr, "--hash-zero-tail needs --hash-bench and a prefix length congruent to 120 modulo 128\n"); return 1; }
     console_setup(con);
     if (!checkPool.empty()) return check_pool(checkPool);
@@ -1067,7 +1075,7 @@ int main(int argc, char **argv) {
     if (!variant.empty()) { forced = variantByName(variant); if (!forced) { fprintf(stderr, "unknown variant %s (--list-variants)\n", variant.c_str()); return 1; } }
 
     // key -> clamped scalar (SHA-512 of the seed), as the Go/Rust seekers do
-    uint8_t seed[32], scalar[32], pk[32];
+    uint8_t seed[32], scalar[32], pk[32] = {};
     bool keyGiven = !seedhex.empty() || !keyfile.empty() || getenv("NONCE_SEEKER_SEED") != nullptr;
     if (keyGiven) { if (!load_seed(seedhex, keyfile, seed)) return 1; }
     else { for (int i = 0; i < 32; i++) seed[i] = (uint8_t)(i * 97 + 13); }  // tests/bench without a key: fixed pseudo-random seed
@@ -1094,14 +1102,34 @@ int main(int argc, char **argv) {
         return rc;
     }
 
+    // Current Blake2b work needs no legacy VRF program or key derivation.
+    // Explicit VRF tests, benchmarks and tuning retain their original path.
+    const bool hashOnly = !keyGiven && !proxi.empty() && bench <= 0 && autotuneSecs <= 0;
     std::vector<GpuCfg> cfgs; std::vector<Shared::GpuStat> gstats;
     for (int dv : devs) {
         ClDev &d = g_devs[dv];
         const Platform &pl = platformFor(d);
         GpuCfg cfg{dv, groups > 0 ? groups : (int)d.cus * pl.groups_per_cu, iters > 0 ? iters : pl.iters, forced ? forced : variantByName(pl.variant)};
         cfg.ordinal = (int)cfgs.size();
+        if (hashOnly) {
+            char bus[32]; snprintf(bus, sizeof bus, "0000:%02x:00.0", d.bus);
+            gstats.push_back(Shared::GpuStat{dv, cfg.ordinal, dev_label(d), bus, d.bus, 0.0});
+            auto &g = gstats.back(); g.arch = std::to_string(d.cus) + " CUs";
+            g.variant = "txid-blake2b"; g.geometry = std::to_string(d.cus * 32) + "x256";
+            cfgs.push_back(cfg);
+            fprintf(stderr, "GPU %d %s: hash-only startup; legacy VRF compilation and tuning skipped\n", dv, dev_label(d).c_str());
+            continue;
+        }
+        const bool tuneEligible = !pl.measured && !forced && groups <= 0 && iters <= 0 && bench <= 0;
+        GpuCfg tuned;
+        bool cached = autotuneSecs <= 0 && tuneEligible && loadTuned(d, dv, tuned);
+        if (cached) {
+            cfg = tuned; if (cfg.groups <= 0) cfg.groups = (int)d.cus * 8;
+            cfg.ordinal = (int)cfgs.size();
+        }
         Prog *pr = get_prog(d, cfg.v);
         if (!prog_validated(pr)) {
+            cached = false;
             if (forced) { fprintf(stderr, "device %d: the forced variant %s is wrong on this driver; refusing to mine with it\n", dv, cfg.v->name); return 2; }
             // Try the established fe29 path before the portable fe32 fallback.
             if (cfg.v->split) {
@@ -1117,18 +1145,13 @@ int main(int argc, char **argv) {
         if (dv == devs[0]) memcpy(pk, pk2, 32); else if (memcmp(pk, pk2, 32) != 0) { fprintf(stderr, "device %d derives a different public key\n", dv); return 2; }
         if (autotuneSecs > 0) { cfg = autotune(dv, scalar, pk, autotuneSecs, groups); if (iters > 0) cfg.iters = iters; cfg.ordinal = (int)cfgs.size(); prog_init(get_prog(d, cfg.v), scalar, pk2); }
         else if (!prog_validated(pr)) return 2;
-        else if (!pl.measured && !forced && groups <= 0 && iters <= 0 && bench <= 0) {
-            GpuCfg tuned;
-            if (loadTuned(d, dv, tuned) && prog_validated(get_prog(d, tuned.v))) {
-                cfg = tuned; if (cfg.groups <= 0) cfg.groups = (int)d.cus * 8; cfg.ordinal = (int)cfgs.size(); prog_init(get_prog(d, cfg.v), scalar, pk2);
-                fprintf(stderr, "GPU %d %s: %s x%d — tuned on this card earlier (%s)\n", dv, dev_label(d).c_str(), cfg.v->name, cfg.iters, TUNE_CACHE);
-            } else {
-                fprintf(stderr, "GPU %d %s: %s; this build has no measurements for this model, measuring candidate kernels and launch sizes now (once; kept in %s)\n", dv, dev_label(d).c_str(), pl.note, TUNE_CACHE);
-                cfg = autotune(dv, scalar, pk, 3, groups, true); cfg.ordinal = (int)cfgs.size(); prog_init(get_prog(d, cfg.v), scalar, pk2);
-                saveTuned(d, cfg);
-            }
-        }
-        else fprintf(stderr, "GPU %d %s: %s x%d — %s\n", dv, dev_label(d).c_str(), cfg.v->name, cfg.iters, pl.note);
+        else if (cached) {
+            fprintf(stderr, "GPU %d %s: %s x%d — tuned on this card earlier (%s)\n", dv, dev_label(d).c_str(), cfg.v->name, cfg.iters, TUNE_CACHE);
+        } else if (tuneEligible && !noAutotune) {
+            fprintf(stderr, "GPU %d %s: %s; this build has no measurements for this model, measuring candidate kernels and launch sizes now (once; kept in %s)\n", dv, dev_label(d).c_str(), pl.note, TUNE_CACHE);
+            cfg = autotune(dv, scalar, pk, 3, groups, true); cfg.ordinal = (int)cfgs.size(); prog_init(get_prog(d, cfg.v), scalar, pk2);
+            saveTuned(d, cfg);
+        } else fprintf(stderr, "GPU %d %s: %s x%d — %s\n", dv, dev_label(d).c_str(), cfg.v->name, cfg.iters, noAutotune ? "legacy autotune disabled" : pl.note);
         char bus[32]; snprintf(bus, sizeof bus, "0000:%02x:00.0", d.bus);
         gstats.push_back(Shared::GpuStat{dv, cfg.ordinal, dev_label(d), bus, d.bus, 0.0});
         { auto &g = gstats.back(); g.arch = std::to_string(d.cus) + " CUs"; g.variant = cfg.v->name; g.geometry = std::to_string(cfg.groups) + "x" + std::to_string(cfg.v->wg) + "x" + std::to_string(cfg.iters); }
@@ -1156,7 +1179,7 @@ int main(int argc, char **argv) {
     if (!sh.url.stratum) sh.en1 = (uint16_t)std::random_device{}();   // solo: a random top 16 bits of the 8-byte nonce
     print_banner(sh, "OpenCL");
     if (!keyGiven) log_warn("no --key-file: mining txid-blake2b hash jobs only (library upgrade 6, from slot 197000); VRF jobs before it need the key");
-    logln("ProxiChorizo " PX_VERSION " (OpenCL): key " + hexs(pk, 32) + ", " + (sh.url.stratum ? "stratum " : "job server ") + sh.url.host + ":" + std::to_string(sh.url.port) + ", " + std::to_string(devs.size()) + " GPU(s), " + (sh.url.stratum ? "user " + sh.user : "name " + sh.name));
+    logln("ProxiChorizo " PX_VERSION " (OpenCL): " + (keyGiven ? "key " + hexs(pk, 32) : std::string("no key (hash jobs only)")) + ", " + (sh.url.stratum ? "stratum " : "job server ") + sh.url.host + ":" + std::to_string(sh.url.port) + ", " + std::to_string(devs.size()) + " GPU(s), " + (sh.url.stratum ? "user " + sh.user : "name " + sh.name));
     for (auto &g : sh.gpus) if (read_sensors(g.bus).temp < 0) log_warn(gpu_tag(g) + ": no temperature sensor readable (hwmon), the thermal limit is not enforced on it");
     g_sh = &sh; signal(SIGINT, on_signal); signal(SIGTERM, on_signal);
     std::vector<std::thread> th;

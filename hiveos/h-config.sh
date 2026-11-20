@@ -3,7 +3,7 @@
 #   Pool URL  -> POOL_URL  (the pool: stratum+tcp://proxi.suprnova.cc:3355, or your own proxi node mine seeker address)
 #   Wallet    -> TOKEN     (the token the pool gave you at registration / mine.seeker.token)
 #   Pass      -> SEED      (leave empty: current txid-blake2b jobs need no key; legacy VRF only)
-#   Extra config: KEY=VALUE lines (DEVICES, VARIANT, THREADS, ITERS, MINER_GROUPS, API_BIND, EXTRA_ARGS)
+#   Extra config: KEY=VALUE lines (DEVICES, VARIANT, THREADS, ITERS, MINER_GROUPS, API_BIND, AUTOTUNE=0, EXTRA_ARGS)
 [[ -z $CUSTOM_URL ]] && echo -e "${RED}CUSTOM_URL is empty${NOCOLOR}" && exit 1
 [[ -z $CUSTOM_TEMPLATE ]] && echo -e "${RED}CUSTOM_TEMPLATE (wallet = pool token) is empty${NOCOLOR}" && exit 1
 conf="POOL_URL=\"$CUSTOM_URL\"\nTOKEN=\"$CUSTOM_TEMPLATE\"\nSEED=\"${CUSTOM_PASS:-}\"\nWORKER=\"${WORKER_NAME:-hiveos}\"\n"

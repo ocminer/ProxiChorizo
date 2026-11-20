@@ -4,6 +4,11 @@
 #include <cuda_runtime.h>
 #define TXID_BW_DEVICE 1
 #include "txid_blake2b.h"
+#include "txid_bw_tail.cuh"
+#include <atomic>
+#include <mutex>
+#include <cstdio>
+#include <cstdlib>
 
 namespace txid_bw {
 using namespace txid;
@@ -40,6 +45,79 @@ template <int KEY> void dispatch(int key, unsigned grid, unsigned block, cudaStr
 }
 } // namespace txid_bw
 
+namespace txid_bw {
+// Preserve the existing module for ordinary layouts and for cards on which
+// the zero-tail specialization is slower. Each device makes its own choice.
+static void tail_launch(int mode,unsigned grid,cudaStream_t stream,const ParamsCore &p,
+        uint32_t low,uint64_t fixed,uint32_t full,uint32_t tail,HitRec *hits,unsigned *nhit,const Plan01 &plan) {
+    if(mode==1)zero_tail_search<2><<<grid,512,0,stream>>>(p,low,fixed,full,tail,hits,nhit);
+    else if(mode==2)zero_tail_search<3><<<grid,512,0,stream>>>(p,low,fixed,full,tail,hits,nhit);
+    else search<15,1,15><<<grid,512,0,stream>>>(p,low,fixed,full,tail,hits,nhit,0,plan);
+}
+static bool tail_shape(int key,const ParamsCore &p,uint32_t nshift) {
+    if(key!=62||nshift||p.kernel!=30||p.shift||p.tfin<128||p.tfin%128)return false;
+    uint64_t nonzero=p.m[15]>>32;
+    for(int i=0;i<15;++i)nonzero|=p.m[i];
+    return nonzero==0;
+}
+static void checked(cudaError_t error) {
+    if(error!=cudaSuccess){fprintf(stderr,"Blackwell zero-tail check: %s\n",cudaGetErrorString(error));std::exit(2);}
+}
+struct TailChoices {std::atomic<int> mode[128];std::mutex mutex;TailChoices(){for(auto &m:mode)m.store(-1);}};
+static int tail_choice(unsigned grid,const ParamsCore &input,uint64_t fixed,const Plan01 &plan) {
+    const char *force=getenv("PX_TXID_BW_ZERO");
+    if(force&&!strcmp(force,"0"))return 0;
+    int dev=-1;checked(cudaGetDevice(&dev));if(dev<0||dev>=128)return 0;
+    static TailChoices choices;
+    int chosen=choices.mode[dev].load();if(chosen>=0)return chosen;
+    std::lock_guard<std::mutex> lock(choices.mutex);
+    chosen=choices.mode[dev].load();if(chosen>=0)return chosen;
+    HitRec *hits=nullptr;unsigned *nhit=nullptr;
+    checked(cudaMalloc(&hits,TXID_MAX_HITS*sizeof(HitRec)));checked(cudaMalloc(&nhit,sizeof(unsigned)));
+    // Check both candidates against the CPU's complete twelve-round evaluation
+    // of this already-prepared block. These attempts never count as mining.
+    ParamsCore p=input;p.mask=0;
+    for(int mode:{1,2})for(uint32_t low:{0u,0x89abc123u,0xfffffbffu}) {
+        checked(cudaMemset(nhit,0,4));tail_launch(mode,3,0,p,low,fixed,0,1025,hits,nhit,plan);
+        checked(cudaGetLastError());checked(cudaDeviceSynchronize());
+        unsigned got=0;checked(cudaMemcpy(&got,nhit,4,cudaMemcpyDeviceToHost));
+        std::vector<HitRec> result(std::min<unsigned>(got,TXID_MAX_HITS));
+        if(got!=1025){fprintf(stderr,"Blackwell zero-tail hit-count self-check failed\n");std::exit(2);}
+        checked(cudaMemcpy(result.data(),hits,result.size()*sizeof(HitRec),cudaMemcpyDeviceToHost));
+        std::sort(result.begin(),result.end(),[](const HitRec&a,const HitRec&b){return a.n<b.n;});
+        for(size_t i=0;i<result.size();++i){
+            auto h=result[i];uint32_t n=(uint32_t)(bswap64h((uint32_t)h.n)>>32);
+            const uint64_t expected=txid_h3<15,false>(p,p.m[15]|((uint64_t)n<<32));
+            if((uint64_t)(n-low)>=1025||h.n!=(fixed|(uint64_t)(uint32_t)(bswap64h(n)>>32))||h.h3!=expected||(i&&result[i-1].n==h.n)) {
+                fprintf(stderr,"Blackwell zero-tail CPU hash/nonce self-check failed\n");std::exit(2);
+            }
+        }
+    }
+    p.mask=~0ULL;
+    cudaEvent_t begin,end;checked(cudaEventCreate(&begin));checked(cudaEventCreateWithFlags(&end,cudaEventBlockingSync));
+    const uint64_t stride=(uint64_t)grid*512;
+    const uint32_t loops=(uint32_t)std::max<uint64_t>(1,std::min<uint64_t>(128,(1ULL<<30)/std::max<uint64_t>(stride,1)));
+    auto sample=[&](int mode){float measured=0;
+        for(int phase=0;phase<2;++phase){float total=0;unsigned samples=0;
+            do {checked(cudaMemset(nhit,0,4));checked(cudaEventRecord(begin));tail_launch(mode,grid,0,p,0x10000000u,fixed,loops,0,hits,nhit,plan);
+                checked(cudaGetLastError());checked(cudaEventRecord(end));checked(cudaEventSynchronize(end));float ms=0;checked(cudaEventElapsedTime(&ms,begin,end));
+                if(!(ms>0)){fprintf(stderr,"Invalid zero-tail timing\n");std::exit(2);}total+=ms;++samples;
+            }while(total<75.f);if(phase)measured=total/samples;
+        }return measured;
+    };
+    float times[3]={};
+    for(int mode:{0,1,2,2,1,0})times[mode]+=sample(mode);
+    chosen=times[2]<times[1]?2:1;
+    if(!(times[chosen]<times[0]*.98f))chosen=0;
+    if(force&&!strcmp(force,"1"))chosen=1;
+    if(force&&!strcmp(force,"2"))chosen=2;
+    fprintf(stderr,"GPU %d: Blackwell long-job tuning selects %s (existing %.3f ms, zero-tail LB2 %.3f ms, LB3 %.3f ms)\n",dev,
+        chosen==1?"zero-tail LB2":chosen==2?"zero-tail LB3":"existing kernel",times[0]*.5f,times[1]*.5f,times[2]*.5f);
+    checked(cudaEventDestroy(begin));checked(cudaEventDestroy(end));checked(cudaFree(hits));checked(cudaFree(nhit));
+    choices.mode[dev].store(chosen);return chosen;
+}
+} // namespace txid_bw
+
 extern "C" void txid_bw_launch(int key, unsigned grid, unsigned block, cudaStream_t stream,
         const txid::ParamsCore &p, uint32_t low, uint64_t fixed, uint32_t full, uint32_t tail,
         txid::HitRec *hits, unsigned *nhit, uint32_t nshift, const txid::Plan01 &plan) {
@@ -50,5 +128,10 @@ extern "C" void txid_bw_launch(int key, unsigned grid, unsigned block, cudaStrea
     grid = (unsigned)((threads + 511) / 512); block = 512;
     const uint64_t stride = (uint64_t)grid * block;
     full = (uint32_t)(count / stride); tail = (uint32_t)(count % stride);
+    if(txid_bw::tail_shape(key,p,nshift)) {
+        const int mode=txid_bw::tail_choice(grid,p,fixed,plan);
+        txid_bw::tail_launch(mode,grid,stream,p,low,fixed,full,tail,hits,nhit,plan);
+        return;
+    }
     txid_bw::dispatch<0>(key, grid, block, stream, p, low, fixed, full, tail, hits, nhit, nshift, plan);
 }

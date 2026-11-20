@@ -4356,13 +4356,14 @@ static void gpu_worker(Shared &sh, GpuCfg cfg) {
     std::mt19937_64 rng(std::random_device{}() ^ (uint64_t)cfg.dev * 0x9E3779B97F4A7C15ULL);
     uint64_t working = 0, nonce = 0;
     uint64_t stride = (uint64_t)cfg.blocks * cfg.threads;
-    void *scratch = cfg.ops->alloc(stride * (size_t)cfg.iters);
+    // Hash-only workers never execute a VRF kernel or need its large scratch pool.
+    void *scratch = sh.have_key ? cfg.ops->alloc(stride * (size_t)cfg.iters) : nullptr;
     cudaEvent_t ev0, ev1; CUDA_CHECK(cudaEventCreate(&ev0)); CUDA_CHECK(cudaEventCreate(&ev1));
     float last_ms = 0;   // kernel time of the previous launch: how long the next wait can sleep
     // job-change abort (x-only pipeline): when the pool replaces the job during a launch, the rest of that launch can
     // only produce stale shares, so the worker raises the variant's device flag from a side stream and the kernels'
     // remaining blocks exit at once; the new job starts within a few milliseconds instead of after the whole launch
-    unsigned *d_abort = (cfg.ops->abort_ptr && !getenv("PX_NO_ABORT")) ? cfg.ops->abort_ptr() : nullptr;
+    unsigned *d_abort = (sh.have_key && cfg.ops->abort_ptr && !getenv("PX_NO_ABORT")) ? cfg.ops->abort_ptr() : nullptr;
     unsigned *h_abort = nullptr; cudaStream_t abort_st = nullptr;
     if (d_abort) {
         CUDA_CHECK(cudaMallocHost(&h_abort, sizeof(unsigned))); *h_abort = 1u;
@@ -4816,6 +4817,7 @@ static void usage() {
         "                     lists them (--gpus and --devices are the same option)\n"
         "  --variant NAME     kernel variant for all GPUs (default: per-platform table; --list-variants)\n"
         "  --autotune [SECS]  measure every variant on each GPU first and use the fastest (default 6s per trial)\n"
+        "  --no-autotune      skip legacy VRF tuning trials; use a valid saved result or the platform default\n"
         "  --blocks N --threads N --iters N   launch geometry (defaults from the platform table)\n"
         "%s"
         "  --selftest FILE    verify every variant against vectors.json (from vrfvec) and exit\n"
@@ -4871,7 +4873,7 @@ int main(int argc, char **argv) {
 #else
     setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID", 0);
 #endif
-    int blocks = 0, threads = 0, iters = 0; double bench = 0, autotuneSecs = 0; bool fetest = false, listVariants = false, verify = false;
+    int blocks = 0, threads = 0, iters = 0; double bench = 0, autotuneSecs = 0; bool noAutotune = false; bool fetest = false, listVariants = false, verify = false;
     double txidBench = 0; bool txidSelftest = false, txidZeroTail = false; int txidPrefix = 600, txidLaunchMs = 40;
     ConsoleOpts con;
     for (int i = 1; i < argc; i++) {
@@ -4901,6 +4903,7 @@ int main(int argc, char **argv) {
         else if (a == "--iters") { std::string s; next(s); iters = atoi(s.c_str()); }
         else if (a == "--bench") bench = optnum(20);
         else if (a == "--autotune") autotuneSecs = optnum(6);
+        else if (a == "--no-autotune") noAutotune = true;
         else if (a == "--hash-bench") txidBench = optnum(20);
         else if (a == "--hash-selftest") txidSelftest = true;
         else if (a == "--hash-zero-tail") txidZeroTail = true;
@@ -4909,6 +4912,7 @@ int main(int argc, char **argv) {
         else if (parse_console_opt(a, i, argc, argv, con)) {}
         else { fprintf(stderr, "unknown option %s\n\n", a.c_str()); usage(); return 1; }
     }
+    if (noAutotune && autotuneSecs > 0) { fprintf(stderr, "--no-autotune conflicts with --autotune\n"); return 1; }
     if (txidZeroTail && (txidBench <= 0 || txidPrefix < 120 || txidPrefix > 65536 || txidPrefix % 128 != 120)) { fprintf(stderr, "--hash-zero-tail needs --hash-bench and a prefix length congruent to 120 modulo 128\n"); return 1; }
     console_setup(con);
     if (!checkPool.empty()) return check_pool(checkPool);
@@ -4980,7 +4984,7 @@ int main(int argc, char **argv) {
                 }
             }
             double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-            const unsigned launch_block = (aligned_cache.fast || aligned_cache.platform >= 2) ? 512u : TXID_TPB;
+            const unsigned launch_block = (aligned_cache.fast || aligned_cache.platform >= 2 || (zero_tail&&d>=0&&d<128&&txid::zero_tail_blocks[d]==512)) ? 512u : TXID_TPB;
             const unsigned launch_grid = (unsigned)(((uint64_t)grid * TXID_TPB + launch_block - 1) / launch_block);
             fprintf(stderr, "GPU %d %s: txid-blake2b %d-byte prefix (kernel %d%s): %.3f GH/s over %.0f s (%.3f GH/s kernel time, %d launches of %.1f ms, %ux%dx%u)\n",
                     d, prop.name, txidPrefix, shp.kernel, zero_tail ? ", zero-tail" : aligned_cache.fast ? ", Blackwell" : aligned ? ", aligned32" : "", total / el / 1e9, el, total / (kms / 1e3) / 1e9, launches, kms / launches, launch_grid, launch_block, it);
@@ -5068,11 +5072,11 @@ int main(int argc, char **argv) {
             if (loadTuned(prop, d, tuned)) {
                 cfg = tuned; cfg.ordinal = (int)cfgs.size(); cfg.ops->init(scalar, pk2);
                 fprintf(stderr, "GPU %d %s (sm_%d%d): %s, %dx%dx%d — tuned on this card earlier (%s)\n", d, prop.name, prop.major, prop.minor, cfg.ops->name, cfg.blocks, cfg.threads, cfg.iters, TUNE_CACHE);
-            } else {
+            } else if (!noAutotune) {
                 fprintf(stderr, "GPU %d %s (sm_%d%d): %s; this build has no measurements for this model, measuring candidate kernels and launch sizes now (once; kept in %s)\n", d, prop.name, prop.major, prop.minor, pl.note, TUNE_CACHE);
                 cfg = autotune(d, scalar, pk, 3, 0, true); cfg.ordinal = (int)cfgs.size(); cfg.ops->init(scalar, pk2);
                 saveTuned(prop, cfg);
-            }
+            } else fprintf(stderr, "GPU %d: legacy autotune disabled; using platform default %s\n", d, cfg.ops->name);
         }
         else fprintf(stderr, "GPU %d %s (sm_%d%d): %s, %dx%dx%d — %s\n", d, prop.name, prop.major, prop.minor, cfg.ops->name, cfg.blocks, cfg.threads, cfg.iters, pl.note);
         { auto &g = gstats.back(); g.arch = "sm_" + std::to_string(prop.major) + std::to_string(prop.minor); g.variant = cfg.ops->name;

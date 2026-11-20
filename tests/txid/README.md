@@ -76,6 +76,30 @@ independent hashlib check; the diagnostic prefix is `(i*37+11)&255` for its firs
 384 bytes, followed by 120 zero bytes. The OpenCL test takes the selected PCI bus
 number as its sole argument and creates only that device's context.
 
+`zero_tail_gpu_test.cu` accepts an optional `256` or `512` argument to test the
+specific launch size. The latter exercises the additional Pascal choice.
+`blackwell_zero_tail_test.cu` links the production `txid_blackwell.cu` module and
+checks both specialized launch bounds, ordinary fallback, four prefix lengths,
+partial grids, counter boundaries and overflow. For example, from the repo root
+with CUDA 12.9 and an available Blackwell GPU selected through
+`CUDA_VISIBLE_DEVICES`:
+
+```sh
+nvcc -O3 -std=c++17 -gencode arch=compute_120,code=compute_120 \
+  -c txid_blackwell.cu -o /tmp/proxi-tail-bw.o
+nvcc -O3 -std=c++17 -arch=sm_120 -Xcompiler -pthread \
+  tests/txid/blackwell_zero_tail_test.cu /tmp/proxi-tail-bw.o -o /tmp/proxi-tail-bw
+PX_TXID_BW_ZERO=1 /tmp/proxi-tail-bw > /tmp/proxi-tail-lb2.txt
+PX_TXID_BW_ZERO=2 /tmp/proxi-tail-bw > /tmp/proxi-tail-lb3.txt
+python3 tests/txid/check_zero_tail_output.py blackwell /tmp/proxi-tail-lb2.txt
+python3 tests/txid/check_zero_tail_output.py blackwell /tmp/proxi-tail-lb3.txt
+```
+
+The checker uses Python's independent BLAKE2b implementation to reconstruct the
+complete digest and verify the GPU's returned hash word. It also accepts `pascal`
+with the output of `zero_tail_gpu_test.cu`. Do not compile these diagnostic tests
+with `NDEBUG`, which would remove their assertions.
+
 For controlled layout comparisons use `--hash-bench 30 --hash-prefix-len 504
 --hash-zero-tail`. `PX_TXID_ZERO_TAIL=0` retains the previous kernel on the same
 zero-tail input; `=1` forces the new path for diagnostics, with startup checks

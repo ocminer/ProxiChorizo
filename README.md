@@ -1,5 +1,78 @@
 # ProxiChorizo — GPU miner for Proxima (PROX)
 
+### Development update: startup control (not yet released)
+
+Use `--no-autotune` to skip legacy VRF tuning trials. A valid saved result is
+still used; otherwise the miner uses its platform default. Mandatory correctness
+checks and the short Blake2b kernel comparison remain enabled. It cannot be
+combined with `--autotune`.
+
+On HiveOS, add either of these lines to **Extra config**:
+
+```sh
+AUTOTUNE=0
+```
+
+or, when using the existing extra-argument field:
+
+```sh
+EXTRA_ARGS="--no-autotune"
+```
+
+For current Blake2b pool mining, leave the legacy **Pass / SEED** field empty.
+OpenCL now skips legacy VRF compilation and tuning when mining without a key.
+Legacy VRF users still need their key and an initial driver compilation; cached
+profiles now compile only the selected variant, rather than compiling a default
+variant first. These startup changes do not remove share verification.
+
+### Development update: faster long jobs (not yet released)
+
+The new Blackwell path removes additions of known zero message words and moves
+fixed work outside the nonce loop. It still evaluates all twelve Blake2b rounds.
+Pascal additionally compares a 512-thread launch with both previous choices.
+Each card keeps its old kernel unless the new choice wins its calibration by at
+least 2%; ordinary jobs retain their previous paths.
+
+Linux A/B/B/A measurements against the published **2.1.0** executable, using the
+same synthetic **504-byte prefix ending in 120 zero bytes**:
+
+| GPU | Full firmware allowance | 2.1.0 | Development build | Change |
+|---|---:|---:|---:|---:|
+| RTX 5090 | 600 W | 19.802 GH/s | 21.611 GH/s | +9.13% |
+| GTX 1080 Ti, sample 1 | 330 W | 3.146 GH/s | 3.298 GH/s | +4.83% |
+| GTX 1080 Ti, sample 2 | 300 W | 3.199 GH/s | 3.339 GH/s | +4.39% |
+| GTX 1080 Ti, sample 3 | 300 W | 3.209 GH/s | 3.369 GH/s | +4.97% |
+| GTX 1080 Ti, sample 4 | 300 W | 3.008 GH/s | 3.155 GH/s | +4.89% |
+| RTX 4070 Ti SUPER | 285 W | 7.351 GH/s | 7.333 GH/s | -0.24%; unchanged within variation |
+| RX 7900 XTX | 350 W | 7.205 GH/s | 7.198 GH/s | -0.10%; unchanged within variation |
+| Instinct MI50* | 225 W | 3.249 GH/s | 3.245 GH/s | -0.14%; unchanged within variation |
+
+NVIDIA arms lasted 30 seconds, XTX arms 15 seconds. *MI50 used cooled four-second
+arms because this test rig cannot sustain the full-power load within its thermal
+guard; this is a short diagnostic, not sustained thermal qualification. Clocks
+and fan settings were unchanged. The 5090's other miner was compute-paused but
+retained its VRAM allocation; Ada retained an idle application context. No other
+application was hashing on the measured GPU. Cards reserved for NEB tests were
+excluded. The [per-run CSV](benchmarks/long-job-development-2026-11-20.csv) records
+executable hashes, individual arms, actual power draw and clocks. These are
+development measurements, not pool hashrate, earnings or Windows claims.
+
+AMD retains its existing fast kernels. A separate same-binary comparison of the
+generic and zero-tail paths measured **6.030 → 7.210 GH/s (+19.58%)** on RX 7900 XTX
+and **2.670 → 3.251 GH/s (+21.76%)** on MI50, with the same short-run conditions.
+Those long-job benefits are already present in 2.1.0; they are not new gains in
+this development update. RX 7600 XT passed a bounded correctness/startup check,
+but its test rig did not qualify for a new sustained performance figure.
+
+The final CUDA startup-fix build has identical GPU instructions to the benchmarked
+build. It passed 1,614 independently verified loopback shares across Blackwell,
+Pascal and Ada, plus 27 accepted live TLS pool shares with no rejects or invalid
+hashes. Its 5090 confirmation run measured 21.640 GH/s. OpenCL startup tests also
+passed on XTX, MI50 and RX 7600 XT. The reported ten-card RX 5700 XT configuration
+was not available for a physical startup-time measurement. These remain
+development results; no release or version change is implied by this section.
+
+
 A GPU miner for [Proxima](https://lunfardo314.github.io/)'s fair-launch mine chain, for NVIDIA
 (CUDA) and AMD (OpenCL) GPUs, by suprnova.cc. The current proof of work is the mining
 transaction's BLAKE2b-256 hash. The miner searches nonces and reports valid solutions;

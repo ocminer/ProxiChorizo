@@ -53,13 +53,14 @@ static inline int bw_selfcheck(const cudaDeviceProp &p, std::string &why) {
 // Calibration never contributes to reported hashes or submits shares.
 struct BlackwellChoice {
     std::array<int,128> choices;
-    bool enabled = false, legacy_device = false, legacy_all = false;
+    bool enabled = false, legacy_device = false, legacy_all = false, wide_zero = false;
     int device = -1, platform = 0, zero_choice = -1;
     explicit BlackwellChoice(const cudaDeviceProp &p) {
         choices.fill(-1); cudaGetDevice(&device);
         enabled = bw_device(p) && device >= 0 && device < 128 && bw_verified[device];
         legacy_device = aligned_device(p); legacy_all = aligned_all_layouts(p);
         platform = platform_profile(p);
+        wide_zero=p.major==6&&p.minor==1;
     }
     int select_generic(const Params &input, int plen, unsigned grid, HitRec *hits, unsigned *nhit, std::string &why) {
         if (platform && plen > 0 && plen % 128 == 113) return 2 + platform;
@@ -141,7 +142,7 @@ struct BlackwellChoice {
                     err = cudaMemset(nhit, 0, sizeof(unsigned));
                     if (err == cudaSuccess) err = cudaEventRecord(begin);
                     if (err != cudaSuccess) break;
-                    if (mode == 6) launch_zero_tail(grid, TXID_TPB, 0, p, first, count, iters, hits, nhit);
+                    if (mode == 6 || mode == 7) launch_zero_tail(grid, TXID_TPB, 0, p, first, count, iters, hits, nhit,mode==7?512:256);
                     else if (mode) launch_aligned(grid, TXID_TPB, 0, p, plen, first, count, hits, nhit, cache);
                     else launch(grid, TXID_TPB, 0, p, first, count, iters, hits, nhit);
                     err = cudaGetLastError();
@@ -156,17 +157,23 @@ struct BlackwellChoice {
                 if (phase && samples) ms = total / samples;
             }
         };
-        float a = 0, b = 0;
-        for (int mode : {baseline, 6, 6, baseline}) {
+        float a = 0, b = 0, wide = 0;
+        const std::vector<int> modes=wide_zero?std::vector<int>{baseline,6,7,7,6,baseline}:std::vector<int>{baseline,6,6,baseline};
+        for (int mode : modes) {
             float ms = 0; sample(mode, ms);
-            if (mode == 6) b += ms; else a += ms;
+            if (mode == 6) b += ms; else if(mode==7)wide+=ms;else a += ms;
         }
         if (begin) cudaEventDestroy(begin);
         if (end) cudaEventDestroy(end);
         if (err != cudaSuccess || !(a > 0 && b > 0)) { why = err == cudaSuccess ? "invalid zero-tail calibration" : cudaGetErrorString(err); return -1; }
         zero_choice = b < a * 0.98f ? 6 : baseline;
+        if(wide_zero&&wide>0&&wide<(zero_choice==6?b:a)*.98f&&device>=0&&device<128) {
+            zero_tail_blocks[device]=512;zero_choice=6;
+        }
         fprintf(stderr, "GPU %d: aligned-tail job selects %s (existing %.3f ms, zero-tail %.3f ms)\n",
                 device, zero_choice == 6 ? "zero-tail" : "existing kernel", a * .5f, b * .5f);
+        if(wide_zero)fprintf(stderr,"GPU %d: zero-tail launch %u threads (512-thread %.3f ms)\n",device,
+            device>=0&&device<128&&zero_tail_blocks[device]==512?512u:256u,wide*.5f);
         return zero_choice;
     }
 

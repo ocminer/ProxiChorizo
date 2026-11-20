@@ -13,7 +13,7 @@ with tempfile.TemporaryDirectory(prefix="proxichorizo-launchers-") as temp:
     base = pathlib.Path(temp)
     for launcher in ["hiveos/h-run.sh", "mmpos/mmpos-run.sh", "smos/smos-run.sh", "mmpos/mmp-launch.sh"]:
         for backend in ["cuda", "cl"]:
-            for override in [False, True] if launcher.startswith("hiveos") else [False]:
+            for override in (["default", "groups", "no-autotune", "extra-no-autotune"] if launcher.startswith("hiveos") else ["default"]):
                 work = base / str(count)
                 work.mkdir()
                 shutil.copy2(ROOT / launcher, work / pathlib.Path(launcher).name)
@@ -25,11 +25,15 @@ with tempfile.TemporaryDirectory(prefix="proxichorizo-launchers-") as temp:
                 (work / "h-manifest.conf").write_text('CUSTOM_CONFIG_FILENAME="' + str(work / "unused.conf") + '"\nCUSTOM_LOG_BASENAME="' + str(work / "miner") + '"\n')
                 (work / "mmp-external.conf").write_text("CUSTOM_API_PORT=4078\n")
                 env = dict(os.environ)
-                for name in ["SEED", "PASSWORD", "VARIANT", "THREADS", "ITERS", "MINER_GROUPS", "EXTRA_ARGS", "DEVICES"]:
+                for name in ["SEED", "PASSWORD", "VARIANT", "THREADS", "ITERS", "MINER_GROUPS", "EXTRA_ARGS", "DEVICES", "AUTOTUNE"]:
                     env.pop(name, None)
                 env.update(POOL_URL="http://example.invalid:8100", TOKEN="test", KEY_FILE="unused.key", MINER=backend, PX_TEST_CAPTURE=str(capture))
-                if override:
+                if override == "groups":
                     env["MINER_GROUPS"] = "123"
+                elif override == "no-autotune":
+                    env["AUTOTUNE"] = "0"
+                elif override == "extra-no-autotune":
+                    env["EXTRA_ARGS"] = "--no-autotune"
                 cmd = ["bash", str(work / pathlib.Path(launcher).name)]
                 if launcher.endswith("mmp-launch.sh"):
                     cmd += ["--pool", "http://example.invalid:8100", "--user", "unit-test-credential", "--password", "unit-test-seed"]
@@ -37,10 +41,11 @@ with tempfile.TemporaryDirectory(prefix="proxichorizo-launchers-") as temp:
                 argv = json.loads(capture.read_text())
                 assert pathlib.Path(argv[0]).name == ("proxichorizo-cl" if backend == "cl" else "proxichorizo")
                 assert "--groups" not in argv, "Bash GROUPS must not override GPU defaults"
-                if override:
+                if override == "groups":
                     assert argv[argv.index("--blocks") + 1] == "123"
                 else:
                     assert "--blocks" not in argv
+                assert ("--no-autotune" in argv) == (override in ["no-autotune", "extra-no-autotune"])
                 assert "unit-test-credential" not in result.stdout and "unit-test-seed" not in result.stdout
                 count += 1
 print("Launcher regression:", count, "CPU-only cases passed")

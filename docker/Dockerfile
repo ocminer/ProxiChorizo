@@ -6,7 +6,7 @@ ARG ARCHS="-gencode arch=compute_61,code=sm_61 -gencode arch=compute_75,code=sm_
 WORKDIR /src
 RUN find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) -exec sed -i 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g; s|http://security.ubuntu.com|https://security.ubuntu.com|g' {} + \
     && apt-get -o Acquire::Retries=3 update && apt-get install -y --no-install-recommends python3 && rm -rf /var/lib/apt/lists/*
-COPY proxichorizo.cu proxichorizo_device.cuh platform_profiles.h txid_blake2b.h txid_cuda.cuh txid_aligned.cuh txid_zero_tail.h txid_zero_tail.cuh txid_vectors.h txid_blackwell.cu txid_blackwell.h txid_bw_math.cuh ./
+COPY proxichorizo.cu proxichorizo_device.cuh platform_profiles.h txid_blake2b.h txid_cuda.cuh txid_aligned.cuh txid_zero_tail.h txid_zero_tail.cuh txid_vectors.h txid_blackwell.cu txid_blackwell.h txid_bw_math.cuh txid_bw_tail.cuh ./
 COPY scripts/build.py scripts/
 RUN python3 scripts/build.py --kind cuda --output proxichorizo --archs="$ARCHS" && strip proxichorizo
 

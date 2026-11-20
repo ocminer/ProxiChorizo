@@ -3,8 +3,9 @@
 #include "../../txid_zero_tail.cuh"
 #include <set>
 #include <cassert>
-int main() {
+int main(int argc, char **argv) {
     txid::CudaZeroTailSearch search; std::string why;
+    if (argc > 1) { search.chosen_block = (unsigned)std::stoul(argv[1]); assert(search.chosen_block == 256 || search.chosen_block == 512); }
     if (txid::zero_tail_selfcheck(std::ref(search),why)) { fprintf(stderr,"%s\n",why.c_str());return 1; }
     std::vector<uint8_t> prefix(504,0);
     for(int i=0;i<384;++i)prefix[i]=(uint8_t)(i*37+11);
