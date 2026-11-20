@@ -93,6 +93,13 @@ passed on XTX, MI50 and RX 7600 XT. The reported ten-card RX 5700 XT configurati
 was not available for a physical startup-time measurement. The benchmark and validation records retain their original executable hashes;
 release archives identify their own source commit in `BUILD-INFO.json`.
 
+The final published Linux CUDA/OpenCL payloads additionally passed 1,569
+independently verified loopback shares across Ada, Pascal and RX 7900 XTX, and
+32 accepted live TLS shares with no rejects or invalid hashes. All native CUDA
+kernel instructions and Blackwell PTX match the qualified development build;
+Linux and Windows kernel instructions also match. Windows startup, CPU and
+TCP/TLS checks passed in CI; physical Windows GPU execution was not tested.
+
 
 ### 2.1.0 — aligned-tail jobs on NVIDIA and AMD (2026-11-20)
 
@@ -374,18 +381,10 @@ distribution); the Windows archive brings its own. The pool's certificate is che
 ### Is it working?
 
 Test the connection first, without mining (no GPU needed):
-`./proxichorizo --check-pool stratum+ssl://proxi.suprnova.cc:3356` → `pool OK, …`. Then start the miner; it prints:
-
-```
-stratum: connected to proxi.suprnova.cc:3355
-stratum: authorized as rig1
-GPU #0: share accepted (1/1)
-Total: 49.75 MH/s on 1/1 GPUs, 418 W (0.119 MH/W) | accepted 42, rejected 0, stale 0 | job 1a19… k=30 | uptime 00:10:00
-```
-
-The first shares come within seconds at a low difficulty; within a minute or two the pool
-raises it so that each rig sends a share about every 20 seconds (`k` in the total line is the
-current difficulty, 2^k attempts per share). A few `stale` shares at job changes are normal.
+`./proxichorizo --check-pool stratum+ssl://proxi.suprnova.cc:3356` → `pool OK, …`.
+After starting, check for successful authorization, GPU hashrate and accepted
+shares. Time to the first share depends on the assigned difficulty and your
+hashrate. A few `stale` shares at job changes are normal.
 Your workers and earnings: https://proxi.suprnova.cc (enter your PROX address).
 
 ### Common problems
@@ -404,26 +403,34 @@ in **[USAGE.md](USAGE.md)**, included in every release archive.
 Writing your own miner or proxy for the pool? The stratum protocol (messages, nonce layout,
 share rule, error codes, a worked example) is specified in **[STRATUM-SPEC.md](STRATUM-SPEC.md)**.
 
-**Older versions:** ProxiChorizo 0.5.x speaks the pool's old HTTP protocol (port 8100),
-which stays open for a while and will then be switched off. Update to 1.0.7.
+**Older versions:** the pool's old HTTP mining endpoint and 1.x VRF miners are no
+longer supported. Use [the current release](https://github.com/ocminer/ProxiChorizo/releases/latest)
+with Stratum for current Blake2b mining. This does not remove the miner's separate
+solo HTTP controller support.
 
 ## Which kernel runs on which card
 
-The platform table in `platform_profiles.h` (NVIDIA) and `opencl/proxichorizo_cl.cpp`
-(AMD) selects the measured kernel for each tested model. Models without measurements,
-including RTX 3060 / 3060 Ti, tune on the actual card at first mining start. This takes
-about a minute of timing plus compilation; OpenCL compilation can take several minutes.
-The winner is saved in `proxichorizo-autotune.cache`, separately for each physical GPU,
-processor count, driver API/runtime and miner release.
+Current Blake2b work uses the hash kernels for the selected GPU backend and
+architecture. Eligible long jobs receive a brief comparison of the existing and
+zero-tail paths; Pascal also compares its 512-thread launch. The selected path is
+checked before use. `--no-autotune` retains this comparison and correctness checks.
 
-`--autotune` measures every kernel and launch shape; `--variant`, `--blocks` / `--groups`
-and `--iters` override the defaults. The startup line reports the selected kernel and
-launch shape. After changing power or clocks, run `--autotune` again to compare kernels
-under the new settings. The miner does not change power limits or clocks.
+Legacy VRF work has a separate profile table in `platform_profiles.h` (NVIDIA)
+and `opencl/proxichorizo_cl.cpp` (AMD). For this older work, unmeasured models can
+tune at startup and save the result in `proxichorizo-autotune.cache`, keyed by
+physical GPU, processor count, driver API/runtime and miner release.
+`--autotune` explicitly requests these legacy trials; `--no-autotune` skips them
+and uses a valid cached profile or platform default. Keyless Blake2b startup
+does not compile or tune the unused OpenCL VRF programs.
+
+The A100/H100 profiles and NVIDIA ladder-kernel measurements in the historical
+VRF tables apply to that older work, not current Blake2b rates. See `PLATFORMS.md`
+for measured configurations. The distribution includes native SM90 code for H100.
+The miner does not change power limits or clocks.
 
 ### Memory clock advisory (hash work)
 
-The txid-blake2b hash search uses no VRAM bandwidth. When a card runs at its power limit, a lower
+The txid-blake2b hash search uses little global-memory traffic. When a card runs at its power limit, a lower
 memory clock leaves more of that budget to the core. This is optional and set by you, not the miner
 (Linux, as root; `nvidia-smi -rmc` undoes it):
 
@@ -441,15 +448,9 @@ Measured with 2.0.5, 369-byte jobs, A/B/B/A ([all readings](benchmarks/memclock-
 | RTX 3070 | 240 W (not at its limit) | same hashrate, 15 W less | same hashrate (5001 MHz), 7 W less |
 
 The gain appears only where the power limit actually holds the core clock down; otherwise the lower
-clock only saves power. **Never use the lowest memory clock (405 MHz):** the driver then also holds the
-core near 870 MHz (RTX 5090: −60 %). Other models were not measured. The older clock observations
+clock only saves power. **On the tested RTX 5090, avoid 405 MHz memory:** the driver also held the
+core near 870 MHz and hashrate fell about 60%. Do not generalize this to untested cards. The older clock observations
 further below were taken with the VRF work of 1.0.6 and do not apply to hash jobs.
-
-A100 and H100 retain their separate measured profiles. The CMP 170HX, tested RTX 3070,
-4070 Ti SUPER, 5070 Ti, 5080, 5090 and RTX PRO 6000 models retain the NVIDIA ladder
-kernel. Other models and MIG partitions use the applicable fallback and tuning rules;
-see `PLATFORMS.md` for the configurations actually measured. The distribution includes
-native SM90 code for H100.
 
 ## Download
 [GitHub Releases](https://github.com/ocminer/ProxiChorizo/releases):
