@@ -80,6 +80,7 @@ jobs:
           python3 tests/opencl_arithmetic.py
           python3 scripts/generate-txid-plan.py --check
           python3 scripts/test-launchers.py
+          python3 tests/txid/aligned_tail_vectors.py
           g++ -O2 -std=c++17 -pthread tests/txid/solo_host_test.cpp -ldl -o /tmp/test-solo-host
           /tmp/test-solo-host
           g++ -O2 -std=c++17 tests/txid/zero_tail_test.cpp -o /tmp/test-zero-tail
@@ -130,6 +131,12 @@ jobs:
           cl /nologo /EHsc /std:c++17 /O2 tests/platform_profiles.cpp /Fe:test-platform-profiles.exe
           if errorlevel 1 exit /b 1
           test-platform-profiles.exe
+          if errorlevel 1 exit /b 1
+          cl /nologo /EHsc /std:c++17 /O2 /MT tests/txid/zero_tail_test.cpp /Fe:test-zero-tail.exe
+          if errorlevel 1 exit /b 1
+          test-zero-tail.exe
+          if errorlevel 1 exit /b 1
+          python tests/txid/aligned_tail_vectors.py
           if errorlevel 1 exit /b 1
           proxichorizo.exe --help
           if errorlevel 1 exit /b 1
@@ -185,6 +192,11 @@ jobs:
           cl /nologo /EHsc /std:c++17 /O2 /MT /utf-8 /DNOMINMAX /D_CRT_SECURE_NO_WARNINGS /I"$env:OCL_DIR\include" tests/profiles.cpp windows_opencl_loader.cpp /Fe:test-profiles.exe /link "$env:OCL_DIR\lib\OpenCL.lib" delayimp.lib /DELAYLOAD:OpenCL.dll
           if ($LASTEXITCODE -ne 0) { throw 'profile test build failed' }
           ./test-profiles.exe; if ($LASTEXITCODE -ne 0) { throw 'profile checks failed' }
+          cl /nologo /EHsc /std:c++17 /O2 /MT ../tests/txid/zero_tail_test.cpp /Fe:test-zero-tail.exe
+          if ($LASTEXITCODE -ne 0) { throw 'zero-tail test build failed' }
+          ./test-zero-tail.exe; if ($LASTEXITCODE -ne 0) { throw 'zero-tail checks failed' }
+          python ../tests/txid/aligned_tail_vectors.py
+          if ($LASTEXITCODE -ne 0) { throw 'protocol vectors failed' }
           ./proxichorizo-cl.exe --help; if ($LASTEXITCODE -ne 0) { throw '--help failed' }
           # OpenCL present (the runner has an OpenCL.dll but no GPU): the miner loads it and reports no GPU
           $out = & ./proxichorizo-cl.exe --list-devices 2>&1 | Out-String; $code = $LASTEXITCODE; $out

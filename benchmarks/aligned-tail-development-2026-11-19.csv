@@ -1,0 +1,10 @@
+gpu,backend,firmware_allowance_w,prefix_bytes,selection,seconds,gh_s,sampled_watts,sampled_core_mhz,sampled_memory_mhz,development_binary_sha256,scope
+RX 7900 XTX,OpenCL,350,504,tail504-existing,8,6.115,282,2490,96,2569271ab4146b4ada1de231b5af739acff793512ba94d453600280520c848b6,short Linux development diagnostic; not sustained ABBA or final release executable
+RX 7900 XTX,OpenCL,350,504,tail504-zero,8,7.258,278,2462,96,2569271ab4146b4ada1de231b5af739acff793512ba94d453600280520c848b6,short Linux development diagnostic; not sustained ABBA or final release executable
+RX 7900 XTX,OpenCL,350,504,tail504-auto,8,7.237,276,2454,96,2569271ab4146b4ada1de231b5af739acff793512ba94d453600280520c848b6,short Linux development diagnostic; not sustained ABBA or final release executable
+RTX 4070 Ti SUPER,CUDA,285,504,tail504-existing,8,6.759,284,2835,10251,b189a67fae618308f42e9523a1a6b4ca8c6b7b6b0f4d32ac8be42065bb73bf52,short Linux development diagnostic; not sustained ABBA or final release executable
+RTX 4070 Ti SUPER,CUDA,285,504,tail504-zero,8,7.354,285,2760,10251,b189a67fae618308f42e9523a1a6b4ca8c6b7b6b0f4d32ac8be42065bb73bf52,short Linux development diagnostic; not sustained ABBA or final release executable
+RTX 4070 Ti SUPER,CUDA,285,504,tail504-auto,8,7.346,284,2775,10251,b189a67fae618308f42e9523a1a6b4ca8c6b7b6b0f4d32ac8be42065bb73bf52,short Linux development diagnostic; not sustained ABBA or final release executable
+GTX 1080 Ti,CUDA,330,504,tail504-existing,8,3.177,145,1873,5005,b189a67fae618308f42e9523a1a6b4ca8c6b7b6b0f4d32ac8be42065bb73bf52,short Linux development diagnostic; not sustained ABBA or final release executable
+GTX 1080 Ti,CUDA,330,504,tail504-zero,8,3.045,143,1873,5005,b189a67fae618308f42e9523a1a6b4ca8c6b7b6b0f4d32ac8be42065bb73bf52,short Linux development diagnostic; not sustained ABBA or final release executable
+GTX 1080 Ti,CUDA,330,504,tail504-auto,8,3.147,158,1860,5005,b189a67fae618308f42e9523a1a6b4ca8c6b7b6b0f4d32ac8be42065bb73bf52,short Linux development diagnostic; not sustained ABBA or final release executable

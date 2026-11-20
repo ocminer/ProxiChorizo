@@ -21,7 +21,7 @@
 #include <map>
 #include <cmath>
 #include <cerrno>
-#define PX_VERSION "2.0.6"
+#define PX_VERSION "2.1.0"
 #include <signal.h>
 // sockets: POSIX or Winsock behind four helpers
 #ifdef _WIN32
@@ -4035,13 +4035,13 @@ static void expire_job(Shared &sh) {
 }
 // the connection: subscribe, authorize, then jobs in and shares out until it breaks; reconnects with backoff
 static bool request_aligned_tail_for(const std::vector<Shared::GpuStat> &gpus) {
+    (void)gpus;
     if (const char *e = getenv("PX_ALIGNED_TAIL")) {
         if (!strcmp(e, "0")) return false;
         if (!strcmp(e, "1")) return true; // explicit development/benchmark override
     }
-    // GTX 1080 Ti measurements favor ordinary jobs. One connection carries one
-    // layout for the whole rig, so preserve ordinary jobs if it includes Pascal.
-    for (const auto &g : gpus) if (g.arch == "sm_61") return false;
+    // Negotiate on every platform. Each worker still calibrates the exact
+    // kernel for the job it receives, including Pascal and mixed rigs.
     return true;
 }
 static void stratum_client(Shared &sh) {

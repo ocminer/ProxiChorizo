@@ -106,7 +106,7 @@ static void session(const std::string &ack, bool accepted, bool closes, bool lat
 int main() {
     unsetenv("PX_ALIGNED_TAIL");
     Shared::GpuStat old{},modern{};old.arch="sm_61";modern.arch="sm_89";
-    assert(!request_aligned_tail_for({old}));assert(!request_aligned_tail_for({modern,old}));
+    assert(request_aligned_tail_for({old}));assert(request_aligned_tail_for({modern,old}));
     assert(request_aligned_tail_for({modern}));
     setenv("PX_ALIGNED_TAIL","1",1);assert(request_aligned_tail_for({old}));
     setenv("PX_ALIGNED_TAIL","0",1);assert(!request_aligned_tail_for({modern}));
@@ -119,7 +119,7 @@ int main() {
     session("",false,false);
     session("",false,true);
     session("{\"id\":3,\"result\":{\"proxima.aligned-tail.v1\":true},\"error\":null}",true,false,true);
-    session("",false,false,false,true);
+    session("{\"id\":3,\"result\":{\"proxima.aligned-tail.v1\":true},\"error\":null}",true,false,false,true);
     setenv("PX_ALIGNED_TAIL","0",1);session("",false,false);unsetenv("PX_ALIGNED_TAIL");
-    puts("PASS: capability accept/decline/error/malformed/absent/legacy disconnect/late acknowledgement/Pascal default/explicit opt-out; 40 CPU-verified shares over normal/aligned layout transitions with shared wire IDs across connections; reconnect state cleared");
+    puts("PASS: capability accept/decline/error/malformed/absent/legacy disconnect/late acknowledgement/all-platform default/explicit opt-out; 40 CPU-verified shares over normal/aligned layout transitions with shared wire IDs across connections; reconnect state cleared");
 }

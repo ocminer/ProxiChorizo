@@ -24,6 +24,45 @@ pool URL, worker and token. Hash rates are in GH/s and depend on the job's messa
 the historical 600-byte synthetic test measured RTX 5090 ≈ 16.1 GH/s at 450 W, 17.3 at 575 W. See
 [2.0 hash benchmarks](#20-hash-work-txid-blake2b).
 
+### 2.1.0 — aligned-tail jobs on NVIDIA and AMD (2026-11-20)
+
+The miner automatically requests `proxima.aligned-tail.v1` on every platform,
+including Pascal and mixed-GPU rigs. Supporting pools can send padded transaction
+preimages that simplify the final Blake2b block. Each GPU measures the available
+kernels and retains its faster valid path. Ordinary jobs and older pools keep
+working; no new command-line option is required.
+
+Pool developers: [PROTOCOL-UPGRADE](PROTOCOL-UPGRADE.md) explains the public wire
+format, canonical transaction padding, connection-local job validation, fallback
+and interoperability tests. The format does not require an upgrade-7 wait.
+
+Initial Linux development measurements for the same **504-byte padded layout**:
+
+| GPU | Firmware allowance | Existing kernel | Automatic selection | Difference | Sampled draw, before → after |
+|---|---:|---:|---:|---:|---:|
+| RX 7900 XTX | 350 W | 6.115 GH/s | 7.237 GH/s | +18.35% | 282 → 276 W |
+| RTX 4070 Ti SUPER | 285 W | 6.759 GH/s | 7.346 GH/s | +8.69% | 284 → 284 W |
+| GTX 1080 Ti | 330 W | 3.177 GH/s | Existing kernel retained | No gain claimed | 145 → 158 W |
+
+The [per-run CSV](benchmarks/aligned-tail-development-2026-11-19.csv) records
+clocks, sampled power and executable hashes. These are short eight-second diagnostic runs, not sustained release benchmarks
+or a promise of pool earnings. The new zero-tail kernel was slower on the tested
+GTX 1080 Ti, so automatic selection kept its existing kernel. Negotiation is still
+enabled by default there. Ordinary-layout measurements from 2.0.6 remain below;
+different job lengths and clock/thermal conditions must not be conflated.
+
+Development integration checks recorded 3,606 accepted staging shares, zero
+CPU-invalid or non-stale rejected shares, and five job-change stales. Sixteen
+padded transactions were independently confirmed in the test node's reliable
+chain, with their canonical hashes and signatures checked. Pool block rows were
+also checked; staging did not execute PPLNS accounting or payouts.
+
+CUDA and OpenCL still verify every submitted hit on the CPU. Multi-GPU padded
+jobs keep disjoint nonce ranges even when cards use different kernel enumerations.
+Packages include Linux, native Windows NVIDIA/AMD, HiveOS, mmpOS, SMOS and both
+Docker variants. All kernels remain readable, without encryption or obfuscation.
+The miner never changes power limits, clocks or fan settings.
+
 ### 2.0.6 — per-card Blake2b improvements (2026-11-19)
 
 New exact-integer hash profiles move invariant work out of the nonce loop and tune
@@ -258,9 +297,9 @@ distribution); the Windows archive brings its own. The pool's certificate is che
   token, password empty for Blake2b. Worker name = the rig name.
 * **MMPOS / SMOS:** the same tarball, launchers `mmpos-run.sh` / `smos-run.sh`; pool URL as
   above, user = token, password empty for Blake2b (see [USAGE.md](USAGE.md)).
-* **Docker (NVIDIA):** `ocminersupr/proxichorizo:2.0.6` with `TOKEN`
+* **Docker (NVIDIA):** `ocminersupr/proxichorizo:2.1.0` with `TOKEN`
   and optionally `POOL_URL` (default `stratum+tcp://proxi.suprnova.cc:3355`); see `docker/README.md`.
-* **Docker (AMD):** `ocminersupr/proxichorizo:2.0.6-amd` (also `:amd`), the OpenCL miner with AMD's
+* **Docker (AMD):** `ocminersupr/proxichorizo:2.1.0-amd` (also `:amd`), the OpenCL miner with AMD's
   ROCm OpenCL runtime inside; the host needs only the amdgpu driver (`--device /dev/kfd --device /dev/dri`).
 
 ### Is it working?

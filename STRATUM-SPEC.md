@@ -353,13 +353,15 @@ helps to find a mismatch. Answers and error codes as in §7 (`23` = work below k
 extranonce2 counting up from 0 with at least 12 zero bits. `--hash-selftest` checks a GPU
 against them; `tests/txid/` has the CPU test with a Python `hashlib` cross-check.
 
-### 9.7 Optional aligned-tail jobs (development extension)
+### 9.7 Optional aligned-tail jobs (ProxiChorizo 2.1.0)
 
-The miner requests this extension automatically, except on CUDA rigs containing
-Pascal (`sm_61`), where measured ordinary jobs remain faster. `PX_ALIGNED_TAIL=0`
-keeps ordinary jobs on any rig; `PX_ALIGNED_TAIL=1` explicitly requests the extension
-for testing. A mixed rig receives one layout per connection. This preference does
-not bypass per-job byte checks or CPU verification of shares.
+The miner requests this extension automatically on all CUDA and OpenCL platforms,
+including Pascal and mixed rigs. Each GPU independently selects its faster valid
+kernel for the supplied layout. `PX_ALIGNED_TAIL=0` keeps ordinary jobs for diagnostics;
+`PX_ALIGNED_TAIL=1` explicitly requests the extension (the default). A mixed rig
+receives one layout per connection. This preference does not bypass per-job byte
+checks or CPU verification of shares. See [PROTOCOL-UPGRADE](PROTOCOL-UPGRADE.md)
+for a pool implementation guide and public interoperability checks.
 
 This extension changes transaction layout, not BLAKE2b, difficulty, job lifetime or
 share accounting. It is optional and must coexist with §9.2's ordinary jobs. A client
