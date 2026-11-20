@@ -7,7 +7,7 @@
 // The aligned production kernel is Blackwell-only. On other cards exercise
 // its nonce permutation with the ordinary exact hash, without claiming that
 // this executes or qualifies the Blackwell kernel itself.
-__global__ void aligned_enumeration_oracle(txid::ParamsCore p, uint64_t base,
+__global__ void aligned_enumeration_oracle(txid::ParamsCore p, txid::Plan01 q, uint64_t base,
         uint64_t count, txid::HitRec *hits, unsigned *nhit) {
     for (uint64_t i=threadIdx.x; i<count; i+=blockDim.x) {
         const uint64_t logical=base+i;
@@ -15,7 +15,7 @@ __global__ void aligned_enumeration_oracle(txid::ParamsCore p, uint64_t base,
             ((logical&0x000000ff00000000ULL)<<8) |
             ((logical&0x0000ff0000000000ULL)>>8) |
             (uint64_t)__byte_perm((uint32_t)logical,0,0x0123);
-        const uint64_t h=txid::txid_h3<15,false>(p,txid::bswap64d(n));
+        const uint64_t h=txid::txid_h3<15,false>(p,txid::bswap64d(n),&q);
         if ((h&p.mask)==0) txid::record(n,h,hits,nhit);
     }
 }
@@ -41,9 +41,11 @@ int main() {
                     assert(cudaMemset(memory.d_n,0,4)==cudaSuccess);
                     if(mode==6)txid::launch_zero_tail(1,256,0,p,base,count,3,memory.d_hits,memory.d_n);
                     else if(mode==1 && blackwell)txid::launch_aligned(1,256,0,p,504,base,count,memory.d_hits,memory.d_n,cache);
-                    else if(mode==1)aligned_enumeration_oracle<<<1,256>>>(p,base,count,memory.d_hits,memory.d_n);
+                    else if(mode==1)aligned_enumeration_oracle<<<1,256>>>(p,p.q,base,count,memory.d_hits,memory.d_n);
                     else txid::launch(1,256,0,p,base,count,3,memory.d_hits,memory.d_n);
-                    assert(cudaDeviceSynchronize()==cudaSuccess);
+                    const cudaError_t sync=cudaDeviceSynchronize();
+                    if(sync!=cudaSuccess)fprintf(stderr,"partition oracle mode %d: %s\n",mode,cudaGetErrorString(sync));
+                    assert(sync==cudaSuccess);
                     unsigned found=0;assert(cudaMemcpy(&found,memory.d_n,4,cudaMemcpyDeviceToHost)==cudaSuccess);assert(found==count);
                     std::vector<txid::HitRec> hits(found);assert(cudaMemcpy(hits.data(),memory.d_hits,found*sizeof(hits[0]),cudaMemcpyDeviceToHost)==cudaSuccess);
                     for(auto hit:hits) {
