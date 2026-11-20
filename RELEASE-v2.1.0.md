@@ -18,7 +18,7 @@ were independently confirmed by the test node and verified with the official
 transaction parser, full hashes and signatures. Staging block records were checked;
 production PPLNS credits and payouts were not part of that test.
 
-Pool maintainers can use [PROTOCOL-UPGRADE](PROTOCOL-UPGRADE.md) and the included
+Pool maintainers can use [PROTOCOL-UPGRADE](https://github.com/ocminer/ProxiChorizo/blob/v2.1.0/PROTOCOL-UPGRADE.md) and the included
 public hash vectors to implement the extension alongside their ordinary protocol.
 The guide covers negotiation, canonical transaction padding, shared job IDs across
 connections, late negotiation, validation and fallback. No upgrade-7 wait is part

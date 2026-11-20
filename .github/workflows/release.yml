@@ -15,7 +15,7 @@ on:
       target:
         description: jobs of a manual build (windows-amd = only the Windows AMD/OpenCL package)
         type: choice
-        options: [all, windows-amd]
+        options: [all, windows-amd, linux-docker]
         default: all
 permissions:
   contents: write
@@ -59,7 +59,9 @@ jobs:
     container: nvidia/cuda:12.9.1-devel-ubuntu20.04
     steps:
       - name: tools
-        run: apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git binutils python3 ocl-icd-opencl-dev opencl-headers >/dev/null
+        run: |
+          find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) -exec sed -i 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g; s|http://security.ubuntu.com|https://security.ubuntu.com|g' {} +
+          apt-get -o Acquire::Retries=3 update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git binutils python3 ocl-icd-opencl-dev opencl-headers >/dev/null
       - uses: actions/checkout@v4
       - name: build (glibc 2.31, Pascal to Blackwell)
         run: |
@@ -108,7 +110,7 @@ jobs:
 
   windows:
     needs: version
-    if: inputs.target != 'windows-amd'
+    if: inputs.target != 'windows-amd' && inputs.target != 'linux-docker'
     runs-on: windows-2022
     timeout-minutes: 350
     steps:
@@ -161,6 +163,7 @@ jobs:
 
   windows-amd:
     needs: version
+    if: inputs.target != 'linux-docker'
     runs-on: windows-2022
     timeout-minutes: 60
     env:
