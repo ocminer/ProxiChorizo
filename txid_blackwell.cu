@@ -50,7 +50,16 @@ namespace txid_bw {
 // the zero-tail specialization is slower. Each device makes its own choice.
 static void tail_launch(int mode,unsigned grid,cudaStream_t stream,const ParamsCore &p,
         uint32_t low,uint64_t fixed,uint32_t full,uint32_t tail,HitRec *hits,unsigned *nhit,const Plan01 &plan) {
-    if(mode==1)zero_tail_search<2><<<grid,512,0,stream>>>(p,low,fixed,full,tail,hits,nhit);
+    if (mode == 3) {
+        constexpr unsigned block = 768;
+        const uint64_t old_stride = (uint64_t)grid * 512;
+        const uint64_t count = old_stride * full + tail;
+        // Preserve the full-SM grid. Only the number of nonces per thread changes.
+        const uint64_t stride = (uint64_t)grid * block;
+        zero_tail_search<2,block><<<grid,block,0,stream>>>(p, low, fixed,
+            (uint32_t)(count / stride), (uint32_t)(count % stride), hits, nhit);
+    }
+    else if(mode==1)zero_tail_search<2><<<grid,512,0,stream>>>(p,low,fixed,full,tail,hits,nhit);
     else if(mode==2)zero_tail_search<3><<<grid,512,0,stream>>>(p,low,fixed,full,tail,hits,nhit);
     else search<15,1,15><<<grid,512,0,stream>>>(p,low,fixed,full,tail,hits,nhit,0,plan);
 }
@@ -77,7 +86,7 @@ static int tail_choice(unsigned grid,const ParamsCore &input,uint64_t fixed,cons
     // Check both candidates against the CPU's complete twelve-round evaluation
     // of this already-prepared block. These attempts never count as mining.
     ParamsCore p=input;p.mask=0;
-    for(int mode:{1,2})for(uint32_t low:{0u,0x89abc123u,0xfffffbffu}) {
+    for(int mode:{1,2,3})for(uint32_t low:{0u,0x89abc123u,0xfffffbffu}) {
         checked(cudaMemset(nhit,0,4));tail_launch(mode,3,0,p,low,fixed,0,1025,hits,nhit,plan);
         checked(cudaGetLastError());checked(cudaDeviceSynchronize());
         unsigned got=0;checked(cudaMemcpy(&got,nhit,4,cudaMemcpyDeviceToHost));
@@ -96,7 +105,8 @@ static int tail_choice(unsigned grid,const ParamsCore &input,uint64_t fixed,cons
     p.mask=~0ULL;
     cudaEvent_t begin,end;checked(cudaEventCreate(&begin));checked(cudaEventCreateWithFlags(&end,cudaEventBlockingSync));
     const uint64_t stride=(uint64_t)grid*512;
-    const uint32_t loops=(uint32_t)std::max<uint64_t>(1,std::min<uint64_t>(128,(1ULL<<30)/std::max<uint64_t>(stride,1)));
+    // Use a mining-sized launch when comparing close geometries.
+    const uint32_t loops=(uint32_t)std::max<uint64_t>(1,std::min<uint64_t>(1024,(1ULL<<30)/std::max<uint64_t>(stride,1)));
     auto sample=[&](int mode){float measured=0;
         for(int phase=0;phase<2;++phase){float total=0;unsigned samples=0;
             do {checked(cudaMemset(nhit,0,4));checked(cudaEventRecord(begin));tail_launch(mode,grid,0,p,0x10000000u,fixed,loops,0,hits,nhit,plan);
@@ -105,14 +115,16 @@ static int tail_choice(unsigned grid,const ParamsCore &input,uint64_t fixed,cons
             }while(total<75.f);if(phase)measured=total/samples;
         }return measured;
     };
-    float times[3]={};
-    for(int mode:{0,1,2,2,1,0})times[mode]+=sample(mode);
+    float times[4]={};
+    for(int mode:{0,1,2,3,3,2,1,0})times[mode]+=sample(mode);
     chosen=times[2]<times[1]?2:1;
+    if (times[3] < times[chosen] * .99f) chosen = 3;
     if(!(times[chosen]<times[0]*.98f))chosen=0;
     if(force&&!strcmp(force,"1"))chosen=1;
     if(force&&!strcmp(force,"2"))chosen=2;
-    fprintf(stderr,"GPU %d: Blackwell long-job tuning selects %s (existing %.3f ms, zero-tail LB2 %.3f ms, LB3 %.3f ms)\n",dev,
-        chosen==1?"zero-tail LB2":chosen==2?"zero-tail LB3":"existing kernel",times[0]*.5f,times[1]*.5f,times[2]*.5f);
+    if(force&&!strcmp(force,"3"))chosen=3;
+    fprintf(stderr,"GPU %d: Blackwell long-job tuning selects %s (existing %.3f ms, zero-tail LB2 %.3f ms, LB3 %.3f ms, 768-thread %.3f ms)\n",dev,
+        chosen==1?"zero-tail LB2":chosen==2?"zero-tail LB3":chosen==3?"zero-tail 768-thread":"existing kernel",times[0]*.5f,times[1]*.5f,times[2]*.5f,times[3]*.5f);
     checked(cudaEventDestroy(begin));checked(cudaEventDestroy(end));checked(cudaFree(hits));checked(cudaFree(nhit));
     choices.mode[dev].store(chosen);return chosen;
 }

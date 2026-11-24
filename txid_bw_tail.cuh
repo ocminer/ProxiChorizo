@@ -36,8 +36,8 @@ template<int STYLE,int R> __device__ __forceinline__ void tail_rounds(uint64_t v
     if constexpr(R<11)tail_rounds<STYLE,R+1>(v,nonce);
 }
 #endif
-template<int MIN_BLOCKS>
-__global__ void __launch_bounds__(512,MIN_BLOCKS) zero_tail_search(const ParamsCore p,uint32_t low,uint64_t fixed,uint32_t full,uint32_t tail,HitRec *hits,unsigned *nhit) {
+template<int MIN_BLOCKS, int BLOCK = 512>
+__global__ void __launch_bounds__(BLOCK,MIN_BLOCKS) zero_tail_search(const ParamsCore p,uint32_t low,uint64_t fixed,uint32_t full,uint32_t tail,HitRec *hits,unsigned *nhit) {
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 1200
     const uint32_t gid=blockIdx.x*blockDim.x+threadIdx.x,stride=gridDim.x*blockDim.x;
     uint32_t n=low+gid,limit=full+(gid<tail);
