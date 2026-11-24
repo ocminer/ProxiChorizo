@@ -136,3 +136,110 @@ TX_KERNEL(31, TX_H3_B(X, h3))
     TX_ROUNDS(1) \
     out = P[P_H + 3] ^ v[3] ^ v[11]; }
 TX_KERNEL(32, TX_H3_ZERO(X, h3))
+
+#ifdef TX_GFX1100_XTX
+// For an input split across two BLAKE2b blocks, sh is the bit length of
+// the second block. A consecutive interval with the same (nonce >> sh)
+// has one common first-block chaining value.
+static inline __attribute__((always_inline))
+void tx_prepare_straddle(__constant ulong *P, ulong nonce, uint sh, __local ulong *saved) {
+    ulong v[16], m[16];
+    #pragma unroll
+    for (int i=0;i<15;++i) m[i]=P[P_M+i];
+    m[15]=P[P_M+15] | (tx_bswap(nonce)<<sh);
+    TX_ROUND0(15,0)
+    TX_ROUNDS(1)
+    ulong h[8];
+    #pragma unroll
+    for (int i=0;i<8;++i) h[i]=P[P_H+i]^v[i]^v[i+8];
+    #pragma unroll
+    for (int i=0;i<8;++i) { v[i]=h[i]; v[i+8]=TX_IV[i]; }
+    v[12]^=P[P_TFIN]; v[14]=~v[14];
+    // Only column zero of the final block depends on its nonce bytes.
+    GF(v[1],v[5],v[9],v[13],0UL,0UL)
+    GF(v[2],v[6],v[10],v[14],0UL,0UL)
+    GF(v[3],v[7],v[11],v[15],0UL,0UL)
+    #pragma unroll
+    for (int i=0;i<16;++i) saved[i]=v[i];
+    saved[16]=h[3];
+}
+static inline __attribute__((always_inline))
+ulong tx_finish_straddle(__local ulong *saved, ulong suffix) {
+    ulong v[16], m[16] = {0}; m[0]=suffix;
+    #pragma unroll
+    for(int i=0;i<16;++i) v[i]=saved[i];
+    GF(v[0],v[4],v[8],v[12],suffix,0UL)
+    GF(v[0],v[5],v[10],v[15],0UL,0UL)
+    GF(v[1],v[6],v[11],v[12],0UL,0UL)
+    GF(v[2],v[7],v[8],v[13],0UL,0UL)
+    GF(v[3],v[4],v[9],v[14],0UL,0UL)
+    TX_ROUNDS(1)
+    return saved[16]^v[3]^v[11];
+}
+// One group prepares contiguous 256-nonce chunks. Sixteen uses 2,176 B of LDS.
+#define TX_STRADDLE_CHUNKS 16
+__kernel __attribute__((reqd_work_group_size(TX_WG,1,1)))
+void txid_straddle(__constant ulong *P, ulong nbase, ulong count, uint iters,
+                   __global ulong2 *hits, __global uint *nhit) {
+    if (!count) return;
+    const uint lid=get_local_id(0);
+    const uint sh=(uint)P[P_SHIFT]&63;
+    const ulong suffix_mask=(1UL<<sh)-1;
+    const ulong aligned=nbase & ~((ulong)TX_WG-1);
+    const ulong skip=nbase-aligned;
+    const ulong nchunks=1+(count-1)/TX_WG + ((count-1)%TX_WG+skip>=TX_WG);
+    __local ulong snapshots[TX_STRADDLE_CHUNKS][17];
+    for (ulong chunk=(ulong)get_group_id(0)*TX_STRADDLE_CHUNKS; chunk<nchunks;
+         chunk+=(ulong)get_num_groups(0)*TX_STRADDLE_CHUNKS) {
+        const uint used=(uint)min((ulong)TX_STRADDLE_CHUNKS,nchunks-chunk);
+        const ulong start=aligned+chunk*TX_WG;
+        const ulong initial_offset=start & suffix_mask;
+        const uint last_key=(uint)((initial_offset+(ulong)used*TX_WG-1)>>sh);
+        if (lid<=last_key)
+            tx_prepare_straddle(P,(start & ~suffix_mask)+((ulong)lid<<sh),sh,snapshots[lid]);
+        barrier(CLK_LOCAL_MEM_FENCE);
+        for(uint j=0;j<used;++j) {
+            const ulong advance=(ulong)j*TX_WG;
+            const ulong n=start+advance+lid;
+            if (n-nbase>=count) continue;
+            // The aligned chunk spans 256 nonces. Its low eight bits
+            // cannot carry into the key on any of the seven split shapes.
+            const uint key=(uint)((initial_offset+advance)>>sh);
+            const ulong h=tx_finish_straddle(snapshots[key],tx_bswap(n)>>(64-sh));
+            if ((h & P[P_MASK])==0) {
+                uint slot=atomic_inc(nhit);
+                if(slot<TX_MAX_HITS) hits[slot]=(ulong2)(n,h);
+            }
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+}
+
+// Run one elementary BLAKE2b step across the four independent columns
+// before the next dependent step. All message words except word 15 are zero.
+#define TX_ALIGNED_FOUR(H,EXPR) { \
+    _Pragma("unroll") for (uint lane=0;lane<4;++lane) { \
+        const uint a=lane,b=4+(lane+(H))%4,c=8+(lane+2*(H))%4,d=12+(lane+3*(H))%4; \
+        EXPR; \
+    } \
+}
+#define TX_ALIGNED_HALF(H) { \
+    TX_ALIGNED_FOUR(H,v[a]+=v[b]+(TX_SIGMA[r][8*(H)+2*lane]==15?X:0UL)) \
+    TX_ALIGNED_FOUR(H,v[d]=TX_ROR(v[d]^v[a],32)) \
+    TX_ALIGNED_FOUR(H,v[c]+=v[d]) \
+    TX_ALIGNED_FOUR(H,v[b]=TX_ROR(v[b]^v[c],24)) \
+    TX_ALIGNED_FOUR(H,v[a]+=v[b]+(TX_SIGMA[r][8*(H)+2*lane+1]==15?X:0UL)) \
+    TX_ALIGNED_FOUR(H,v[d]=TX_ROR(v[d]^v[a],16)) \
+    TX_ALIGNED_FOUR(H,v[c]+=v[d]) \
+    TX_ALIGNED_FOUR(H,v[b]=TX_ROR(v[b]^v[c],63)) \
+}
+static inline __attribute__((always_inline))
+ulong tx_sched_h3(__constant ulong *P,ulong X) {
+    ulong v[16],m[16]={0};m[15]=X;
+    TX_ROUND0(15,0)
+    #pragma unroll
+    for(uint r=1;r<12;++r) { TX_ALIGNED_HALF(0) TX_ALIGNED_HALF(1) }
+    return P[P_H+3]^v[3]^v[11];
+}
+TX_KERNEL(33,h3=tx_sched_h3(P,X);)
+#endif

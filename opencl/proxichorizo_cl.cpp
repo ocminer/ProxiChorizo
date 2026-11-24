@@ -477,7 +477,13 @@ static cl_mem make_job(ClDev &d, JobDev jd) { prepare_job(jd); cl_int err; cl_me
 #define TX_WG 256
 static_assert(sizeof(txid::ParamsCore) == 107 * sizeof(uint64_t), "OpenCL parameter ABI");
 static_assert(sizeof(txid::Params) == 267 * sizeof(uint64_t), "OpenCL plan ABI");
-struct TxProg { cl_program p = nullptr; cl_kernel k[33] = {}, plan29 = nullptr; ClDev *dev = nullptr; bool use_plan29 = false; int zero_choice = -1; };
+struct TxProg {
+    cl_program p = nullptr;
+    cl_kernel k[33] = {}, plan29 = nullptr, straddle = nullptr, scheduled = nullptr;
+    ClDev *dev = nullptr;
+    bool use_plan29 = false;
+    int zero_choice = -1;
+};
 static std::map<cl_device_id, TxProg *> g_txprogs;
 static TxProg *get_txprog(ClDev &dev) {
     std::lock_guard<std::mutex> l(g_prog_mu);
@@ -487,7 +493,12 @@ static TxProg *get_txprog(ClDev &dev) {
     tp->p = clCreateProgramWithSource(dev.ctx, 1, &src, &len, &err); CL_CHECK(err);
     std::string opts = "-cl-std=CL1.2 -DTX_WG=" + std::to_string(TX_WG) + " -DTX_MAX_HITS=" + std::to_string(TXID_MAX_HITS) + " " + g_extra_build;
     auto t0 = std::chrono::steady_clock::now();
-    err = clBuildProgram(tp->p, 1, &dev.id, opts.c_str(), nullptr, nullptr);
+    // Both specialized kernels were qualified on the RX 7900 XTX.
+    const bool target_xtx = dev.name.rfind("gfx1100", 0) == 0 && dev.board.find("7900 XTX") != std::string::npos;
+    const std::string optimized = opts + " -DTX_GFX1100_XTX";
+    err = clBuildProgram(tp->p, 1, &dev.id, target_xtx ? optimized.c_str() : opts.c_str(), nullptr, nullptr);
+    if (target_xtx && err != CL_SUCCESS)
+        err = clBuildProgram(tp->p, 1, &dev.id, opts.c_str(), nullptr, nullptr);
     if (err != CL_SUCCESS) {
         size_t ll = 0; clGetProgramBuildInfo(tp->p, dev.id, CL_PROGRAM_BUILD_LOG, 0, nullptr, &ll);
         std::string log(ll, 0); clGetProgramBuildInfo(tp->p, dev.id, CL_PROGRAM_BUILD_LOG, ll, log.data(), nullptr);
@@ -495,6 +506,10 @@ static TxProg *get_txprog(ClDev &dev) {
     }
     for (int i = 0; i < 33; i++) { char nm[32]; snprintf(nm, sizeof nm, "txid_k%d", i); tp->k[i] = clCreateKernel(tp->p, nm, &err); CL_CHECK(err); }
     tp->plan29 = clCreateKernel(tp->p, "txid_plan29", &err); CL_CHECK(err);
+    if (target_xtx) {
+        tp->straddle = clCreateKernel(tp->p, "txid_straddle", &err);
+        tp->scheduled = clCreateKernel(tp->p, "txid_k33", &err);
+    }
     tp->use_plan29 = (dev.name == "gfx1102" && dev.cus == 16 && dev.board.find("7600 XT") != std::string::npos) ||
                      (dev.name.rfind("gfx906", 0) == 0 && dev.cus == 60 && dev.board.find("MI50") != std::string::npos);
     if (const char *e = getenv("PX_TXID_PLAN")) {
@@ -510,7 +525,10 @@ static cl_int tx_enqueue(TxProg *tp, cl_mem params, int kernel, uint64_t nbase, 
     if (!groups || groups > UINT32_MAX / TX_WG) return CL_INVALID_GLOBAL_WORK_SIZE;
     if (kernel < 0 || kernel > 32) return CL_INVALID_KERNEL;
     const bool planned = tp->use_plan29 && kernel == 29;
-    cl_kernel k = planned ? tp->plan29 : tp->k[kernel];
+    cl_kernel k = tp->k[kernel];
+    if (planned) k = tp->plan29;
+    if (kernel == 31 && tp->straddle) k = tp->straddle;
+    if (kernel == 32 && tp->scheduled) k = tp->scheduled;
     // Preserve the exact nonce interval, including a partial group or a 64-bit wrap.
     // The optimized loop needs no 64-bit carry in its per-nonce hot path.
     do {
@@ -548,7 +566,29 @@ struct ClTxSearch {
         return out;
     }
 };
-static int cl_txid_selfcheck(ClDev &d, std::string &why) { ClTxSearch s(d); int rc = txid::selfcheck(std::ref(s), why); if (!rc) { std::string extra; rc = txid::zero_tail_selfcheck(std::ref(s), extra); why += "; " + extra; } return rc; }
+static int cl_txid_selfcheck(ClDev &d, std::string &why) {
+    ClTxSearch search(d);
+    auto check = [&]() {
+        int rc = txid::selfcheck(std::ref(search), why);
+        if (!rc) {
+            std::string extra;
+            rc = txid::zero_tail_selfcheck(std::ref(search), extra);
+            why += "; " + extra;
+        }
+        return rc;
+    };
+    int rc = check();
+    if (rc && (search.tp->straddle || search.tp->scheduled)) {
+        log_warn("[txid-blake2b] optional XTX kernel failed its check on " + dev_label(d) + ": " + why + "; checking the standard kernels");
+        for (cl_kernel *kernel : {&search.tp->straddle, &search.tp->scheduled}) {
+            if (*kernel) clReleaseKernel(*kernel);
+            *kernel = nullptr;
+        }
+        why.clear();
+        rc = check();
+    }
+    return rc;
+}
 // Use the existing kernel if a particular OpenCL compiler/card does better
 // with it. Calibration attempts are never reported or submitted as mining.
 static int cl_tail_select(TxProg *tp, const txid::Params &input, cl_mem params,

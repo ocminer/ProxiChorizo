@@ -26,7 +26,16 @@ nvcc -O3 -std=c++17 -arch=sm_120 -I. -Xcompiler -pthread \
 /tmp/proxichorizo-aligned-test 40
 ```
 
-This test needs an idle SM120 GPU and runs substantial CPU hash verification.
+For the two-block CUDA path, build the following test for the selected card.
+It checks all seven nonce splits, zero-length and partial tiles, multiple grid
+strides, counter wrap, exact targets and hit-buffer overflow against full CPU hashes.
+
+```sh
+nvcc -O3 -std=c++17 -arch=sm_120 tests/txid/straddle_gpu_test.cu -o /tmp/proxi-straddle
+/tmp/proxi-straddle
+```
+
+The aligned test needs an idle GPU and runs substantial CPU hash verification.
 On the tested RTX 5090, the fixed-seed 40-case run checked 50,081,923 nonces
 and 7,241 valid hits, in
 addition to 96 small self-check cases. It does not replace an end-to-end test
@@ -39,6 +48,7 @@ progress and full CPU/GPU hit-set comparisons go to stderr.
 
 The OpenCL plan has a GPU regression that creates a context only on the selected
 PCI bus. It covers all 32 original shapes, the optimized word-14/15 layout,
+the seven two-block nonce splits across multiple RX 7900 XTX workgroup tiles,
 partial launches, 32-bit and 64-bit wraps, exact targets, full hit buffers and
 negative execution statuses. Example for a GPU on PCI bus 3:
 
@@ -79,7 +89,7 @@ number as its sole argument and creates only that device's context.
 `zero_tail_gpu_test.cu` accepts an optional `256` or `512` argument to test the
 specific launch size. The latter exercises the additional Pascal choice.
 `blackwell_zero_tail_test.cu` links the production `txid_blackwell.cu` module and
-checks both specialized launch bounds, ordinary fallback, four prefix lengths,
+checks the specialized launch geometries, ordinary fallback, four prefix lengths,
 partial grids, counter boundaries and overflow. For example, from the repo root
 with CUDA 12.9 and an available Blackwell GPU selected through
 `CUDA_VISIBLE_DEVICES`:
@@ -91,8 +101,10 @@ nvcc -O3 -std=c++17 -arch=sm_120 -Xcompiler -pthread \
   tests/txid/blackwell_zero_tail_test.cu /tmp/proxi-tail-bw.o -o /tmp/proxi-tail-bw
 PX_TXID_BW_ZERO=1 /tmp/proxi-tail-bw > /tmp/proxi-tail-lb2.txt
 PX_TXID_BW_ZERO=2 /tmp/proxi-tail-bw > /tmp/proxi-tail-lb3.txt
+PX_TXID_BW_ZERO=3 /tmp/proxi-tail-bw > /tmp/proxi-tail-768.txt
 python3 tests/txid/check_zero_tail_output.py blackwell /tmp/proxi-tail-lb2.txt
 python3 tests/txid/check_zero_tail_output.py blackwell /tmp/proxi-tail-lb3.txt
+python3 tests/txid/check_zero_tail_output.py blackwell /tmp/proxi-tail-768.txt
 ```
 
 The checker uses Python's independent BLAKE2b implementation to reconstruct the
