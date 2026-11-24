@@ -16,7 +16,7 @@ static inline int platform_profile(const cudaDeviceProp &p) {
 }
 #ifdef PX_BW_PTX
 extern "C" void txid_bw_launch(int, unsigned, unsigned, cudaStream_t, const ParamsCore &,
-    uint32_t, uint64_t, uint32_t, uint32_t, HitRec *, unsigned *, uint32_t, const Plan01 &);
+    uint32_t, uint64_t, uint32_t, uint32_t, HitRec *, unsigned *, uint32_t, const Plan01 &, bool);
 #endif
 // Only measured devices and message layouts use this search. Other devices and
 // all unlisted layouts retain their existing kernels, including block straddles.
@@ -62,6 +62,7 @@ static inline uint64_t aligned_count(uint64_t nbase, uint64_t count) {
 struct AlignedSearch {
     ParamsCore p{};
     bool fast = false;
+    bool allow_bw_tail = true;
     int platform = 0;
     Plan01 plan{};
     uint64_t window = ~0ULL, fixed = 0;
@@ -165,7 +166,7 @@ static inline void launch_aligned(unsigned grid, unsigned block, cudaStream_t st
     const int off = plen % 128, OFF = aligned_offset(plen), W = (off + OFF) / 8, HIGH = ((off + OFF) % 8) / 4, LAST = (off + 7) / 8;
 #ifdef PX_BW_PTX
     if (cache.fast) {
-        txid_bw_launch(4 * W + 2 * HIGH + (LAST - W), grid, block, st, cache.p, (uint32_t)nbase, cache.fixed, full, tail, hits, nhit, 8u * (4 - OFF), cache.plan);
+        txid_bw_launch(4 * W + 2 * HIGH + (LAST - W), grid, block, st, cache.p, (uint32_t)nbase, cache.fixed, full, tail, hits, nhit, 8u * (4 - OFF), cache.plan, cache.allow_bw_tail);
         return;
     }
 #endif

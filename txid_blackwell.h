@@ -83,9 +83,16 @@ struct BlackwellChoice {
         // Both offset-120 input classes get their own reversed comparison.
         // Use four short timing windows per contender across its two arms.
         const float window_ms = plen % 128 == 120 ? 32.f : 75.f;
+        // On a padded job both ordinary kernels can hash the same exact bytes.
+        // Time the ordinary PTX body explicitly before caching a choice for
+        // unpadded offset-120 jobs. Its padded specialization has a different cost.
+        constexpr int ordinary_ptx = 8;
+        const bool measure_ordinary = compare_zero_tail && choices[120] < 0;
         auto sample = [&](int mode, float &ms) {
             if (err != cudaSuccess) return;
-            AlignedSearch cache; cache.fast = mode == 2;
+            AlignedSearch cache;
+            cache.fast = mode == 2 || mode == ordinary_ptx;
+            cache.allow_bw_tail = mode != ordinary_ptx;
             // Let each kernel reach its own power/clock operating point before
             // timing it. A cold, few-millisecond sample can pick a slower path.
             for (int phase = 0; phase < 2; ++phase) {
@@ -109,14 +116,16 @@ struct BlackwellChoice {
                 if (phase) ms = total_ms / samples;
             }
         };
-        float a = 0, b = 0, zero = 0;
+        float a = 0, b = 0, zero = 0, ordinary = 0;
         // Every pair has a symmetric A/B/B/A order on the identical input,
         // nonce range and geometry. Measure the winner once for both comparisons.
-        const int modes[] = {native, 2, 6, 6, 2, native};
+        const int modes[] = {native, 2, 6, ordinary_ptx, ordinary_ptx, 6, 2, native};
         for (int mode : modes) {
             if (mode == 6 && !compare_zero_tail) continue;
+            if (mode == ordinary_ptx && !measure_ordinary) continue;
             float ms = 0; sample(mode, ms);
-            if (mode == 6) zero += ms;
+            if (mode == ordinary_ptx) ordinary += ms;
+            else if (mode == 6) zero += ms;
             else if (mode == 2) b += ms;
             else a += ms;
         }
@@ -125,6 +134,9 @@ struct BlackwellChoice {
         if (err != cudaSuccess) { why = cudaGetErrorString(err); return -1; }
         if (!(a > 0 && b > 0)) { why = "invalid Blackwell calibration timing"; return -1; }
         chosen = b < a * 0.98f ? 2 : native;
+        // Near a crossover, time the first real ordinary job as usual.
+        if (measure_ordinary && ordinary > 0 && (ordinary < a * 0.92f || ordinary > a * 1.08f))
+            choices[120] = ordinary < a ? 2 : native;
         fprintf(stderr, "GPU %d: hash layout %d selects %s (native %.3f ms, Blackwell %.3f ms)\n",
             device, plen % 128, chosen == 2 ? "Blackwell" : "native", a * 0.5f, b * 0.5f);
         if (compare_zero_tail) {

@@ -102,9 +102,11 @@ nvcc -O3 -std=c++17 -arch=sm_120 -Xcompiler -pthread \
 PX_TXID_BW_ZERO=1 /tmp/proxi-tail-bw > /tmp/proxi-tail-lb2.txt
 PX_TXID_BW_ZERO=2 /tmp/proxi-tail-bw > /tmp/proxi-tail-lb3.txt
 PX_TXID_BW_ZERO=3 /tmp/proxi-tail-bw > /tmp/proxi-tail-768.txt
+/tmp/proxi-tail-bw --ordinary-kernel > /tmp/proxi-tail-ordinary.txt
 python3 tests/txid/check_zero_tail_output.py blackwell /tmp/proxi-tail-lb2.txt
 python3 tests/txid/check_zero_tail_output.py blackwell /tmp/proxi-tail-lb3.txt
 python3 tests/txid/check_zero_tail_output.py blackwell /tmp/proxi-tail-768.txt
+python3 tests/txid/check_zero_tail_output.py blackwell /tmp/proxi-tail-ordinary.txt
 ```
 
 The checker uses Python's independent BLAKE2b implementation to reconstruct the

@@ -4,8 +4,14 @@
 #define PX_BW_PTX 1
 #include "../../txid_aligned.cuh"
 #include <cassert>
+#include <cstring>
 #include <set>
-int main() {
+int main(int argc, char **argv) {
+    const bool ordinary_only = argc == 2 && !std::strcmp(argv[1], "--ordinary-kernel");
+    if (argc > 1 && !ordinary_only) {
+        fprintf(stderr, "usage: %s [--ordinary-kernel]\n", argv[0]);
+        return 2;
+    }
     cudaDeviceProp prop{};
     assert(cudaGetDeviceProperties(&prop, 0) == cudaSuccess);
     assert(prop.major == 12 && prop.minor == 0);
@@ -18,6 +24,7 @@ int main() {
         txid::Params base; txid::prepare(prefix.data(), plen, 0, base);
         for (uint64_t first : {0xa1b27856ffffff01ULL, 0xfffffffffffffff1ULL}) {
             txid::AlignedSearch cache; cache.fast = true;
+            cache.allow_bw_tail = !ordinary_only;
             uint64_t left = 5513, cursor = first;
             while (left) {
                 const uint64_t count = txid::aligned_count(cursor, left);

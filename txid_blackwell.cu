@@ -146,7 +146,7 @@ static int tail_choice(unsigned grid,const ParamsCore &input,uint64_t fixed,cons
 
 extern "C" void txid_bw_launch(int key, unsigned grid, unsigned block, cudaStream_t stream,
         const txid::ParamsCore &p, uint32_t low, uint64_t fixed, uint32_t full, uint32_t tail,
-        txid::HitRec *hits, unsigned *nhit, uint32_t nshift, const txid::Plan01 &plan) {
+        txid::HitRec *hits, unsigned *nhit, uint32_t nshift, const txid::Plan01 &plan, bool allow_tail) {
     // Retain the caller's exact nonce count, including partial grids, while
     // grouping the same work into the measured 512-thread Blackwell blocks.
     const uint64_t threads = (uint64_t)grid * block;
@@ -154,7 +154,7 @@ extern "C" void txid_bw_launch(int key, unsigned grid, unsigned block, cudaStrea
     grid = (unsigned)((threads + 511) / 512); block = 512;
     const uint64_t stride = (uint64_t)grid * block;
     full = (uint32_t)(count / stride); tail = (uint32_t)(count % stride);
-    if(txid_bw::tail_shape(key,p,nshift)) {
+    if(allow_tail && txid_bw::tail_shape(key,p,nshift)) {
         const int mode=txid_bw::tail_choice(grid,p,fixed,plan);
         txid_bw::tail_launch(mode,grid,stream,p,low,fixed,full,tail,hits,nhit,plan);
         return;
