@@ -63,14 +63,14 @@ static bool tail_shape(int key,const ParamsCore &p,uint32_t nshift) {
 static void checked(cudaError_t error) {
     if(error!=cudaSuccess){fprintf(stderr,"Blackwell zero-tail check: %s\n",cudaGetErrorString(error));std::exit(2);}
 }
-struct TailChoices {std::atomic<int> mode[128];std::mutex mutex;TailChoices(){for(auto &m:mode)m.store(-1);}};
+struct TailChoices {std::atomic<int> mode[128];std::mutex mutex[128];TailChoices(){for(auto &m:mode)m.store(-1);}};
 static int tail_choice(unsigned grid,const ParamsCore &input,uint64_t fixed,const Plan01 &plan) {
     const char *force=getenv("PX_TXID_BW_ZERO");
     if(force&&!strcmp(force,"0"))return 0;
     int dev=-1;checked(cudaGetDevice(&dev));if(dev<0||dev>=128)return 0;
     static TailChoices choices;
     int chosen=choices.mode[dev].load();if(chosen>=0)return chosen;
-    std::lock_guard<std::mutex> lock(choices.mutex);
+    std::lock_guard<std::mutex> lock(choices.mutex[dev]);
     chosen=choices.mode[dev].load();if(chosen>=0)return chosen;
     HitRec *hits=nullptr;unsigned *nhit=nullptr;
     checked(cudaMalloc(&hits,TXID_MAX_HITS*sizeof(HitRec)));checked(cudaMalloc(&nhit,sizeof(unsigned)));
