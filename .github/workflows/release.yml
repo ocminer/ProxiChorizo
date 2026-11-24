@@ -278,7 +278,10 @@ jobs:
           IMAGE_TAGS: ${{ steps.reg.outputs.tags }}
           RELEASE_VERSION: ${{ needs.version.outputs.ver }}
         run: |
-          docker save "${IMAGE_TAGS%%,*}" | gzip -1 > "$RUNNER_TEMP/proxichorizo-$RELEASE_VERSION-docker-nvidia.tar.gz"
+          ARCHIVE="$RUNNER_TEMP/proxichorizo-$RELEASE_VERSION-docker-nvidia.tar"
+          docker save --output "$ARCHIVE" "${IMAGE_TAGS%%,*}"
+          tar -xOf "$ARCHIVE" manifest.json | jq -e 'length == 1 and (.[0].Layers | length > 0)' > /dev/null
+          gzip -1 "$ARCHIVE"
       - uses: actions/upload-artifact@v4
         if: github.event_name == 'workflow_dispatch'
         with:
