@@ -107,16 +107,30 @@ static int tail_choice(unsigned grid,const ParamsCore &input,uint64_t fixed,cons
     const uint64_t stride=(uint64_t)grid*512;
     // Use a mining-sized launch when comparing close geometries.
     const uint32_t loops=(uint32_t)std::max<uint64_t>(1,std::min<uint64_t>(1024,(1ULL<<30)/std::max<uint64_t>(stride,1)));
-    auto sample=[&](int mode){float measured=0;
-        for(int phase=0;phase<2;++phase){float total=0;unsigned samples=0;
-            do {checked(cudaMemset(nhit,0,4));checked(cudaEventRecord(begin));tail_launch(mode,grid,0,p,0x10000000u,fixed,loops,0,hits,nhit,plan);
-                checked(cudaGetLastError());checked(cudaEventRecord(end));checked(cudaEventSynchronize(end));float ms=0;checked(cudaEventElapsedTime(&ms,begin,end));
-                if(!(ms>0)){fprintf(stderr,"Invalid zero-tail timing\n");std::exit(2);}total+=ms;++samples;
-            }while(total<75.f);if(phase)measured=total/samples;
-        }return measured;
+    auto timed_launch = [&](int mode) {
+        checked(cudaMemset(nhit, 0, sizeof(unsigned)));
+        checked(cudaEventRecord(begin));
+        tail_launch(mode, grid, 0, p, 0x10000000u, fixed, loops, 0, hits, nhit, plan);
+        checked(cudaGetLastError());
+        checked(cudaEventRecord(end));
+        checked(cudaEventSynchronize(end));
+        float ms = 0;
+        checked(cudaEventElapsedTime(&ms, begin, end));
+        if (!(ms > 0)) { fprintf(stderr, "Invalid zero-tail timing\n"); std::exit(2); }
+        return ms;
     };
-    float times[4]={};
-    for(int mode:{0,1,2,3,3,2,1,0})times[mode]+=sample(mode);
+    // Warm the card once. Each arm then has a settling launch and at least
+    // one mining-sized timed launch. The second pass reverses the clock drift.
+    float warm = 0;
+    while (warm < 75.f) warm += timed_launch(0);
+    float times[4] = {};
+    for (int mode : {0,1,2,3,3,2,1,0}) {
+        timed_launch(mode);
+        float total = 0;
+        unsigned samples = 0;
+        do { total += timed_launch(mode); ++samples; } while (total < 24.f);
+        times[mode] += total / samples;
+    }
     chosen=times[2]<times[1]?2:1;
     if (times[3] < times[chosen] * .99f) chosen = 3;
     if(!(times[chosen]<times[0]*.98f))chosen=0;

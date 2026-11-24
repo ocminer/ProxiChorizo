@@ -80,6 +80,9 @@ struct BlackwellChoice {
         cudaEvent_t begin = nullptr, end = nullptr;
         cudaError_t err = cudaEventCreate(&begin);
         if (err == cudaSuccess) err = cudaEventCreateWithFlags(&end, cudaEventBlockingSync);
+        // Both offset-120 input classes get their own reversed comparison.
+        // Use four short timing windows per contender across its two arms.
+        const float window_ms = plen % 128 == 120 ? 32.f : 75.f;
         auto sample = [&](int mode, float &ms) {
             if (err != cudaSuccess) return;
             AlignedSearch cache; cache.fast = mode == 2;
@@ -102,7 +105,7 @@ struct BlackwellChoice {
                     if (err != cudaSuccess) return;
                     if (!(elapsed > 0)) { err = cudaErrorUnknown; return; }
                     total_ms += elapsed; ++samples;
-                } while (total_ms < 75.0f);
+                } while (total_ms < window_ms);
                 if (phase) ms = total_ms / samples;
             }
         };
