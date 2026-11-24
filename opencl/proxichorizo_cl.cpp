@@ -493,12 +493,17 @@ static TxProg *get_txprog(ClDev &dev) {
     tp->p = clCreateProgramWithSource(dev.ctx, 1, &src, &len, &err); CL_CHECK(err);
     std::string opts = "-cl-std=CL1.2 -DTX_WG=" + std::to_string(TX_WG) + " -DTX_MAX_HITS=" + std::to_string(TXID_MAX_HITS) + " " + g_extra_build;
     auto t0 = std::chrono::steady_clock::now();
-    // Both specialized kernels were qualified on the RX 7900 XTX.
     const bool target_xtx = dev.name.rfind("gfx1100", 0) == 0 && dev.board.find("7900 XTX") != std::string::npos;
-    const std::string optimized = opts + " -DTX_GFX1100_XTX";
-    err = clBuildProgram(tp->p, 1, &dev.id, target_xtx ? optimized.c_str() : opts.c_str(), nullptr, nullptr);
-    if (target_xtx && err != CL_SUCCESS)
+    const bool target_7600xt = dev.name == "gfx1102" && dev.cus == 16 && dev.board.find("7600 XT") != std::string::npos;
+    const char *rdna3 = getenv("PX_TXID_RDNA3");
+    bool specialized = (target_xtx || target_7600xt) && !(rdna3 && !strcmp(rdna3, "0"));
+    const std::string optimized = opts + " -DTX_RDNA3_SPECIALIZED";
+    err = clBuildProgram(tp->p, 1, &dev.id, specialized ? optimized.c_str() : opts.c_str(), nullptr, nullptr);
+    if (specialized && err != CL_SUCCESS) {
+        log_warn("[txid-blake2b] optional RDNA3 build failed on " + dev_label(dev) + "; compiling the standard kernels");
+        specialized = false;
         err = clBuildProgram(tp->p, 1, &dev.id, opts.c_str(), nullptr, nullptr);
+    }
     if (err != CL_SUCCESS) {
         size_t ll = 0; clGetProgramBuildInfo(tp->p, dev.id, CL_PROGRAM_BUILD_LOG, 0, nullptr, &ll);
         std::string log(ll, 0); clGetProgramBuildInfo(tp->p, dev.id, CL_PROGRAM_BUILD_LOG, ll, log.data(), nullptr);
@@ -506,11 +511,13 @@ static TxProg *get_txprog(ClDev &dev) {
     }
     for (int i = 0; i < 33; i++) { char nm[32]; snprintf(nm, sizeof nm, "txid_k%d", i); tp->k[i] = clCreateKernel(tp->p, nm, &err); CL_CHECK(err); }
     tp->plan29 = clCreateKernel(tp->p, "txid_plan29", &err); CL_CHECK(err);
-    if (target_xtx) {
+    if (specialized) {
         tp->straddle = clCreateKernel(tp->p, "txid_straddle", &err);
         tp->scheduled = clCreateKernel(tp->p, "txid_k33", &err);
+        if (tp->straddle && tp->scheduled)
+            logln("[txid-blake2b] enabled split-nonce and scheduled zero-tail kernels on " + dev_label(dev));
     }
-    tp->use_plan29 = (dev.name == "gfx1102" && dev.cus == 16 && dev.board.find("7600 XT") != std::string::npos) ||
+    tp->use_plan29 = target_7600xt ||
                      (dev.name.rfind("gfx906", 0) == 0 && dev.cus == 60 && dev.board.find("MI50") != std::string::npos);
     if (const char *e = getenv("PX_TXID_PLAN")) {
         if (!strcmp(e, "0")) tp->use_plan29 = false;
@@ -579,7 +586,7 @@ static int cl_txid_selfcheck(ClDev &d, std::string &why) {
     };
     int rc = check();
     if (rc && (search.tp->straddle || search.tp->scheduled)) {
-        log_warn("[txid-blake2b] optional XTX kernel failed its check on " + dev_label(d) + ": " + why + "; checking the standard kernels");
+        log_warn("[txid-blake2b] optional RDNA3 kernel failed its check on " + dev_label(d) + ": " + why + "; checking the standard kernels");
         for (cl_kernel *kernel : {&search.tp->straddle, &search.tp->scheduled}) {
             if (*kernel) clReleaseKernel(*kernel);
             *kernel = nullptr;

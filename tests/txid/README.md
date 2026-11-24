@@ -121,3 +121,9 @@ still required. Without an override, the miner compares both paths on the card
 and keeps the previous kernel unless the new one clears the timing margin.
 Do not compare an ordinary random 504-byte benchmark with a zero-tail result
 and label it a same-input speedup. Normal jobs and hashrate accounting are unchanged.
+
+On a supported RX 7900 XTX or RX 7600 XT, OpenCL startup logs when it enables
+the split-nonce and scheduled zero-tail kernels. For a same-device comparison,
+set `PX_TXID_RDNA3=0` to use the standard kernels on the same bytes. Exercise
+both a 504-byte zero-tail job and an ordinary 381-byte job. The optional kernels
+take part in the normal startup hash checks.

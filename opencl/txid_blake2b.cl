@@ -137,7 +137,7 @@ TX_KERNEL(31, TX_H3_B(X, h3))
     out = P[P_H + 3] ^ v[3] ^ v[11]; }
 TX_KERNEL(32, TX_H3_ZERO(X, h3))
 
-#ifdef TX_GFX1100_XTX
+#ifdef TX_RDNA3_SPECIALIZED
 // For an input split across two BLAKE2b blocks, sh is the bit length of
 // the second block. A consecutive interval with the same (nonce >> sh)
 // has one common first-block chaining value.
