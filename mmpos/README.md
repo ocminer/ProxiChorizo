@@ -1,7 +1,7 @@
-# ProxiChorizo 2.1.1 on mmpOS and SMOS
+# ProxiChorizo 2.1.2 on mmpOS and SMOS
 
 Both platforms use the standard Linux archive, containing CUDA and OpenCL miners:
-https://github.com/ocminer/ProxiChorizo/releases/download/v2.1.1/proxichorizo-2.1.1.tar.gz
+https://github.com/ocminer/ProxiChorizo/releases/download/v2.1.2/proxichorizo-2.1.2.tar.gz
 
 ## mmpOS
 

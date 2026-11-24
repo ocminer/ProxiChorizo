@@ -16,7 +16,7 @@ RUN find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) -exec sed -i
 WORKDIR /app
 COPY --from=build /src/proxichorizo /app/proxichorizo
 COPY docker/entrypoint.sh /app/entrypoint.sh
-COPY README.md USAGE.md LICENSE NOTICE PLATFORMS.md STRATUM-SPEC.md PROTOCOL-UPGRADE.md vectors-aligned-tail.json vectors.json vectors-txid-blake2b.json /app/
+COPY README.md USAGE.md QUICKSTART-v*.md LICENSE NOTICE PLATFORMS.md STRATUM-SPEC.md PROTOCOL-UPGRADE.md vectors-aligned-tail.json vectors.json vectors-txid-blake2b.json /app/
 COPY benchmarks/ /app/benchmarks/
 RUN chmod +x /app/entrypoint.sh /app/proxichorizo
 ENV CUDA_DEVICE_ORDER=PCI_BUS_ID NVIDIA_DRIVER_CAPABILITIES=compute,utility

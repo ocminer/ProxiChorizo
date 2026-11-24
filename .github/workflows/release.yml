@@ -272,6 +272,20 @@ jobs:
           python3 scripts/verify-release.py --version "$RELEASE_VERSION" --directory image-check
           docker run --rm --entrypoint /app/proxichorizo "$IMAGE" --help > image-help.txt 2>&1
           grep -F "ProxiChorizo $RELEASE_VERSION" image-help.txt
+      - name: export the verified image for a build without a tag
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          IMAGE_TAGS: ${{ steps.reg.outputs.tags }}
+          RELEASE_VERSION: ${{ needs.version.outputs.ver }}
+        run: |
+          docker save "${IMAGE_TAGS%%,*}" | gzip -1 > "$RUNNER_TEMP/proxichorizo-$RELEASE_VERSION-docker-nvidia.tar.gz"
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'workflow_dispatch'
+        with:
+          name: docker-nvidia
+          path: ${{ runner.temp }}/proxichorizo-*-docker-nvidia.tar.gz
+          if-no-files-found: error
+          compression-level: 0
       - name: publish verified container images
         if: startsWith(github.ref, 'refs/tags/v')
         env: { IMAGE_TAGS: "${{ steps.reg.outputs.tags }}" }

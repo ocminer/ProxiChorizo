@@ -64,6 +64,20 @@ jobs:
           grep -F "ProxiChorizo $RELEASE_VERSION (OpenCL)" image-help.txt
           docker run --rm --entrypoint /bin/sh "$IMAGE" -c 'ls /etc/OpenCL/vendors/ && ldd /app/proxichorizo-cl | grep -i opencl'
           docker run --rm "$IMAGE" --check-pool stratum+ssl://proxi.suprnova.cc:3356
+      - name: export the verified image for a build without a tag
+        if: github.event_name == 'workflow_dispatch' || (github.ref == 'refs/heads/main' && steps.v.outputs.released == 'false')
+        env:
+          IMAGE_TAGS: ${{ steps.v.outputs.tags }}
+          RELEASE_VERSION: ${{ steps.v.outputs.ver }}
+        run: |
+          docker save "${IMAGE_TAGS%%,*}" | gzip -1 > "$RUNNER_TEMP/proxichorizo-$RELEASE_VERSION-docker-amd.tar.gz"
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'workflow_dispatch' || (github.ref == 'refs/heads/main' && steps.v.outputs.released == 'false')
+        with:
+          name: docker-amd
+          path: ${{ runner.temp }}/proxichorizo-*-docker-amd.tar.gz
+          if-no-files-found: error
+          compression-level: 0
       - name: publish verified container images
         if: startsWith(github.ref, 'refs/tags/v') || (steps.v.outputs.released == 'true' && (github.event_name == 'push' || inputs.publish))
         env: { IMAGE_TAGS: "${{ steps.reg.outputs.tags }}" }

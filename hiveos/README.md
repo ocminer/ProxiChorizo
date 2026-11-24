@@ -1,7 +1,7 @@
-# ProxiChorizo 2.1.1 on HiveOS
+# ProxiChorizo 2.1.2 on HiveOS
 
 Use the custom miner package for NVIDIA or AMD:
-https://github.com/ocminer/ProxiChorizo/releases/download/v2.1.1/proxichorizo-hiveos.tar.gz
+https://github.com/ocminer/ProxiChorizo/releases/download/v2.1.2/proxichorizo-hiveos.tar.gz
 
 | Flight sheet field | Value |
 |---|---|

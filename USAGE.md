@@ -30,7 +30,7 @@ mining transactions; your wallet key stays with you.
    `stratum+ssl://proxi.suprnova.cc:3356`. Current jobs need no key file or seed.
    Existing tokens continue to work with `--token YOUR_EXISTING_TOKEN --name rig1`.
    Packaged launchers retain the variable name `TOKEN`: set it to your PROX
-   address or existing token. See [current quick start](QUICKSTART-v2.1.1.md).
+   address or existing token. See [current quick start](QUICKSTART-v2.1.2.md).
 
 4. The miner prints a start-up banner (version, licence, pool, worker, the GPUs with
    bus id and kernel) and then, every 30 seconds, one line per GPU and a total:

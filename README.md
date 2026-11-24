@@ -16,9 +16,25 @@ own `proxi node mine` controller also supports keyless Blake2b work. Earlier VRF
 work remains available for legacy jobs. All kernels remain readable; the miner
 does not change clocks, power allowances or fans.
 
-Setup: [current quick start](QUICKSTART-v2.1.1.md) · [usage](USAGE.md) · [HiveOS](hiveos/README.md) ·
+Setup: [current quick start](QUICKSTART-v2.1.2.md) · [usage](USAGE.md) · [HiveOS](hiveos/README.md) ·
 [Docker](docker/README.md) · [mmpOS / SMOS](mmpos/README.md) ·
 [ready-to-edit examples](examples/README.md).
+
+### 2.1.2 — padded and split-nonce BLAKE2b jobs
+
+On three captured 504-byte padded pool templates, the normal miner gained 1.03% on RTX 5090, 2.68% on RTX 5080 and 3.03% on RTX 5070 Ti versus v2.1.1. On the RTX 5090, the first verified share arrived in 1.21 seconds, down from 2.19 seconds.
+
+| GPU | 504-byte padded job, GH/s | 381-byte split job, GH/s |
+|---|---:|---:|
+| RTX 5090 | 21.938 → 22.235 | 8.426 → 17.665 |
+| RTX 5080 | 11.632 → 11.892 | 4.175 → 8.831 |
+| RTX 5070 Ti | 9.702 → 9.913 | 3.461 → 7.306 |
+| RTX 3070 | 3.547 → 3.564 | 1.614 → 3.302 |
+| GTX 1080 Ti | 3.368 → 3.338 | 1.489 → 3.013 |
+| RX 7900 XTX | 7.286 → 7.386 | 3.102 → 6.658 |
+| RX 7600 XT | 2.479 → 2.516 | 1.027 → 2.233 |
+
+The table gives fixed-layout Linux benchmark means, from v2.1.1 to the 2.1.2 development kernels. Each timed arm was 15 seconds on NVIDIA, 10 seconds on RX 7900 XTX and five seconds on the cooled RX 7600 XT. The RTX 3070 and GTX 1080 Ti kept their prior padded kernels. In a longer warmed GTX 1080 Ti comparison the difference was −0.045%. The larger gains apply to ordinary prefixes that split the nonce across two compression blocks. All three captured production prefixes were padded. [Individual benchmark arms](benchmarks/proxima-blake2b-2.1.2.csv) · [Release notes](RELEASE-v2.1.2.md)
 
 ### 2.1.1 — faster startup and `--no-autotune` (2026-11-20)
 
@@ -373,9 +389,9 @@ distribution); the Windows archive brings its own. The pool's certificate is che
   PROX address, password empty for Blake2b. Worker name = the rig name. Existing tokens also work.
 * **MMPOS / SMOS:** the same tarball, launchers `mmpos-run.sh` / `smos-run.sh`; pool URL as
   above, user = PROX address (or existing token), password empty for Blake2b (see [USAGE.md](USAGE.md)).
-* **Docker (NVIDIA):** `ocminersupr/proxichorizo:2.1.1` with `TOKEN=YOUR_PROX_ADDRESS`
+* **Docker (NVIDIA):** `ocminersupr/proxichorizo:2.1.2` with `TOKEN=YOUR_PROX_ADDRESS`
   and optionally `POOL_URL` (default `stratum+tcp://proxi.suprnova.cc:3355`); see `docker/README.md`.
-* **Docker (AMD):** `ocminersupr/proxichorizo:2.1.1-amd` (also `:amd`), the OpenCL miner with AMD's
+* **Docker (AMD):** `ocminersupr/proxichorizo:2.1.2-amd` (also `:amd`), the OpenCL miner with AMD's
   ROCm OpenCL runtime inside; the host needs only the amdgpu driver (`--device /dev/kfd --device /dev/dri`).
 
 ### Is it working?

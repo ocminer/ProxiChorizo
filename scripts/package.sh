@@ -12,7 +12,7 @@ D=dist/proxichorizo-$VER
 rm -rf "$D"; mkdir -p "$D"
 cp "$BIN" "$D/proxichorizo"; strip "$D/proxichorizo" 2>/dev/null || true
 [[ -n "$CLBIN" ]] && { cp "$CLBIN" "$D/proxichorizo-cl"; strip "$D/proxichorizo-cl" 2>/dev/null || true; }
-cp README.md USAGE.md LICENSE NOTICE PLATFORMS.md STRATUM-SPEC.md PROTOCOL-UPGRADE.md vectors-aligned-tail.json vectors.json vectors-txid-blake2b.json "$D/"
+cp "QUICKSTART-v$VER.md" README.md USAGE.md LICENSE NOTICE PLATFORMS.md STRATUM-SPEC.md PROTOCOL-UPGRADE.md vectors-aligned-tail.json vectors.json vectors-txid-blake2b.json "$D/"
 cp hiveos/README.md "$D/README-HiveOS.md"
 cp docker/README.md "$D/README-Docker.md"
 cp mmpos/README.md "$D/README-mmpOS-SMOS.md"

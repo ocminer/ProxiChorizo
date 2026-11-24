@@ -31,7 +31,7 @@ RUN chmod 755 /etc/ssl /etc/ssl/certs \
 WORKDIR /app
 COPY --from=build /src/opencl/proxichorizo-cl /app/proxichorizo-cl
 COPY docker/entrypoint.sh /app/entrypoint.sh
-COPY README.md USAGE.md LICENSE NOTICE PLATFORMS.md STRATUM-SPEC.md PROTOCOL-UPGRADE.md vectors-aligned-tail.json vectors.json vectors-txid-blake2b.json /app/
+COPY README.md USAGE.md QUICKSTART-v*.md LICENSE NOTICE PLATFORMS.md STRATUM-SPEC.md PROTOCOL-UPGRADE.md vectors-aligned-tail.json vectors.json vectors-txid-blake2b.json /app/
 COPY benchmarks/ /app/benchmarks/
 RUN chmod +x /app/entrypoint.sh /app/proxichorizo-cl
 ENV PX_BIN=proxichorizo-cl PATH=/opt/rocm/bin:$PATH

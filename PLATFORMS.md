@@ -1,6 +1,6 @@
 # ProxiChorizo — platform notes and measured optimisations
 
-## Current mining: 2.1.1 / Blake2b
+## Current mining: 2.1.2 / Blake2b
 
 The current proof of work is BLAKE2b-256, not the historical VRF calculation below.
 See the [current release benchmarks](README.md#211--long-job-benchmarks) for
