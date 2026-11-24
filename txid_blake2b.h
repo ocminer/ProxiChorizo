@@ -328,9 +328,9 @@ template <int W, bool SH> TXQ uint64_t txid_h3(const ParamsCore &p, uint64_t X, 
 }
 
 // shape (b): the nonce starts in word 15 of the second-to-last block and ends in word 0 of the final block
-TXQ uint64_t txid_h3_straddle(const ParamsCore &p, uint64_t X, const Plan01 *q = nullptr) {
+TXQ void straddle_midstate(const ParamsCore &p, uint64_t X, const Plan01 *q, uint64_t h[8]) {
     (void)q;
-    uint64_t m[16], v[16], h[8];
+    uint64_t m[16], v[16];
 #ifdef __CUDA_ARCH__
 #pragma unroll
 #endif
@@ -347,6 +347,10 @@ TXQ uint64_t txid_h3_straddle(const ParamsCore &p, uint64_t X, const Plan01 *q =
 #pragma unroll
 #endif
     for (int i = 0; i < 8; i++) h[i] = p.h[i] ^ v[i] ^ v[i + 8];
+}
+
+TXQ uint64_t straddle_last_h3(const ParamsCore &p, uint64_t X, const uint64_t h[8]) {
+    uint64_t m[16], v[16];
 #ifdef __CUDA_ARCH__
 #pragma unroll
 #endif
@@ -361,6 +365,11 @@ TXQ uint64_t txid_h3_straddle(const ParamsCore &p, uint64_t X, const Plan01 *q =
     return h[3] ^ v[3] ^ v[11];
 }
 
+TXQ uint64_t txid_h3_straddle(const ParamsCore &p, uint64_t X, const Plan01 *q = nullptr) {
+    uint64_t h[8];
+    straddle_midstate(p, X, q, h);
+    return straddle_last_h3(p, X, h);
+}
 
 // ---- host side: reference hash, per-job precomputation, CPU search ------------------------
 static inline uint64_t load64le(const uint8_t *p) { uint64_t w = 0; for (int i = 7; i >= 0; i--) w = (w << 8) | p[i]; return w; }

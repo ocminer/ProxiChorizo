@@ -35,8 +35,42 @@ __device__ __forceinline__ void record(uint64_t n, uint64_t h3, HitRec *hits, un
     unsigned s = atomicAdd(nhit, 1u);
     if (s < TXID_MAX_HITS) hits[s] = HitRec{n, h3};
 }
+template<unsigned TILE>
+__device__ __forceinline__ void straddle_groups(const ParamsCore &p, const Plan01 &q,
+        uint64_t first, uint64_t count, HitRec *hits, unsigned *nhit) {
+    // Each aligned tile varies only the last byte of the big-endian nonce.
+    // For every straddling prefix that entire byte is in the final block.
+    static_assert(TILE && TILE <= 256 && (TILE & (TILE - 1)) == 0, "invalid nonce tile");
+    if (count == 0) return;
+    const unsigned head = (unsigned)first & (TILE - 1);
+    const uint64_t groups = count / TILE + (count % TILE + head + TILE - 1) / TILE;
+    const uint64_t stride = (uint64_t)gridDim.x * blockDim.x;
+    for (uint64_t group = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+         group < groups; group += stride) {
+        const uint64_t offset = group * TILE;
+        const uint64_t base = first - head + offset;
+        const unsigned start = group == 0 ? head : 0;
+        const uint64_t remaining = count - (offset + start - head);
+        const unsigned used = remaining < TILE - start ? (unsigned)remaining : TILE - start;
+        uint64_t h[8];
+        straddle_midstate(p, bswap64d(base), &q, h);
+        #pragma unroll 1
+        for (unsigned j = start; j < start + used; ++j) {
+            const uint64_t nonce = base + j;
+            const uint64_t h3 = straddle_last_h3(p, bswap64d(nonce), h);
+            if (is_hit(p, h3)) record(nonce, h3, hits, nhit);
+        }
+    }
+}
+
 template <int ID>
 __global__ void __launch_bounds__(TXID_TPB) search_kernel(const ParamsCore p, uint64_t nbase, uint64_t count, uint32_t iters, HitRec *hits, unsigned *nhit, const Plan01 q) {
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 610 || __CUDA_ARCH__ == 860 || __CUDA_ARCH__ == 1200)
+    if constexpr (ID == 31) {
+        straddle_groups<64>(p, q, nbase, count, hits, nhit);
+        return;
+    }
+#endif
 #if TXID_TRIM & 1
     {
         const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x, stride32 = gridDim.x * blockDim.x;
